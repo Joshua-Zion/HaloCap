@@ -1,0 +1,465 @@
+using System;
+using System.Runtime.InteropServices;
+using System.Windows.Input;
+using System.Windows.Threading;
+using HaloCap.Diagnostics;
+using HaloCap.Interop;
+using HaloCap.Models;
+using HaloCap.Services;
+using POINT = HaloCap.Interop.NativeMethods.POINT;
+
+namespace HaloCap.UI;
+
+internal sealed class RadialMenuController : IDisposable
+{
+    private const int VkEscape = 0x1B;
+    private const int VkControl = 0x11;
+    private const int VkMenu = 0x12;
+    private const int VkShift = 0x10;
+    private const int VkLWin = 0x5B;
+    private const int VkRWin = 0x5C;
+    private const int VkDigit1 = 0x31;
+    private const int VkDigit4 = 0x34;
+    private const int VkNumpad1 = 0x61;
+    private const int VkNumpad4 = 0x64;
+    private const double EdgeMarginDip = 10;
+
+    private readonly RadialMenuWindow _window;
+    private readonly InputHookService _hooks = new();
+    private readonly Dispatcher _dispatcher;
+    private HotkeyDefinition _hotkey;
+    private bool _hotkeyRegistered;
+    private bool _isOpen;
+    private bool _holdTracking;
+    private bool _hoverFromPointer;
+    private bool _disposed;
+    private int _showGeneration;
+    private POINT _centerPx;
+    private double _pixelScale = 1.0;
+    private RadialAction? _hovered;
+
+    public RadialMenuController(HotkeyDefinition hotkey)
+    {
+        _hotkey = hotkey;
+        _dispatcher = Dispatcher.CurrentDispatcher;
+        _window = new RadialMenuWindow();
+
+        _hooks.KeyDown = HandleKeyDown;
+        _hooks.KeyUp = HandleKeyUp;
+        _hooks.MouseMove = HandleMouseMove;
+        _hooks.MouseDown = HandleMouseDown;
+        _hooks.MouseUp = HandleMouseUp;
+    }
+
+    public event Action<RadialAction>? ActionSelected;
+
+    public bool IsOpen => _isOpen;
+
+    public void UpdateHotkey(HotkeyDefinition hotkey, bool isRegistered)
+    {
+        _hotkey = hotkey;
+        _hotkeyRegistered = isRegistered;
+    }
+
+    public void ToggleFromHotkey()
+    {
+        if (_isOpen)
+        {
+            HideMenu();
+        }
+        else
+        {
+            ShowMenu(fromHotkey: true);
+        }
+    }
+
+    public void ShowFromTray()
+    {
+        if (!_isOpen)
+        {
+            ShowMenu(fromHotkey: false);
+        }
+    }
+
+    public void HideMenu()
+    {
+        if (!_isOpen)
+        {
+            return;
+        }
+
+        _isOpen = false;
+        _showGeneration++;
+        _holdTracking = false;
+        _hoverFromPointer = false;
+        _hovered = null;
+        _hooks.Uninstall();
+        _window.PlayHideAnimation();
+    }
+
+    private void ShowMenu(bool fromHotkey)
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        var cursor = GetCursorPoint();
+        _isOpen = true;
+        var generation = ++_showGeneration;
+
+        _window.EnsureShownInvisible();
+        PlaceWindow(cursor);
+
+        // 等 WPF 处理完跨屏 DPI 变化后再最终定位，此时窗口仍完全透明。
+        _dispatcher.BeginInvoke(
+            DispatcherPriority.Loaded,
+            new Action(() =>
+            {
+                if (_disposed || !_isOpen || generation != _showGeneration)
+                {
+                    return;
+                }
+
+                PlaceWindow(cursor);
+                _window.SetHover(null);
+                _hoverFromPointer = false;
+                _hooks.Install();
+                _holdTracking = fromHotkey && IsKeyDown(_hotkey.VirtualKey);
+                _window.PlayShowAnimation();
+            }));
+    }
+
+    private void PlaceWindow(POINT cursor)
+    {
+        var handle = _window.Handle;
+        var monitor = NativeMethods.MonitorFromPoint(cursor, NativeMethods.MONITOR_DEFAULTTONEAREST);
+        var monitorInfo = new NativeMethods.MONITORINFO
+        {
+            cbSize = Marshal.SizeOf<NativeMethods.MONITORINFO>()
+        };
+
+        if (!NativeMethods.GetMonitorInfo(monitor, ref monitorInfo))
+        {
+            monitorInfo.rcWork = new NativeMethods.RECT
+            {
+                Left = -100_000,
+                Top = -100_000,
+                Right = 100_000,
+                Bottom = 100_000
+            };
+        }
+
+        var scale = GetMonitorScale(monitor, handle);
+        var placement = ComputePlacement(cursor, monitorInfo.rcWork, scale);
+
+        NativeMethods.SetWindowPos(
+            handle,
+            NativeMethods.HWND_TOPMOST,
+            placement.Left,
+            placement.Top,
+            placement.Size,
+            placement.Size,
+            NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_SHOWWINDOW);
+
+        if (!NativeMethods.GetWindowRect(handle, out var rect))
+        {
+            _centerPx = new POINT(cursor.X, cursor.Y);
+            _pixelScale = scale;
+            return;
+        }
+
+        var actualScale = rect.Width / RadialMenuWindow.MenuSize;
+        if (actualScale > 0.1 && Math.Abs(actualScale - scale) > 0.02)
+        {
+            placement = ComputePlacement(cursor, monitorInfo.rcWork, actualScale);
+            NativeMethods.SetWindowPos(
+                handle,
+                NativeMethods.HWND_TOPMOST,
+                placement.Left,
+                placement.Top,
+                placement.Size,
+                placement.Size,
+                NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_SHOWWINDOW);
+            NativeMethods.GetWindowRect(handle, out rect);
+        }
+
+        _centerPx = new POINT((rect.Left + rect.Right) / 2, (rect.Top + rect.Bottom) / 2);
+        _pixelScale = rect.Width > 0
+            ? rect.Width / RadialMenuWindow.MenuSize
+            : scale;
+    }
+
+    private static Placement ComputePlacement(POINT cursor, NativeMethods.RECT workArea, double scale)
+    {
+        var size = Math.Max(1, (int)Math.Round(RadialMenuWindow.MenuSize * scale));
+        var margin = Math.Max(1, (int)Math.Round(EdgeMarginDip * scale));
+
+        var desiredLeft = cursor.X - (size / 2);
+        var desiredTop = cursor.Y - (size / 2);
+
+        var minLeft = workArea.Left + margin;
+        var maxLeft = workArea.Right - size - margin;
+        var minTop = workArea.Top + margin;
+        var maxTop = workArea.Bottom - size - margin;
+
+        var left = maxLeft >= minLeft
+            ? Math.Clamp(desiredLeft, minLeft, maxLeft)
+            : workArea.Left;
+        var top = maxTop >= minTop
+            ? Math.Clamp(desiredTop, minTop, maxTop)
+            : workArea.Top;
+
+        return new Placement(left, top, size);
+    }
+
+    private static double GetMonitorScale(IntPtr monitor, IntPtr windowHandle)
+    {
+        uint dpiX = 0;
+        uint dpiY = 0;
+
+        var result = NativeMethods.GetDpiForMonitor(
+            monitor,
+            NativeMethods.MonitorDpiType.EffectiveDpi,
+            out dpiX,
+            out dpiY);
+
+        if (result != 0 || dpiX == 0)
+        {
+            dpiX = NativeMethods.GetDpiForWindow(windowHandle);
+        }
+
+        if (dpiX == 0)
+        {
+            dpiX = 96;
+        }
+
+        return dpiX / 96.0;
+    }
+
+    private bool HandleKeyDown(int virtualKey)
+    {
+        if (!_isOpen)
+        {
+            return false;
+        }
+
+        if (virtualKey == VkEscape)
+        {
+            _dispatcher.BeginInvoke(DispatcherPriority.Input, new Action(HideMenu));
+            return true;
+        }
+
+        if (TryGetShortcutAction(virtualKey, out var action))
+        {
+            // 快捷键本身用了 1-4 且修饰键完全匹配时，把这次按键交给 RegisterHotKey 处理“再按关闭”。
+            if (_hotkeyRegistered &&
+                virtualKey == _hotkey.VirtualKey &&
+                AreRequiredModifiersDown(_hotkey.Modifiers))
+            {
+                return false;
+            }
+
+            _dispatcher.BeginInvoke(
+                DispatcherPriority.Input,
+                new Action(() => SelectAction(action)));
+            return true;
+        }
+
+        return false;
+    }
+
+    private void HandleKeyUp(int virtualKey)
+    {
+        if (!_isOpen || !_holdTracking || virtualKey != _hotkey.VirtualKey)
+        {
+            return;
+        }
+
+        _holdTracking = false;
+        var action = _hovered;
+        if (action is null || !_hoverFromPointer)
+        {
+            return;
+        }
+
+        _dispatcher.BeginInvoke(
+            DispatcherPriority.Input,
+            new Action(() =>
+            {
+                if (_isOpen && _hovered == action)
+                {
+                    SelectAction(action.Value);
+                }
+            }));
+    }
+
+    private void HandleMouseMove(int x, int y)
+    {
+        if (!_isOpen)
+        {
+            return;
+        }
+
+        _hoverFromPointer = true;
+        UpdateHover(new POINT(x, y));
+    }
+
+    private bool HandleMouseDown(int x, int y)
+    {
+        if (!_isOpen)
+        {
+            return false;
+        }
+
+        var point = new POINT(x, y);
+        _dispatcher.BeginInvoke(
+            DispatcherPriority.Input,
+            new Action(() => HandleClick(point)));
+        return true;
+    }
+
+    private bool HandleMouseUp(int x, int y) => _isOpen;
+
+    private void HandleClick(POINT point)
+    {
+        if (!_isOpen)
+        {
+            return;
+        }
+
+        var dx = point.X - _centerPx.X;
+        var dy = point.Y - _centerPx.Y;
+        var distance = Math.Sqrt((dx * dx) + (dy * dy));
+
+        if (distance < RadialMenuWindow.DeadZoneRadius * _pixelScale)
+        {
+            return;
+        }
+
+        if (distance > RadialMenuWindow.DiskRadius * _pixelScale)
+        {
+            HideMenu();
+            return;
+        }
+
+        SelectAction(RadialActionInfo.All[GetSectorIndex(dx, dy)].Action);
+    }
+
+    private void UpdateHover(POINT point)
+    {
+        var dx = point.X - _centerPx.X;
+        var dy = point.Y - _centerPx.Y;
+        var distance = Math.Sqrt((dx * dx) + (dy * dy));
+
+        if (distance < RadialMenuWindow.DeadZoneRadius * _pixelScale)
+        {
+            SetHover(null);
+            return;
+        }
+
+        SetHover(RadialActionInfo.All[GetSectorIndex(dx, dy)].Action);
+    }
+
+    private void SetHover(RadialAction? action)
+    {
+        if (_hovered == action)
+        {
+            return;
+        }
+
+        _hovered = action;
+        _window.SetHover(action);
+    }
+
+    private void SelectAction(RadialAction action)
+    {
+        if (!_isOpen)
+        {
+            return;
+        }
+
+        HideMenu();
+
+        try
+        {
+            ActionSelected?.Invoke(action);
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"执行圆盘动作 {action} 时发生异常", ex);
+        }
+    }
+
+    private static int GetSectorIndex(double dx, double dy)
+    {
+        var angle = Math.Atan2(dx, -dy) * 180.0 / Math.PI;
+        if (angle < 0)
+        {
+            angle += 360;
+        }
+
+        return (int)Math.Floor((angle + 45) / 90) % 4;
+    }
+
+    private static bool TryGetShortcutAction(int virtualKey, out RadialAction action)
+    {
+        switch (virtualKey)
+        {
+            case >= VkDigit1 and <= VkDigit4:
+                action = (RadialAction)(virtualKey - VkDigit1);
+                return true;
+
+            case >= VkNumpad1 and <= VkNumpad4:
+                action = (RadialAction)(virtualKey - VkNumpad1);
+                return true;
+
+            default:
+                action = default;
+                return false;
+        }
+    }
+
+    private static bool AreRequiredModifiersDown(ModifierKeys modifiers)
+    {
+        if ((modifiers & ModifierKeys.Control) != 0 && !IsKeyDown(VkControl)) return false;
+        if ((modifiers & ModifierKeys.Alt) != 0 && !IsKeyDown(VkMenu)) return false;
+        if ((modifiers & ModifierKeys.Shift) != 0 && !IsKeyDown(VkShift)) return false;
+        if ((modifiers & ModifierKeys.Windows) != 0 &&
+            !IsKeyDown(VkLWin) &&
+            !IsKeyDown(VkRWin))
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    private static POINT GetCursorPoint()
+    {
+        return NativeMethods.GetCursorPos(out var point)
+            ? point
+            : new POINT(0, 0);
+    }
+
+    private static bool IsKeyDown(int virtualKey)
+    {
+        return (NativeMethods.GetAsyncKeyState(virtualKey) & 0x8000) != 0;
+    }
+
+    public void Dispose()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
+        _isOpen = false;
+        _showGeneration++;
+        _hooks.Dispose();
+        _window.Close();
+    }
+
+    private readonly record struct Placement(int Left, int Top, int Size);
+}

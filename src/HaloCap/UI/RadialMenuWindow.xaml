@@ -1,0 +1,95 @@
+<Window x:Class="HaloCap.UI.RadialMenuWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Width="380"
+        Height="380"
+        Left="-10000"
+        Top="-10000"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
+        ResizeMode="NoResize"
+        ShowInTaskbar="False"
+        ShowActivated="False"
+        Topmost="True"
+        Focusable="False"
+        SnapsToDevicePixels="True"
+        UseLayoutRounding="True"
+        TextOptions.TextRenderingMode="Grayscale"
+        FontFamily="{StaticResource AppFont}"
+        Opacity="0">
+    <Grid x:Name="Root"
+          RenderTransformOrigin="0.5,0.5"
+          IsHitTestVisible="False"
+          Background="Transparent">
+        <Grid.RenderTransform>
+            <ScaleTransform x:Name="RootScale" ScaleX="1" ScaleY="1" />
+        </Grid.RenderTransform>
+
+        <Ellipse Width="340" Height="340">
+            <Ellipse.Fill>
+                <RadialGradientBrush Center="0.5,0.38"
+                                     GradientOrigin="0.5,0.38"
+                                     RadiusX="0.72"
+                                     RadiusY="0.72">
+                    <GradientStop Color="#FF242B37" Offset="0" />
+                    <GradientStop Color="#FF171C25" Offset="0.64" />
+                    <GradientStop Color="#FF11141B" Offset="1" />
+                </RadialGradientBrush>
+            </Ellipse.Fill>
+            <Ellipse.Stroke>
+                <SolidColorBrush Color="#2BFFFFFF" />
+            </Ellipse.Stroke>
+            <Ellipse.Effect>
+                <DropShadowEffect Color="#FF000000"
+                                  BlurRadius="28"
+                                  ShadowDepth="0"
+                                  Opacity="0.6" />
+            </Ellipse.Effect>
+        </Ellipse>
+
+        <Canvas x:Name="SectorLayer" Width="380" Height="380" IsHitTestVisible="False" />
+        <Canvas x:Name="ItemLayer" Width="380" Height="380" IsHitTestVisible="False" />
+
+        <Grid Width="112"
+              Height="112"
+              HorizontalAlignment="Center"
+              VerticalAlignment="Center"
+              IsHitTestVisible="False">
+            <Ellipse Width="104"
+                     Height="104"
+                     Fill="#FF10131A"
+                     Stroke="#26FFFFFF"
+                     StrokeThickness="1">
+                <Ellipse.Effect>
+                    <DropShadowEffect Color="#FF000000"
+                                      BlurRadius="16"
+                                      ShadowDepth="2"
+                                      Opacity="0.35" />
+                </Ellipse.Effect>
+            </Ellipse>
+            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
+                <Ellipse x:Name="CenterDot"
+                         Width="6"
+                         Height="6"
+                         Fill="#FF4E596B"
+                         HorizontalAlignment="Center"
+                         Margin="0,0,0,9" />
+                <TextBlock x:Name="CenterTitle"
+                           Text="选择操作"
+                           FontSize="13"
+                           FontWeight="SemiBold"
+                           Foreground="{StaticResource TextPrimaryBrush}"
+                           HorizontalAlignment="Center"
+                           TextAlignment="Center" />
+                <TextBlock x:Name="CenterSubtitle"
+                           Text="点击 · 1–4 · Esc"
+                           FontSize="10.5"
+                           Foreground="{StaticResource TextTertiaryBrush}"
+                           HorizontalAlignment="Center"
+                           TextAlignment="Center"
+                           Margin="0,4,0,0" />
+            </StackPanel>
+        </Grid>
+    </Grid>
+</Window>

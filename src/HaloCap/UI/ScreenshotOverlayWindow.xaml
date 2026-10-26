@@ -1,0 +1,261 @@
+<Window x:Class="HaloCap.UI.ScreenshotOverlayWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="HaloCap 选区"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
+        ResizeMode="NoResize"
+        WindowStartupLocation="Manual"
+        ShowInTaskbar="False"
+        Topmost="True"
+        ShowActivated="False"
+        SnapsToDevicePixels="True"
+        UseLayoutRounding="False"
+        FontFamily="{StaticResource AppFont}"
+        Cursor="Cross"
+        KeyDown="Window_KeyDown">
+    <Window.Resources>
+        <Style x:Key="OverlayButtonStyle" TargetType="Button">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Foreground" Value="#E8EDF6" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="FontWeight" Value="Medium" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Padding" Value="9,7" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Host"
+                                Background="{TemplateBinding Background}"
+                                CornerRadius="8"
+                                Padding="{TemplateBinding Padding}"
+                                SnapsToDevicePixels="True">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Host" Property="Background" Value="#1FFFFFFF" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Host" Property="Background" Value="#12FFFFFF" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.4" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="OverlayIconStyle" TargetType="Path">
+            <Setter Property="Stroke" Value="#DCE4F1" />
+            <Setter Property="StrokeThickness" Value="1.35" />
+            <Setter Property="StrokeStartLineCap" Value="Round" />
+            <Setter Property="StrokeEndLineCap" Value="Round" />
+            <Setter Property="StrokeLineJoin" Value="Round" />
+            <Setter Property="Fill" Value="Transparent" />
+            <Setter Property="Width" Value="15" />
+            <Setter Property="Height" Value="15" />
+        </Style>
+
+        <Style x:Key="HiddenOverlayButtonStyle" TargetType="Button" BasedOn="{StaticResource OverlayButtonStyle}">
+            <Setter Property="Visibility" Value="Collapsed" />
+        </Style>
+    </Window.Resources>
+
+    <Grid x:Name="Root"
+          Background="Transparent"
+          Focusable="True"
+          ClipToBounds="True"
+          PreviewMouseLeftButtonDown="Root_PreviewMouseLeftButtonDown"
+          PreviewMouseMove="Root_PreviewMouseMove"
+          PreviewMouseLeftButtonUp="Root_PreviewMouseLeftButtonUp"
+          PreviewMouseRightButtonDown="Root_PreviewMouseRightButtonDown">
+        <Image x:Name="FrozenImage"
+               Stretch="Fill"
+               IsHitTestVisible="False"
+               RenderOptions.BitmapScalingMode="HighQuality" />
+
+        <Canvas x:Name="ChromeLayer" IsHitTestVisible="False" ClipToBounds="True">
+            <Rectangle x:Name="DimFull" Fill="#A6000000" />
+            <Rectangle x:Name="DimTop" Fill="#A6000000" Visibility="Collapsed" />
+            <Rectangle x:Name="DimBottom" Fill="#A6000000" Visibility="Collapsed" />
+            <Rectangle x:Name="DimLeft" Fill="#A6000000" Visibility="Collapsed" />
+            <Rectangle x:Name="DimRight" Fill="#A6000000" Visibility="Collapsed" />
+
+            <Rectangle x:Name="CrossVertical"
+                       Width="1"
+                       Fill="#8CFFFFFF"
+                       Visibility="Collapsed" />
+            <Rectangle x:Name="CrossHorizontal"
+                       Height="1"
+                       Fill="#8CFFFFFF"
+                       Visibility="Collapsed" />
+
+            <Border x:Name="SelectionBorder"
+                    BorderThickness="1.5"
+                    BorderBrush="#FF7CA8FF"
+                    Background="Transparent"
+                    Visibility="Collapsed" />
+
+            <Rectangle x:Name="CornerTopLeft" Width="7" Height="7" Fill="#FF7CA8FF" Visibility="Collapsed" />
+            <Rectangle x:Name="CornerTopRight" Width="7" Height="7" Fill="#FF7CA8FF" Visibility="Collapsed" />
+            <Rectangle x:Name="CornerBottomLeft" Width="7" Height="7" Fill="#FF7CA8FF" Visibility="Collapsed" />
+            <Rectangle x:Name="CornerBottomRight" Width="7" Height="7" Fill="#FF7CA8FF" Visibility="Collapsed" />
+        </Canvas>
+
+        <Border x:Name="HintChip"
+                HorizontalAlignment="Center"
+                VerticalAlignment="Top"
+                Margin="0,26,0,0"
+                Padding="13,9"
+                CornerRadius="10"
+                Background="#E612161E"
+                BorderBrush="#2AFFFFFF"
+                BorderThickness="1"
+                IsHitTestVisible="False">
+            <Border.Effect>
+                <DropShadowEffect Color="#FF000000" BlurRadius="18" ShadowDepth="4" Opacity="0.45" />
+            </Border.Effect>
+            <StackPanel Orientation="Horizontal">
+                <Ellipse x:Name="HintDot"
+                         Width="6"
+                         Height="6"
+                         Fill="#FF7CA8FF"
+                         VerticalAlignment="Center"
+                         Margin="0,0,9,0" />
+                <TextBlock x:Name="HintText"
+                           FontSize="11.5"
+                           Foreground="#D8E0EC"
+                           VerticalAlignment="Center" />
+            </StackPanel>
+        </Border>
+
+        <Border x:Name="SizeBadge"
+                HorizontalAlignment="Left"
+                VerticalAlignment="Top"
+                Padding="8,4"
+                CornerRadius="6"
+                Background="#E610141C"
+                BorderBrush="#38FFFFFF"
+                BorderThickness="1"
+                Visibility="Collapsed"
+                IsHitTestVisible="False">
+            <TextBlock x:Name="SizeText"
+                       FontFamily="Consolas, Microsoft YaHei UI"
+                       FontSize="11"
+                       Foreground="#ECF2FA" />
+        </Border>
+
+        <Border x:Name="Toolbar"
+                HorizontalAlignment="Left"
+                VerticalAlignment="Top"
+                Padding="5"
+                CornerRadius="13"
+                Background="#F211151D"
+                BorderBrush="#30FFFFFF"
+                BorderThickness="1"
+                Visibility="Collapsed"
+                Cursor="Arrow">
+            <Border.Effect>
+                <DropShadowEffect Color="#FF000000" BlurRadius="26" ShadowDepth="7" Opacity="0.55" />
+            </Border.Effect>
+            <StackPanel Orientation="Horizontal">
+                <Button x:Name="PinButton"
+                        Style="{StaticResource OverlayButtonStyle}"
+                        Tag="Pin"
+                        ToolTip="贴图 (4)"
+                        AutomationProperties.Name="贴图"
+                        Click="ActionButton_Click">
+                    <StackPanel Orientation="Horizontal">
+                        <Viewbox Width="15" Height="15">
+                            <Path Style="{StaticResource OverlayIconStyle}"
+                                  Data="M9 4h6v5l3 3v2H6v-2l3-3V4Z M12 14v6" />
+                        </Viewbox>
+                        <TextBlock Text="贴图" Margin="6,0,0,0" VerticalAlignment="Center" />
+                    </StackPanel>
+                </Button>
+
+                <Button x:Name="CopyButton"
+                        Style="{StaticResource OverlayButtonStyle}"
+                        Tag="Copy"
+                        ToolTip="复制到剪贴板 (Enter)"
+                        AutomationProperties.Name="复制"
+                        Click="ActionButton_Click">
+                    <StackPanel Orientation="Horizontal">
+                        <Viewbox Width="15" Height="15">
+                            <Path Style="{StaticResource OverlayIconStyle}"
+                                  Data="M8 8h9a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H8a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1Z M5 16H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h11a1 1 0 0 1 1 1v1" />
+                        </Viewbox>
+                        <TextBlock Text="复制" Margin="6,0,0,0" VerticalAlignment="Center" />
+                    </StackPanel>
+                </Button>
+
+                <Button x:Name="SaveButton"
+                        Style="{StaticResource OverlayButtonStyle}"
+                        Tag="Save"
+                        ToolTip="保存为图片 (Ctrl+S)"
+                        AutomationProperties.Name="保存"
+                        Click="ActionButton_Click">
+                    <StackPanel Orientation="Horizontal">
+                        <Viewbox Width="15" Height="15">
+                            <Path Style="{StaticResource OverlayIconStyle}"
+                                  Data="M4 4h13l3 3v13H4V4Z M8 4v6h8V4 M8 20v-7h8v7" />
+                        </Viewbox>
+                        <TextBlock Text="保存" Margin="6,0,0,0" VerticalAlignment="Center" />
+                    </StackPanel>
+                </Button>
+
+                <Button x:Name="OcrButton"
+                        Style="{StaticResource OverlayButtonStyle}"
+                        Tag="Ocr"
+                        ToolTip="识别文字 (2)"
+                        AutomationProperties.Name="OCR 识别"
+                        Click="ActionButton_Click">
+                    <StackPanel Orientation="Horizontal">
+                        <Viewbox Width="15" Height="15">
+                            <Path Style="{StaticResource OverlayIconStyle}"
+                                  Data="M4 8V4h4 M16 4h4v4 M20 16v4h-4 M8 20H4v-4 M8 9h8 M8 12h8 M8 15h5" />
+                        </Viewbox>
+                        <TextBlock Text="OCR" Margin="6,0,0,0" VerticalAlignment="Center" />
+                    </StackPanel>
+                </Button>
+
+                <Button x:Name="StartRecordButton"
+                        Style="{StaticResource HiddenOverlayButtonStyle}"
+                        Tag="StartRecording"
+                        ToolTip="开始录制 (Enter)"
+                        AutomationProperties.Name="开始录制"
+                        Click="ActionButton_Click">
+                    <StackPanel Orientation="Horizontal">
+                        <Ellipse Width="9" Height="9" Fill="#FFFF6B6B" VerticalAlignment="Center" />
+                        <TextBlock Text="开始录制" Margin="7,0,0,0" VerticalAlignment="Center" />
+                    </StackPanel>
+                </Button>
+
+                <Border x:Name="ToolbarSeparator"
+                        Width="1"
+                        Margin="4,7"
+                        Background="#26FFFFFF" />
+
+                <Button x:Name="CancelButton"
+                        Style="{StaticResource OverlayButtonStyle}"
+                        Tag="Cancel"
+                        ToolTip="取消 (Esc)"
+                        AutomationProperties.Name="取消"
+                        Click="ActionButton_Click">
+                    <StackPanel Orientation="Horizontal">
+                        <Viewbox Width="15" Height="15">
+                            <Path Style="{StaticResource OverlayIconStyle}"
+                                  Stroke="#AEB8C6"
+                                  Data="M6 6l12 12 M18 6L6 18" />
+                        </Viewbox>
+                        <TextBlock Text="取消" Margin="6,0,0,0" Foreground="#AEB8C6" VerticalAlignment="Center" />
+                    </StackPanel>
+                </Button>
+            </StackPanel>
+        </Border>
+    </Grid>
+</Window>

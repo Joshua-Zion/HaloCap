@@ -26,11 +26,14 @@ public sealed class HotkeyDefinition
     public int VirtualKey => KeyInterop.VirtualKeyFromKey(Key);
 
     [JsonIgnore]
+    public bool IsSingleKey => Modifiers == ModifierKeys.None;
+
+    [JsonIgnore]
     public bool IsValid =>
         Key != Key.None &&
         !IsModifierKey(Key) &&
-        Modifiers != ModifierKeys.None &&
-        ((int)Modifiers & ~(int)AllowedModifiers) == 0;
+        ((int)Modifiers & ~(int)AllowedModifiers) == 0 &&
+        (!IsSingleKey || IsSafeSingleKey(Key));
 
     [JsonIgnore]
     public string DisplayText => Format(Modifiers, Key);
@@ -46,6 +49,20 @@ public sealed class HotkeyDefinition
         Key.LeftShift or Key.RightShift or
         Key.LWin or Key.RWin or
         Key.System;
+
+    /// <summary>
+    /// 单键热键会被系统独占，因此只开放功能键、字母、数字与翻页类按键，
+    /// 避免占用空格、回车、方向键等日常输入与控制键。
+    /// </summary>
+    public static bool IsSafeSingleKey(Key key)
+    {
+        var code = (int)key;
+        return (code >= (int)Key.F1 && code <= (int)Key.F24) ||
+               (code >= (int)Key.A && code <= (int)Key.Z) ||
+               (code >= (int)Key.D0 && code <= (int)Key.D9) ||
+               (code >= (int)Key.NumPad0 && code <= (int)Key.NumPad9) ||
+               key is Key.Insert or Key.Home or Key.End or Key.PageUp or Key.PageDown or Key.Snapshot;
+    }
 
     public static string Format(ModifierKeys modifiers, Key key)
     {

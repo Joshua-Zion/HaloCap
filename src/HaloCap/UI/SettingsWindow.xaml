@@ -196,11 +196,51 @@
                                 </Button>
 
                                 <TextBlock x:Name="HotkeyHint"
-                                           Text="点击上方输入框后按下组合键，Esc 取消"
+                                           Text="点击输入框后按下快捷键；支持单键与组合键，Esc 取消"
                                            FontSize="10.5"
                                            Foreground="{StaticResource TextTertiaryBrush}"
                                            TextWrapping="Wrap"
                                            Margin="2,8,0,0" />
+                            </StackPanel>
+                        </Border>
+
+                        <Border Background="{StaticResource CardBackgroundBrush}"
+                                BorderBrush="#14FFFFFF"
+                                BorderThickness="1"
+                                CornerRadius="14"
+                                Padding="18"
+                                Margin="0,12,0,0">
+                            <StackPanel>
+                                <TextBlock Text="圆盘尺寸"
+                                           FontSize="13"
+                                           FontWeight="SemiBold"
+                                           Foreground="{StaticResource TextPrimaryBrush}" />
+                                <TextBlock Text="调整圆盘整体大小，靠近屏幕边缘时仍会自动避让"
+                                           FontSize="11"
+                                           Foreground="{StaticResource TextSecondaryBrush}"
+                                           TextWrapping="Wrap"
+                                           Margin="0,5,0,0" />
+
+                                <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+                                    <RadioButton x:Name="SmallSizeRadio"
+                                                 GroupName="MenuSize"
+                                                 Content="小"
+                                                 Style="{StaticResource FormatRadioStyle}"
+                                                 AutomationProperties.Name="小尺寸圆盘"
+                                                 Checked="MenuSizeRadio_Checked" />
+                                    <RadioButton x:Name="MediumSizeRadio"
+                                                 GroupName="MenuSize"
+                                                 Content="中 · 默认"
+                                                 Style="{StaticResource FormatRadioStyle}"
+                                                 AutomationProperties.Name="中尺寸圆盘"
+                                                 Checked="MenuSizeRadio_Checked" />
+                                    <RadioButton x:Name="LargeSizeRadio"
+                                                 GroupName="MenuSize"
+                                                 Content="大"
+                                                 Style="{StaticResource FormatRadioStyle}"
+                                                 AutomationProperties.Name="大尺寸圆盘"
+                                                 Checked="MenuSizeRadio_Checked" />
+                                </StackPanel>
                             </StackPanel>
                         </Border>
 
@@ -333,7 +373,7 @@
                 </ScrollViewer>
 
                 <Grid Grid.Row="2" Margin="22,16,22,18">
-                    <TextBlock Text="v1.0.0 · 本地离线处理"
+                    <TextBlock Text="v1.0.1 · 本地离线处理"
                                FontSize="10.5"
                                Foreground="{StaticResource TextTertiaryBrush}"
                                VerticalAlignment="Center" />

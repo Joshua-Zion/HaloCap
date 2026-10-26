@@ -13,9 +13,11 @@ public partial class SettingsWindow : Window
     private readonly Func<HotkeyDefinition, string?> _applyHotkey;
     private readonly Func<bool, string?> _applyAutoStart;
     private readonly Func<ScreenshotImageFormat, string?> _applyScreenshotFormat;
+    private readonly Func<RadialMenuSize, string?> _applyMenuSize;
     private readonly Func<string, string?> _applyRecordingDirectory;
     private HotkeyDefinition _hotkey;
     private ScreenshotImageFormat _format;
+    private RadialMenuSize _menuSize;
     private bool _autoStartEnabled;
     private bool _capturingHotkey;
 
@@ -23,10 +25,12 @@ public partial class SettingsWindow : Window
         HotkeyDefinition hotkey,
         bool autoStartEnabled,
         ScreenshotImageFormat screenshotFormat,
+        RadialMenuSize menuSize,
         string recordingDirectory,
         Func<HotkeyDefinition, string?> applyHotkey,
         Func<bool, string?> applyAutoStart,
         Func<ScreenshotImageFormat, string?> applyScreenshotFormat,
+        Func<RadialMenuSize, string?> applyMenuSize,
         Func<string, string?> applyRecordingDirectory)
     {
         InitializeComponent();
@@ -35,11 +39,14 @@ public partial class SettingsWindow : Window
         _applyHotkey = applyHotkey;
         _applyAutoStart = applyAutoStart;
         _applyScreenshotFormat = applyScreenshotFormat;
+        _applyMenuSize = applyMenuSize;
         _applyRecordingDirectory = applyRecordingDirectory;
         _autoStartEnabled = autoStartEnabled;
         _format = screenshotFormat;
+        _menuSize = menuSize;
 
         HotkeyValueText.Text = _hotkey.DisplayText;
+        UpdateHotkeyHint();
         AutoStartToggle.IsChecked = autoStartEnabled;
         UpdateAutoStartUi();
 
@@ -47,6 +54,9 @@ public partial class SettingsWindow : Window
         RecordingDirectoryHint.Text = "留空时保存到：" + AppPaths.DefaultRecordingDirectory;
         PngRadio.IsChecked = screenshotFormat == ScreenshotImageFormat.Png;
         JpegRadio.IsChecked = screenshotFormat == ScreenshotImageFormat.Jpeg;
+        SmallSizeRadio.IsChecked = menuSize == RadialMenuSize.Small;
+        MediumSizeRadio.IsChecked = menuSize == RadialMenuSize.Medium;
+        LargeSizeRadio.IsChecked = menuSize == RadialMenuSize.Large;
 
         AutoStartToggle.Checked += AutoStartToggle_Changed;
         AutoStartToggle.Unchecked += AutoStartToggle_Changed;
@@ -68,9 +78,9 @@ public partial class SettingsWindow : Window
     private void BeginHotkeyCapture()
     {
         _capturingHotkey = true;
-        HotkeyValueText.Text = "请按下组合键…";
+        HotkeyValueText.Text = "请按下快捷键…";
         HotkeyValueText.Foreground = (Brush)FindResource("AccentBrush");
-        HotkeyHint.Text = "等待输入，Esc 取消";
+        HotkeyHint.Text = "等待输入：单键或组合键均可，Esc 取消";
         SaveButton.IsEnabled = false;
         ClearError();
         HotkeyButton.Focus();
@@ -81,7 +91,7 @@ public partial class SettingsWindow : Window
         _capturingHotkey = false;
         HotkeyValueText.Text = _hotkey.DisplayText;
         HotkeyValueText.Foreground = (Brush)FindResource("TextPrimaryBrush");
-        HotkeyHint.Text = "点击上方输入框后按下组合键，Esc 取消";
+        UpdateHotkeyHint();
         SaveButton.IsEnabled = true;
         SaveButton.Focus();
     }
@@ -91,9 +101,16 @@ public partial class SettingsWindow : Window
         _capturingHotkey = false;
         HotkeyValueText.Text = _hotkey.DisplayText;
         HotkeyValueText.Foreground = (Brush)FindResource("TextPrimaryBrush");
-        HotkeyHint.Text = "点击上方输入框后按下组合键，Esc 取消";
+        UpdateHotkeyHint();
         SaveButton.IsEnabled = true;
         ClearError();
+    }
+
+    private void UpdateHotkeyHint()
+    {
+        HotkeyHint.Text = _hotkey.IsSingleKey
+            ? $"单键「{HotkeyDefinition.GetKeyName(_hotkey.Key)}」会被独占，其他应用将无法再输入该键。"
+            : "点击输入框后按下快捷键；支持单键与组合键，Esc 取消";
     }
 
     private void OnPreviewKeyDown(object sender, KeyEventArgs e)
@@ -115,16 +132,12 @@ public partial class SettingsWindow : Window
             }
 
             var modifiers = Keyboard.Modifiers & HotkeyDefinition.AllowedModifiers;
-            if (modifiers == ModifierKeys.None)
-            {
-                ShowError("请按住 Ctrl、Alt 或 Shift 中的一个修饰键，再按主键。");
-                return;
-            }
-
             var candidate = new HotkeyDefinition(modifiers, key);
             if (!candidate.IsValid)
             {
-                ShowError("无法使用该组合键，请换一个。");
+                ShowError(modifiers == ModifierKeys.None
+                    ? "该单键不适合用作全局快捷键，请改用 F1–F24、字母、数字，或按住 Ctrl / Alt / Shift 再按主键。"
+                    : "无法使用该组合键，请换一个。");
                 return;
             }
 
@@ -161,6 +174,16 @@ public partial class SettingsWindow : Window
         _format = JpegRadio.IsChecked == true
             ? ScreenshotImageFormat.Jpeg
             : ScreenshotImageFormat.Png;
+        ClearError();
+    }
+
+    private void MenuSizeRadio_Checked(object sender, RoutedEventArgs e)
+    {
+        _menuSize = SmallSizeRadio.IsChecked == true
+            ? RadialMenuSize.Small
+            : LargeSizeRadio.IsChecked == true
+                ? RadialMenuSize.Large
+                : RadialMenuSize.Medium;
         ClearError();
     }
 
@@ -240,6 +263,13 @@ public partial class SettingsWindow : Window
             if (!string.IsNullOrEmpty(formatError))
             {
                 ShowError("快捷键与自启设置已更新；" + formatError + " 请修正后重试。");
+                return;
+            }
+
+            var sizeError = _applyMenuSize(_menuSize);
+            if (!string.IsNullOrEmpty(sizeError))
+            {
+                ShowError("其他设置已更新；" + sizeError + " 请修正后重试。");
                 return;
             }
 

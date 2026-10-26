@@ -63,7 +63,7 @@ public partial class App : Application
     {
         _settings = SettingsStore.Load();
 
-        _radial = new RadialMenuController(_settings.Hotkey);
+        _radial = new RadialMenuController(_settings.Hotkey, _settings.MenuSize);
         _radial.ActionSelected += OnActionSelected;
 
         _tray = new TrayIconService
@@ -160,10 +160,12 @@ public partial class App : Application
             _hotkeyService?.Current ?? _settings.Hotkey,
             _autoStart.IsEnabled(),
             _settings.ScreenshotFormat,
+            _settings.MenuSize,
             _settings.RecordingDirectory,
             ApplyHotkey,
             ApplyAutoStart,
             ApplyScreenshotFormat,
+            ApplyMenuSize,
             ApplyRecordingDirectory);
 
         _settingsWindow = window;
@@ -256,6 +258,32 @@ public partial class App : Application
             _settings.ScreenshotFormat = previous;
             Log.Error("保存截图格式失败", ex);
             return "无法保存截图格式：" + ex.Message;
+        }
+    }
+
+    private string? ApplyMenuSize(RadialMenuSize size)
+    {
+        if (_settings.MenuSize == size)
+        {
+            _radial?.UpdateMenuSize(size);
+            return null;
+        }
+
+        var previous = _settings.MenuSize;
+        _settings.MenuSize = size;
+        _radial?.UpdateMenuSize(size);
+
+        try
+        {
+            SettingsStore.Save(_settings);
+            return null;
+        }
+        catch (Exception ex)
+        {
+            _settings.MenuSize = previous;
+            _radial?.UpdateMenuSize(previous);
+            Log.Error("保存圆盘尺寸失败", ex);
+            return "无法保存圆盘尺寸：" + ex.Message;
         }
     }
 

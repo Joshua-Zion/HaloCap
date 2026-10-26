@@ -36,13 +36,15 @@ internal sealed class RadialMenuController : IDisposable
     private int _showGeneration;
     private POINT _centerPx;
     private double _pixelScale = 1.0;
+    private double _windowSizeDip = RadialMenuWindow.MenuSize;
     private RadialAction? _hovered;
 
-    public RadialMenuController(HotkeyDefinition hotkey)
+    public RadialMenuController(HotkeyDefinition hotkey, RadialMenuSize menuSize)
     {
         _hotkey = hotkey;
         _dispatcher = Dispatcher.CurrentDispatcher;
         _window = new RadialMenuWindow();
+        UpdateMenuSize(menuSize);
 
         _hooks.KeyDown = HandleKeyDown;
         _hooks.KeyUp = HandleKeyUp;
@@ -59,6 +61,12 @@ internal sealed class RadialMenuController : IDisposable
     {
         _hotkey = hotkey;
         _hotkeyRegistered = isRegistered;
+    }
+
+    public void UpdateMenuSize(RadialMenuSize size)
+    {
+        _windowSizeDip = RadialMenuWindow.GetWindowSizeDip(size);
+        _window.ApplySize(size);
     }
 
     public void ToggleFromHotkey()
@@ -151,7 +159,7 @@ internal sealed class RadialMenuController : IDisposable
         }
 
         var scale = GetMonitorScale(monitor, handle);
-        var placement = ComputePlacement(cursor, monitorInfo.rcWork, scale);
+        var placement = ComputePlacement(cursor, monitorInfo.rcWork, scale, _windowSizeDip);
 
         NativeMethods.SetWindowPos(
             handle,
@@ -165,14 +173,14 @@ internal sealed class RadialMenuController : IDisposable
         if (!NativeMethods.GetWindowRect(handle, out var rect))
         {
             _centerPx = new POINT(cursor.X, cursor.Y);
-            _pixelScale = scale;
+            _pixelScale = scale * (_windowSizeDip / RadialMenuWindow.MenuSize);
             return;
         }
 
-        var actualScale = rect.Width / RadialMenuWindow.MenuSize;
-        if (actualScale > 0.1 && Math.Abs(actualScale - scale) > 0.02)
+        var actualDpiScale = rect.Width / _windowSizeDip;
+        if (actualDpiScale > 0.1 && Math.Abs(actualDpiScale - scale) > 0.02)
         {
-            placement = ComputePlacement(cursor, monitorInfo.rcWork, actualScale);
+            placement = ComputePlacement(cursor, monitorInfo.rcWork, actualDpiScale, _windowSizeDip);
             NativeMethods.SetWindowPos(
                 handle,
                 NativeMethods.HWND_TOPMOST,
@@ -187,13 +195,17 @@ internal sealed class RadialMenuController : IDisposable
         _centerPx = new POINT((rect.Left + rect.Right) / 2, (rect.Top + rect.Bottom) / 2);
         _pixelScale = rect.Width > 0
             ? rect.Width / RadialMenuWindow.MenuSize
-            : scale;
+            : scale * (_windowSizeDip / RadialMenuWindow.MenuSize);
     }
 
-    private static Placement ComputePlacement(POINT cursor, NativeMethods.RECT workArea, double scale)
+    private static Placement ComputePlacement(
+        POINT cursor,
+        NativeMethods.RECT workArea,
+        double dpiScale,
+        double windowSizeDip)
     {
-        var size = Math.Max(1, (int)Math.Round(RadialMenuWindow.MenuSize * scale));
-        var margin = Math.Max(1, (int)Math.Round(EdgeMarginDip * scale));
+        var size = Math.Max(1, (int)Math.Round(windowSizeDip * dpiScale));
+        var margin = Math.Max(1, (int)Math.Round(EdgeMarginDip * dpiScale));
 
         var desiredLeft = cursor.X - (size / 2);
         var desiredTop = cursor.Y - (size / 2);
@@ -354,6 +366,13 @@ internal sealed class RadialMenuController : IDisposable
 
         if (distance < RadialMenuWindow.DeadZoneRadius * _pixelScale)
         {
+            SetHover(null);
+            return;
+        }
+
+        if (distance > RadialMenuWindow.DiskRadius * _pixelScale)
+        {
+            // 光标移出圆盘后取消选中，避免松手误触上一块扇区。
             SetHover(null);
             return;
         }

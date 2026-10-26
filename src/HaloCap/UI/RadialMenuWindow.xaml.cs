@@ -27,6 +27,7 @@ public partial class RadialMenuWindow : Window
     private readonly Dictionary<RadialAction, RadialItemView> _items = new();
     private int _hoveredIndex = -1;
     private int _animationVersion;
+    private double _sizeScale = 1;
 
     public RadialMenuWindow()
     {
@@ -41,14 +42,35 @@ public partial class RadialMenuWindow : Window
 
     public IntPtr Handle => new WindowInteropHelper(this).Handle;
 
+    public static double GetWindowSizeDip(RadialMenuSize size) => size switch
+    {
+        RadialMenuSize.Small => 320,
+        RadialMenuSize.Large => 440,
+        _ => MenuSize
+    };
+
+    public void ApplySize(RadialMenuSize size)
+    {
+        var windowSize = GetWindowSizeDip(size);
+        Width = windowSize;
+        Height = windowSize;
+        _sizeScale = windowSize / MenuSize;
+
+        if (!IsVisible)
+        {
+            RootScale.ScaleX = _sizeScale;
+            RootScale.ScaleY = _sizeScale;
+        }
+    }
+
     public void EnsureShownInvisible()
     {
         _animationVersion++;
         BeginAnimation(OpacityProperty, null);
         RootScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
         RootScale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
-        RootScale.ScaleX = 0.93;
-        RootScale.ScaleY = 0.93;
+        RootScale.ScaleX = 0.93 * _sizeScale;
+        RootScale.ScaleY = 0.93 * _sizeScale;
         Opacity = 0;
         ResetHover();
 
@@ -72,14 +94,14 @@ public partial class RadialMenuWindow : Window
 
         RootScale.BeginAnimation(
             ScaleTransform.ScaleXProperty,
-            new DoubleAnimation(0.93, 1, TimeSpan.FromMilliseconds(160))
+            new DoubleAnimation(0.93 * _sizeScale, _sizeScale, TimeSpan.FromMilliseconds(160))
             {
                 EasingFunction = ease
             });
 
         RootScale.BeginAnimation(
             ScaleTransform.ScaleYProperty,
-            new DoubleAnimation(0.93, 1, TimeSpan.FromMilliseconds(160))
+            new DoubleAnimation(0.93 * _sizeScale, _sizeScale, TimeSpan.FromMilliseconds(160))
             {
                 EasingFunction = ease
             });
@@ -111,20 +133,20 @@ public partial class RadialMenuWindow : Window
             RootScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
             RootScale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
             Opacity = 0;
-            RootScale.ScaleX = 1;
-            RootScale.ScaleY = 1;
+            RootScale.ScaleX = _sizeScale;
+            RootScale.ScaleY = _sizeScale;
         };
 
         BeginAnimation(OpacityProperty, fade);
         RootScale.BeginAnimation(
             ScaleTransform.ScaleXProperty,
-            new DoubleAnimation(RootScale.ScaleX, 0.96, TimeSpan.FromMilliseconds(120))
+            new DoubleAnimation(RootScale.ScaleX, 0.96 * _sizeScale, TimeSpan.FromMilliseconds(120))
             {
                 EasingFunction = ease
             });
         RootScale.BeginAnimation(
             ScaleTransform.ScaleYProperty,
-            new DoubleAnimation(RootScale.ScaleY, 0.96, TimeSpan.FromMilliseconds(120))
+            new DoubleAnimation(RootScale.ScaleY, 0.96 * _sizeScale, TimeSpan.FromMilliseconds(120))
             {
                 EasingFunction = ease
             });

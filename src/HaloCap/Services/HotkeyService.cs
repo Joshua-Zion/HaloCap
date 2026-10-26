@@ -40,7 +40,9 @@ internal sealed class HotkeyService : IDisposable
 
         if (!hotkey.IsValid)
         {
-            error = "快捷键组合无效，请至少包含一个修饰键和一个普通按键。";
+            error = hotkey.IsSingleKey
+                ? "单键快捷键只支持 F1–F24、字母、数字、小键盘数字与翻页键，请换一个键或加上 Ctrl / Alt / Shift。"
+                : "快捷键组合无效，请按下一个普通按键作为主键。";
             return false;
         }
 

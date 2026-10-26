@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.Windows.Input;
 using HaloCap.Models;
+using HaloCap.UI;
 
 namespace HaloCap.CoordinateTests;
 
@@ -24,7 +26,14 @@ internal static class Program
             ("IsUsableSelection enforces minimum", IsUsableSelectionEnforcesMinimum),
             ("Dip and pixel conversion round trip", DipPixelRoundTrip),
             ("Contains excludes right and bottom edges", ContainsExcludesEdges),
-            ("150 percent secondary monitor crop", HighDpiSecondaryMonitorCrop)
+            ("150 percent secondary monitor crop", HighDpiSecondaryMonitorCrop),
+            ("Single function key hotkey is valid", SingleFunctionKeyHotkeyIsValid),
+            ("Single letter hotkey is valid", SingleLetterHotkeyIsValid),
+            ("Single control key hotkey is rejected", SingleControlKeyHotkeyIsRejected),
+            ("Bare modifier key is rejected", BareModifierKeyIsRejected),
+            ("Combination hotkey stays valid", CombinationHotkeyIsValid),
+            ("Single key display has no plus sign", SingleKeyDisplayIsPlain),
+            ("Radial size presets map to window sizes", RadialSizePresetsMapToWindowSizes)
         };
 
         var failures = 0;
@@ -177,6 +186,55 @@ internal static class Program
         True(even.Right <= monitor.Width, "crop must fit the monitor");
     }
 
+    private static void SingleFunctionKeyHotkeyIsValid()
+    {
+        var functionKey = new HotkeyDefinition(ModifierKeys.None, Key.F8);
+        True(functionKey.IsValid, "F8 alone must be valid");
+        True(functionKey.IsSingleKey, "F8 alone is a single-key hotkey");
+    }
+
+    private static void SingleLetterHotkeyIsValid()
+    {
+        var letter = new HotkeyDefinition(ModifierKeys.None, Key.K);
+        True(letter.IsValid, "bare letter must be valid");
+        True(letter.IsSingleKey, "bare letter is a single-key hotkey");
+    }
+
+    private static void SingleControlKeyHotkeyIsRejected()
+    {
+        True(!new HotkeyDefinition(ModifierKeys.None, Key.Space).IsValid, "space alone must be rejected");
+        True(!new HotkeyDefinition(ModifierKeys.None, Key.Enter).IsValid, "enter alone must be rejected");
+        True(!new HotkeyDefinition(ModifierKeys.None, Key.Escape).IsValid, "escape alone must be rejected");
+        True(!new HotkeyDefinition(ModifierKeys.None, Key.Left).IsValid, "arrow alone must be rejected");
+    }
+
+    private static void BareModifierKeyIsRejected()
+    {
+        True(!new HotkeyDefinition(ModifierKeys.None, Key.LeftCtrl).IsValid, "modifier only must be rejected");
+        True(!new HotkeyDefinition(ModifierKeys.Control, Key.LeftCtrl).IsValid, "ctrl plus ctrl must be rejected");
+    }
+
+    private static void CombinationHotkeyIsValid()
+    {
+        var combo = new HotkeyDefinition(ModifierKeys.Control | ModifierKeys.Alt, Key.D);
+        True(combo.IsValid, "ctrl+alt+d must be valid");
+        True(!combo.IsSingleKey, "combo is not a single-key hotkey");
+        Equal("Ctrl + Alt + D", combo.DisplayText);
+    }
+
+    private static void SingleKeyDisplayIsPlain()
+    {
+        Equal("F8", new HotkeyDefinition(ModifierKeys.None, Key.F8).DisplayText);
+        Equal("5", new HotkeyDefinition(ModifierKeys.None, Key.D5).DisplayText);
+    }
+
+    private static void RadialSizePresetsMapToWindowSizes()
+    {
+        Equal(320.0, RadialMenuWindow.GetWindowSizeDip(RadialMenuSize.Small), 0.0001);
+        Equal(380.0, RadialMenuWindow.GetWindowSizeDip(RadialMenuSize.Medium), 0.0001);
+        Equal(440.0, RadialMenuWindow.GetWindowSizeDip(RadialMenuSize.Large), 0.0001);
+    }
+
     private static void Equal(PhysicalRect expected, PhysicalRect actual)
     {
         if (!expected.Equals(actual))
@@ -196,6 +254,14 @@ internal static class Program
     private static void Equal(double expected, double actual, double tolerance)
     {
         if (Math.Abs(expected - actual) > tolerance)
+        {
+            throw new InvalidOperationException($"expected {expected}, got {actual}");
+        }
+    }
+
+    private static void Equal(string expected, string actual)
+    {
+        if (expected != actual)
         {
             throw new InvalidOperationException($"expected {expected}, got {actual}");
         }

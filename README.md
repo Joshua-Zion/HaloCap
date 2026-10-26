@@ -159,10 +159,19 @@ tests/HaloCap.CoordinateTests/     坐标、裁剪、DPI 换算单元测试
   - 单帧 5 秒时长的 MP4 时长正确，验证静态画面延长最后一帧的策略。
 - 单元测试工程覆盖正反拖拽、边界裁剪、负坐标显示器、150% 副屏裁剪、DPI 往返换算等 15 个用例。
 
+安装 .NET 8 SDK 后已完成：
+
+- `dotnet build HaloCap.sln -c Debug`：**0 错误**；仅 2 条已知警告：WinForms DPI 分析器 WFAC010（项目有意使用清单声明 PerMonitorV2）、CA1416（`IsCursorCaptureEnabled` 已由 `ApiInformation` 做运行时保护）。
+- 坐标单元测试：**15/15 通过**。
+- HaloCap 已成功启动并驻留托盘；已验证：
+  - 再次启动会激活已有实例并打开 380×380 圆盘，进程始终只有一个；
+  - `Ctrl + Alt + D` 可呼出圆盘，`Esc` 可关闭；
+  - 圆盘打开前后前台窗口句柄完全不变，确认不抢当前输入焦点。
+
 仍待完成：
 
-- 当前机器只安装了 .NET 运行时，**没有 .NET 8 SDK**，因此无法执行 `dotnet build`、单元测试和真机交互验证。
-- 需要在安装 SDK 后重点验证：Windows.Graphics.Capture 运行时路径、Windows.Media.Ocr 语言包行为、混合 DPI 副屏、无焦点圆盘与焦点恢复、托盘的录制状态切换。
+- 截图选区、OCR 语言包、贴图交互、录屏落盘/播放等完整交互尚未自动化验收；建议按上面的验收清单逐项执行，重点关注混合 DPI 副屏与 Windows.Graphics.Capture 录制。
+- 托盘录制状态切换、录屏 HUD 停止与完成通知需要在真实录制流程中确认。
 
 ## 已知限制与发布策略
 

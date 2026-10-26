@@ -26,7 +26,10 @@
             <ScaleTransform x:Name="RootScale" ScaleX="1" ScaleY="1" />
         </Grid.RenderTransform>
 
-        <Ellipse Width="340" Height="340">
+        <Ellipse Width="340"
+                 Height="340"
+                 HorizontalAlignment="Center"
+                 VerticalAlignment="Center">
             <Ellipse.Fill>
                 <RadialGradientBrush Center="0.5,0.38"
                                      GradientOrigin="0.5,0.38"
@@ -48,8 +51,18 @@
             </Ellipse.Effect>
         </Ellipse>
 
-        <Canvas x:Name="SectorLayer" Width="380" Height="380" IsHitTestVisible="False" />
-        <Canvas x:Name="ItemLayer" Width="380" Height="380" IsHitTestVisible="False" />
+        <Canvas x:Name="SectorLayer"
+                Width="380"
+                Height="380"
+                HorizontalAlignment="Center"
+                VerticalAlignment="Center"
+                IsHitTestVisible="False" />
+        <Canvas x:Name="ItemLayer"
+                Width="380"
+                Height="380"
+                HorizontalAlignment="Center"
+                VerticalAlignment="Center"
+                IsHitTestVisible="False" />
 
         <Grid Width="112"
               Height="112"

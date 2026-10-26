@@ -30,8 +30,6 @@ internal sealed class RadialMenuController : IDisposable
     private HotkeyDefinition _hotkey;
     private bool _hotkeyRegistered;
     private bool _isOpen;
-    private bool _holdTracking;
-    private bool _hoverFromPointer;
     private bool _disposed;
     private int _showGeneration;
     private POINT _centerPx;
@@ -47,7 +45,6 @@ internal sealed class RadialMenuController : IDisposable
         UpdateMenuSize(menuSize);
 
         _hooks.KeyDown = HandleKeyDown;
-        _hooks.KeyUp = HandleKeyUp;
         _hooks.MouseMove = HandleMouseMove;
         _hooks.MouseDown = HandleMouseDown;
         _hooks.MouseUp = HandleMouseUp;
@@ -77,7 +74,7 @@ internal sealed class RadialMenuController : IDisposable
         }
         else
         {
-            ShowMenu(fromHotkey: true);
+            ShowMenu();
         }
     }
 
@@ -85,7 +82,7 @@ internal sealed class RadialMenuController : IDisposable
     {
         if (!_isOpen)
         {
-            ShowMenu(fromHotkey: false);
+            ShowMenu();
         }
     }
 
@@ -98,14 +95,12 @@ internal sealed class RadialMenuController : IDisposable
 
         _isOpen = false;
         _showGeneration++;
-        _holdTracking = false;
-        _hoverFromPointer = false;
         _hovered = null;
         _hooks.Uninstall();
         _window.PlayHideAnimation();
     }
 
-    private void ShowMenu(bool fromHotkey)
+    private void ShowMenu()
     {
         if (_disposed)
         {
@@ -131,9 +126,7 @@ internal sealed class RadialMenuController : IDisposable
 
                 PlaceWindow(cursor);
                 _window.SetHover(null);
-                _hoverFromPointer = false;
                 _hooks.Install();
-                _holdTracking = fromHotkey && IsKeyDown(_hotkey.VirtualKey);
                 _window.PlayShowAnimation();
             }));
     }
@@ -293,31 +286,6 @@ internal sealed class RadialMenuController : IDisposable
         return false;
     }
 
-    private void HandleKeyUp(int virtualKey)
-    {
-        if (!_isOpen || !_holdTracking || virtualKey != _hotkey.VirtualKey)
-        {
-            return;
-        }
-
-        _holdTracking = false;
-        var action = _hovered;
-        if (action is null || !_hoverFromPointer)
-        {
-            return;
-        }
-
-        _dispatcher.BeginInvoke(
-            DispatcherPriority.Input,
-            new Action(() =>
-            {
-                if (_isOpen && _hovered == action)
-                {
-                    SelectAction(action.Value);
-                }
-            }));
-    }
-
     private void HandleMouseMove(int x, int y)
     {
         if (!_isOpen)
@@ -325,7 +293,6 @@ internal sealed class RadialMenuController : IDisposable
             return;
         }
 
-        _hoverFromPointer = true;
         UpdateHover(new POINT(x, y));
     }
 

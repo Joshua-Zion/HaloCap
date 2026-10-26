@@ -6,7 +6,7 @@ using HaloCap.Interop;
 namespace HaloCap.Services;
 
 /// <summary>
-/// 仅在圆盘显示期间安装的全局输入钩子，用于在不抢焦点的情况下接收 Esc、数字键与拖拽松手。
+/// 仅在圆盘显示期间安装的全局输入钩子，用于在不抢焦点的情况下接收 Esc、数字键与点击。
 /// </summary>
 internal sealed class InputHookService : IDisposable
 {
@@ -23,8 +23,6 @@ internal sealed class InputHookService : IDisposable
     }
 
     public Func<int, bool>? KeyDown { get; set; }
-
-    public Action<int>? KeyUp { get; set; }
 
     public Action<int, int>? MouseMove { get; set; }
 
@@ -100,10 +98,6 @@ internal sealed class InputHookService : IDisposable
                     {
                         return new IntPtr(1);
                     }
-                }
-                else if (message is NativeMethods.WM_KEYUP or NativeMethods.WM_SYSKEYUP)
-                {
-                    KeyUp?.Invoke(virtualKey);
                 }
             }
             catch (Exception ex)

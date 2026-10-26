@@ -217,7 +217,7 @@ public partial class RadialMenuWindow : Window
         var accent = UiColors.Parse(info.AccentHex);
         CenterTitle.Text = info.Title;
         CenterTitle.Foreground = new SolidColorBrush(accent);
-        CenterSubtitle.Text = "松开或点击";
+        CenterSubtitle.Text = "点击 · 1–4";
         CenterDot.Fill = new SolidColorBrush(accent);
     }
 

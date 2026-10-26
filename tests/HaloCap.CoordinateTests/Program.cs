@@ -1,7 +1,12 @@
 using System;
 using System.Collections.Generic;
+using System.Threading;
+using System.Windows;
 using System.Windows.Input;
+using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using HaloCap.Models;
+using HaloCap.Services;
 using HaloCap.UI;
 
 namespace HaloCap.CoordinateTests;
@@ -33,7 +38,12 @@ internal static class Program
             ("Bare modifier key is rejected", BareModifierKeyIsRejected),
             ("Combination hotkey stays valid", CombinationHotkeyIsValid),
             ("Single key display has no plus sign", SingleKeyDisplayIsPlain),
-            ("Radial size presets map to window sizes", RadialSizePresetsMapToWindowSizes)
+            ("Radial size presets map to window sizes", RadialSizePresetsMapToWindowSizes),
+            ("MoveWithin keeps selection inside", MoveWithinKeepsSelectionInside),
+            ("MoveWithin preserves size", MoveWithinPreservesSize),
+            ("ResizeEdges enforces minimum size", ResizeEdgesEnforcesMinimum),
+            ("ResizeEdges clamps to container", ResizeEdgesClampsToContainer),
+            ("Annotation compose draws stroke", AnnotationComposeDrawsStroke)
         };
 
         var failures = 0;
@@ -242,6 +252,131 @@ internal static class Program
         Equal(1.0, RadialMenuWindow.GetContentScale(RadialMenuSize.Medium), 0.0001);
         Equal((480.0 - (2 * padding)) / RadialMenuWindow.MenuSize,
             RadialMenuWindow.GetContentScale(RadialMenuSize.Large), 0.0001);
+    }
+
+    private static void MoveWithinKeepsSelectionInside()
+    {
+        var origin = new PhysicalRect(200, 150, 300, 200);
+        var moved = ScreenGeometry.MoveWithin(origin, -500, -400, 1920, 1080);
+
+        Equal(new PhysicalRect(0, 0, 300, 200), moved);
+
+        var pushed = ScreenGeometry.MoveWithin(origin, 5000, 5000, 1920, 1080);
+        Equal(new PhysicalRect(1620, 880, 300, 200), pushed);
+        True(pushed.Right <= 1920 && pushed.Bottom <= 1080, "moved selection must stay inside");
+    }
+
+    private static void MoveWithinPreservesSize()
+    {
+        var origin = new PhysicalRect(40, 40, 320, 240);
+        var moved = ScreenGeometry.MoveWithin(origin, 25, -25, 1920, 1080);
+
+        Equal(320, moved.Width);
+        Equal(240, moved.Height);
+        Equal(65, moved.Left);
+        Equal(15, moved.Top);
+    }
+
+    private static void ResizeEdgesEnforcesMinimum()
+    {
+        var origin = new PhysicalRect(100, 100, 400, 300);
+
+        var draggedRight = ScreenGeometry.ResizeEdges(origin, 2, 60, 0, 1920, 1080, 8);
+        Equal(8, draggedRight.Width);
+        Equal(100, draggedRight.Left);
+
+        var draggedTop = ScreenGeometry.ResizeEdges(origin, 4, 0, 399, 1920, 1080, 8);
+        Equal(8, draggedTop.Height);
+    }
+
+    private static void ResizeEdgesClampsToContainer()
+    {
+        var origin = new PhysicalRect(100, 100, 400, 300);
+
+        var draggedLeft = ScreenGeometry.ResizeEdges(origin, 1, -200, 0, 1920, 1080, 8);
+        Equal(0, draggedLeft.Left);
+
+        var draggedBottom = ScreenGeometry.ResizeEdges(origin, 8, 0, 5000, 1920, 1080, 8);
+        Equal(1080, draggedBottom.Bottom);
+    }
+
+    private static void AnnotationComposeDrawsStroke()
+    {
+        RunSta(() =>
+        {
+            var source = CreateSolidBitmap(64, 64, Colors.White);
+
+            var stroke = new AnnotationStroke
+            {
+                Tool = AnnotationTool.Pen,
+                Color = Colors.Red,
+                Thickness = 6
+            };
+
+            stroke.Points.Add(new Point(8, 8));
+            stroke.Points.Add(new Point(56, 56));
+
+            var composed = AnnotationRenderer.Compose(source, new[] { stroke });
+
+            Equal(64, composed.PixelWidth);
+            Equal(64, composed.PixelHeight);
+
+            var middle = ReadPixel(composed, 32, 32);
+            True(middle.R > 150 && middle.G < 120, "stroke should paint red over the diagonal");
+
+            var corner = ReadPixel(composed, 2, 60);
+            True(corner.R > 200 && corner.G > 200 && corner.B > 200, "untouched corner should stay white");
+        });
+    }
+
+    private static void RunSta(Action action)
+    {
+        Exception? failure = null;
+
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                action();
+            }
+            catch (Exception ex)
+            {
+                failure = ex;
+            }
+        });
+
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        thread.Join();
+
+        if (failure is not null)
+        {
+            throw new InvalidOperationException(failure.Message, failure);
+        }
+    }
+
+    private static BitmapSource CreateSolidBitmap(int width, int height, Color color)
+    {
+        var stride = width * 4;
+        var pixels = new byte[stride * height];
+
+        for (var i = 0; i < pixels.Length; i += 4)
+        {
+            pixels[i] = color.B;
+            pixels[i + 1] = color.G;
+            pixels[i + 2] = color.R;
+            pixels[i + 3] = 0xFF;
+        }
+
+        return BitmapSource.Create(width, height, 96, 96, PixelFormats.Bgra32, null, pixels, stride);
+    }
+
+    private static Color ReadPixel(BitmapSource source, int x, int y)
+    {
+        var converted = new FormatConvertedBitmap(source, PixelFormats.Bgra32, null, 0.0);
+        var pixels = new byte[4];
+        converted.CopyPixels(new Int32Rect(x, y, 1, 1), pixels, 4, 0);
+        return Color.FromArgb(pixels[3], pixels[2], pixels[1], pixels[0]);
     }
 
     private static void Equal(PhysicalRect expected, PhysicalRect actual)

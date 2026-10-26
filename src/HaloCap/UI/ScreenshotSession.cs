@@ -76,7 +76,8 @@ internal sealed class ScreenshotSession : IDisposable
         {
             try
             {
-                image = overlay.CreateSelectionBitmap();
+                image = overlay.CreateSelectionBitmap(
+                    command is CaptureCommand.Copy or CaptureCommand.Save or CaptureCommand.Pin);
             }
             catch (Exception ex)
             {
@@ -108,6 +109,12 @@ internal sealed class ScreenshotSession : IDisposable
                 image = ScreenCaptureService.CaptureRegion(
                     selection,
                     96.0 * (monitor.Scale > 0.1 ? monitor.Scale : 1.0));
+
+                if (image is not null &&
+                    command is CaptureCommand.Copy or CaptureCommand.Save or CaptureCommand.Pin)
+                {
+                    image = overlay.ComposeAnnotations(image);
+                }
             }
             catch (Exception ex)
             {

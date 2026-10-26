@@ -1,6 +1,7 @@
 <Window x:Class="HaloCap.UI.PinWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:HaloCap.UI"
         Title="HaloCap 贴图"
         WindowStyle="None"
         ResizeMode="NoResize"
@@ -80,10 +81,101 @@
                 </Setter.Value>
             </Setter>
         </Style>
+
+        <Style x:Key="PinToolButtonStyle" TargetType="Button">
+            <Setter Property="Width" Value="30" />
+            <Setter Property="Height" Value="30" />
+            <Setter Property="Margin" Value="1,0" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Host"
+                                Background="{TemplateBinding Background}"
+                                CornerRadius="7">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Host" Property="Background" Value="#1FFFFFFF" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="PinToolIconStyle" TargetType="Path">
+            <Setter Property="Stroke" Value="#DCE4F1" />
+            <Setter Property="StrokeThickness" Value="1.35" />
+            <Setter Property="StrokeStartLineCap" Value="Round" />
+            <Setter Property="StrokeEndLineCap" Value="Round" />
+            <Setter Property="StrokeLineJoin" Value="Round" />
+            <Setter Property="Fill" Value="Transparent" />
+            <Setter Property="Width" Value="15" />
+            <Setter Property="Height" Value="15" />
+        </Style>
+
+        <Style x:Key="PinColorSwatchStyle" TargetType="Button">
+            <Setter Property="Width" Value="26" />
+            <Setter Property="Height" Value="26" />
+            <Setter Property="Margin" Value="1,0" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="BorderBrush" Value="Transparent" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Ring"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="2"
+                                CornerRadius="13"
+                                Background="Transparent">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Ring" Property="Background" Value="#22FFFFFF" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="PinBarButtonStyle" TargetType="Button">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Foreground" Value="#E8EDF6" />
+            <Setter Property="FontSize" Value="11" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Padding" Value="8,5" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Host"
+                                Background="{TemplateBinding Background}"
+                                CornerRadius="7"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Host" Property="Background" Value="#1FFFFFFF" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
     </Window.Resources>
 
     <Window.ContextMenu>
         <ContextMenu Style="{StaticResource PinMenuStyle}">
+            <MenuItem Header="标注图片"
+                      InputGestureText="Space"
+                      Style="{StaticResource PinMenuItemStyle}"
+                      Click="AnnotateMenuItem_Click" />
+            <Separator Style="{StaticResource PinSeparatorStyle}" />
             <MenuItem Header="复制图片"
                       InputGestureText="Ctrl+C"
                       Style="{StaticResource PinMenuItemStyle}"
@@ -111,20 +203,166 @@
     <Grid x:Name="Root"
           Background="#FF0B0E14"
           Focusable="True"
-          MouseLeftButtonDown="Root_MouseLeftButtonDown">
+          MouseLeftButtonDown="Root_MouseLeftButtonDown"
+          PreviewMouseLeftButtonDown="Root_PreviewMouseLeftButtonDown"
+          PreviewMouseMove="Root_PreviewMouseMove"
+          PreviewMouseLeftButtonUp="Root_PreviewMouseLeftButtonUp">
         <Image x:Name="PreviewImage"
                Stretch="Fill"
                RenderOptions.BitmapScalingMode="HighQuality"
                SnapsToDevicePixels="True" />
 
+        <local:AnnotationCanvas x:Name="AnnotationView"
+                                IsHitTestVisible="False"
+                                ClipToBounds="True" />
+
         <Border BorderBrush="#40FFFFFF"
                 BorderThickness="1"
                 IsHitTestVisible="False" />
 
+        <Canvas x:Name="EditorLayer" ClipToBounds="True" />
+
+        <Viewbox x:Name="AnnotationBarHost"
+                 HorizontalAlignment="Center"
+                 VerticalAlignment="Top"
+                 Margin="8"
+                 Stretch="Uniform"
+                 StretchDirection="DownOnly"
+                 Visibility="Collapsed"
+                 Panel.ZIndex="10">
+            <Border x:Name="AnnotationBar"
+                    Padding="5"
+                    CornerRadius="11"
+                    Background="#F211151D"
+                    BorderBrush="#30FFFFFF"
+                    BorderThickness="1"
+                    Cursor="Arrow">
+                <Border.Effect>
+                    <DropShadowEffect Color="#FF000000" BlurRadius="22" ShadowDepth="5" Opacity="0.5" />
+                </Border.Effect>
+                <StackPanel Orientation="Horizontal">
+                    <Button x:Name="ToolPenButton"
+                            Style="{StaticResource PinToolButtonStyle}"
+                            Tag="Pen"
+                            ToolTip="画笔"
+                            Click="AnnotationTool_Click">
+                        <Viewbox Width="15" Height="15">
+                            <Path Style="{StaticResource PinToolIconStyle}"
+                                  Data="M4 20l4-1 10-10-3-3L5 16l-1 4Z M14 6l4 4" />
+                        </Viewbox>
+                    </Button>
+                    <Button x:Name="ToolRectangleButton"
+                            Style="{StaticResource PinToolButtonStyle}"
+                            Tag="Rectangle"
+                            ToolTip="矩形"
+                            Click="AnnotationTool_Click">
+                        <Viewbox Width="15" Height="15">
+                            <Path Style="{StaticResource PinToolIconStyle}" Data="M4 5h16v14H4Z" />
+                        </Viewbox>
+                    </Button>
+                    <Button x:Name="ToolEllipseButton"
+                            Style="{StaticResource PinToolButtonStyle}"
+                            Tag="Ellipse"
+                            ToolTip="椭圆"
+                            Click="AnnotationTool_Click">
+                        <Viewbox Width="15" Height="15">
+                            <Path Style="{StaticResource PinToolIconStyle}"
+                                  Data="M12 5c4.4 0 8 3.1 8 7s-3.6 7-8 7-8-3.1-8-7 3.6-7 8-7Z" />
+                        </Viewbox>
+                    </Button>
+                    <Button x:Name="ToolArrowButton"
+                            Style="{StaticResource PinToolButtonStyle}"
+                            Tag="Arrow"
+                            ToolTip="箭头"
+                            Click="AnnotationTool_Click">
+                        <Viewbox Width="15" Height="15">
+                            <Path Style="{StaticResource PinToolIconStyle}" Data="M5 19L19 5 M11 5h8v8" />
+                        </Viewbox>
+                    </Button>
+                    <Button x:Name="ToolTextButton"
+                            Style="{StaticResource PinToolButtonStyle}"
+                            Tag="Text"
+                            ToolTip="文字"
+                            Click="AnnotationTool_Click">
+                        <Viewbox Width="15" Height="15">
+                            <Path Style="{StaticResource PinToolIconStyle}" Data="M5 6V4h14v2 M12 4v16 M9 20h6" />
+                        </Viewbox>
+                    </Button>
+                    <Button x:Name="ToolHighlighterButton"
+                            Style="{StaticResource PinToolButtonStyle}"
+                            Tag="Highlighter"
+                            ToolTip="荧光笔"
+                            Click="AnnotationTool_Click">
+                        <Viewbox Width="15" Height="15">
+                            <Path Style="{StaticResource PinToolIconStyle}"
+                                  Data="M6 20h12 M8 16l-2 2 M8 16l8-9 3 3-8 9H8Z" />
+                        </Viewbox>
+                    </Button>
+
+                    <Border Width="1" Margin="4,6" Background="#26FFFFFF" />
+
+                    <Button x:Name="ColorRedButton"
+                            Style="{StaticResource PinColorSwatchStyle}"
+                            Tag="#FFFF5A5A"
+                            ToolTip="红色"
+                            Click="AnnotationColor_Click">
+                        <Ellipse Width="13" Height="13" Fill="#FFFF5A5A" />
+                    </Button>
+                    <Button x:Name="ColorYellowButton"
+                            Style="{StaticResource PinColorSwatchStyle}"
+                            Tag="#FFFFD166"
+                            ToolTip="黄色"
+                            Click="AnnotationColor_Click">
+                        <Ellipse Width="13" Height="13" Fill="#FFFFD166" />
+                    </Button>
+                    <Button x:Name="ColorGreenButton"
+                            Style="{StaticResource PinColorSwatchStyle}"
+                            Tag="#FF7CE38B"
+                            ToolTip="绿色"
+                            Click="AnnotationColor_Click">
+                        <Ellipse Width="13" Height="13" Fill="#FF7CE38B" />
+                    </Button>
+                    <Button x:Name="ColorBlueButton"
+                            Style="{StaticResource PinColorSwatchStyle}"
+                            Tag="#FF6CA8FF"
+                            ToolTip="蓝色"
+                            Click="AnnotationColor_Click">
+                        <Ellipse Width="13" Height="13" Fill="#FF6CA8FF" />
+                    </Button>
+                    <Button x:Name="ColorWhiteButton"
+                            Style="{StaticResource PinColorSwatchStyle}"
+                            Tag="#FFFFFFFF"
+                            ToolTip="白色"
+                            Click="AnnotationColor_Click">
+                        <Ellipse Width="13" Height="13" Fill="#FFFFFFFF" />
+                    </Button>
+
+                    <Border Width="1" Margin="4,6" Background="#26FFFFFF" />
+
+                    <Button Style="{StaticResource PinBarButtonStyle}"
+                            Tag="Undo"
+                            ToolTip="撤销 (Ctrl+Z)"
+                            Click="AnnotationAction_Click"
+                            Content="撤销" />
+                    <Button Style="{StaticResource PinBarButtonStyle}"
+                            Tag="Clear"
+                            ToolTip="清空标注"
+                            Click="AnnotationAction_Click"
+                            Content="清空" />
+                    <Button Style="{StaticResource PinBarButtonStyle}"
+                            Tag="Done"
+                            Foreground="#7CA8FF"
+                            ToolTip="退出标注 (Space)"
+                            Click="AnnotationAction_Click"
+                            Content="完成" />
+                </StackPanel>
+            </Border>
+        </Viewbox>
+
         <Border x:Name="Hud"
                 HorizontalAlignment="Center"
-                VerticalAlignment="Top"
-                Margin="0,10,0,0"
+                VerticalAlignment="Bottom"
+                Margin="0,0,0,10"
                 Padding="10,5"
                 CornerRadius="7"
                 Background="#D910141C"

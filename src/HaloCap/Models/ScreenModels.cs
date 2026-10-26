@@ -143,6 +143,65 @@ internal static class ScreenGeometry
     public static bool IsUsableSelection(PhysicalRect rect, int minimum = MinimumSelectionSize) =>
         rect.Width >= minimum && rect.Height >= minimum;
 
+    /// <summary>把选区平移后约束在容器内，尺寸保持不变。</summary>
+    public static PhysicalRect MoveWithin(
+        PhysicalRect rect,
+        int dx,
+        int dy,
+        int containerWidth,
+        int containerHeight)
+    {
+        var maxLeft = Math.Max(0, containerWidth - rect.Width);
+        var maxTop = Math.Max(0, containerHeight - rect.Height);
+
+        return new PhysicalRect(
+            Math.Clamp(rect.Left + dx, 0, maxLeft),
+            Math.Clamp(rect.Top + dy, 0, maxTop),
+            rect.Width,
+            rect.Height);
+    }
+
+    /// <summary>
+    /// 按边位掩码（1 左 / 2 右 / 4 上 / 8 下）调整选区，保证最小尺寸并约束在容器内。
+    /// </summary>
+    public static PhysicalRect ResizeEdges(
+        PhysicalRect rect,
+        int edgeMask,
+        int x,
+        int y,
+        int containerWidth,
+        int containerHeight,
+        int minimum = MinimumSelectionSize)
+    {
+        var left = rect.Left;
+        var top = rect.Top;
+        var right = rect.Right;
+        var bottom = rect.Bottom;
+        var min = Math.Max(1, minimum);
+
+        if ((edgeMask & 1) != 0)
+        {
+            left = Math.Clamp(x, 0, right - min);
+        }
+
+        if ((edgeMask & 2) != 0)
+        {
+            right = Math.Clamp(x, left + min, containerWidth);
+        }
+
+        if ((edgeMask & 4) != 0)
+        {
+            top = Math.Clamp(y, 0, bottom - min);
+        }
+
+        if ((edgeMask & 8) != 0)
+        {
+            bottom = Math.Clamp(y, top + min, containerHeight);
+        }
+
+        return PhysicalRect.FromEdges(left, top, right, bottom);
+    }
+
     public static PhysicalRect MakeEven(PhysicalRect rect)
     {
         var width = rect.Width - (rect.Width & 1);

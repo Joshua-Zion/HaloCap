@@ -230,9 +230,18 @@ internal static class Program
 
     private static void RadialSizePresetsMapToWindowSizes()
     {
-        Equal(320.0, RadialMenuWindow.GetWindowSizeDip(RadialMenuSize.Small), 0.0001);
-        Equal(380.0, RadialMenuWindow.GetWindowSizeDip(RadialMenuSize.Medium), 0.0001);
-        Equal(440.0, RadialMenuWindow.GetWindowSizeDip(RadialMenuSize.Large), 0.0001);
+        Equal(360.0, RadialMenuWindow.GetWindowSizeDip(RadialMenuSize.Small), 0.0001);
+        Equal(420.0, RadialMenuWindow.GetWindowSizeDip(RadialMenuSize.Medium), 0.0001);
+        Equal(480.0, RadialMenuWindow.GetWindowSizeDip(RadialMenuSize.Large), 0.0001);
+
+        var padding = RadialMenuWindow.MenuPadding;
+        True(padding >= 12, "padding must leave room for the drop shadow");
+
+        Equal((360.0 - (2 * padding)) / RadialMenuWindow.MenuSize,
+            RadialMenuWindow.GetContentScale(RadialMenuSize.Small), 0.0001);
+        Equal(1.0, RadialMenuWindow.GetContentScale(RadialMenuSize.Medium), 0.0001);
+        Equal((480.0 - (2 * padding)) / RadialMenuWindow.MenuSize,
+            RadialMenuWindow.GetContentScale(RadialMenuSize.Large), 0.0001);
     }
 
     private static void Equal(PhysicalRect expected, PhysicalRect actual)

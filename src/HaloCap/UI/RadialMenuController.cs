@@ -173,7 +173,7 @@ internal sealed class RadialMenuController : IDisposable
         if (!NativeMethods.GetWindowRect(handle, out var rect))
         {
             _centerPx = new POINT(cursor.X, cursor.Y);
-            _pixelScale = scale * (_windowSizeDip / RadialMenuWindow.MenuSize);
+            _pixelScale = ComputePixelScale(_windowSizeDip * scale, scale);
             return;
         }
 
@@ -194,8 +194,20 @@ internal sealed class RadialMenuController : IDisposable
 
         _centerPx = new POINT((rect.Left + rect.Right) / 2, (rect.Top + rect.Bottom) / 2);
         _pixelScale = rect.Width > 0
-            ? rect.Width / RadialMenuWindow.MenuSize
-            : scale * (_windowSizeDip / RadialMenuWindow.MenuSize);
+            ? ComputePixelScale(rect.Width, rect.Width / _windowSizeDip)
+            : ComputePixelScale(_windowSizeDip * scale, scale);
+    }
+
+    /// <summary>
+    /// 圆盘设计画布只占窗口内部的矩形，四周还有 MenuPadding 的透明边距；
+    /// 命中半径必须按内容区域换算，不能直接用窗口宽度。
+    /// </summary>
+    private double ComputePixelScale(double windowWidthPx, double dpiScale)
+    {
+        var contentWidth = windowWidthPx - (2 * RadialMenuWindow.MenuPadding * dpiScale);
+        return contentWidth > 0
+            ? contentWidth / RadialMenuWindow.MenuSize
+            : ((_windowSizeDip - (2 * RadialMenuWindow.MenuPadding)) * dpiScale) / RadialMenuWindow.MenuSize;
     }
 
     private static Placement ComputePlacement(

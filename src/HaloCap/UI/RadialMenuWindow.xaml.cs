@@ -17,6 +17,12 @@ public partial class RadialMenuWindow : Window
     public const double DiskRadius = 170;
     public const double DeadZoneRadius = 52;
 
+    /// <summary>
+    /// 窗口在缩放后的设计画布之外额外保留的透明边距（DIP），
+    /// 用于容纳投影，避免小尺寸时圆盘与阴影被窗口边缘裁切。
+    /// </summary>
+    public const double MenuPadding = 20;
+
     private const double CenterPoint = MenuSize / 2;
     private const double NodeRadius = 110;
     private const double SectorInnerRadius = 56;
@@ -44,17 +50,21 @@ public partial class RadialMenuWindow : Window
 
     public static double GetWindowSizeDip(RadialMenuSize size) => size switch
     {
-        RadialMenuSize.Small => 320,
-        RadialMenuSize.Large => 440,
-        _ => MenuSize
+        RadialMenuSize.Small => 360,
+        RadialMenuSize.Medium => 420,
+        RadialMenuSize.Large => 480,
+        _ => MenuSize + (2 * MenuPadding)
     };
+
+    public static double GetContentScale(RadialMenuSize size) =>
+        (GetWindowSizeDip(size) - (2 * MenuPadding)) / MenuSize;
 
     public void ApplySize(RadialMenuSize size)
     {
         var windowSize = GetWindowSizeDip(size);
         Width = windowSize;
         Height = windowSize;
-        _sizeScale = windowSize / MenuSize;
+        _sizeScale = GetContentScale(size);
 
         if (!IsVisible)
         {

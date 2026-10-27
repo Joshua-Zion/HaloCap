@@ -71,7 +71,12 @@ public partial class ScreenshotOverlayWindow : Window
     private double _highlighterThickness = AnnotationDefaults.HighlighterThickness;
     private double _textSize = AnnotationDefaults.TextSize;
     private int _mosaicBlockDip = AnnotationDefaults.MosaicBlockDip;
+    private double _eraserSize = AnnotationDefaults.EraserSize;
     private bool _fillShapes;
+    private bool _textBold = true;
+    private bool _textItalic;
+    private ArrowHeadMode _arrowHead = ArrowHeadMode.End;
+    private bool _eraseHistoryPushed;
     private Point _mosaicStart;
     private Int32Rect _mosaicLastRect;
     private AnnotationStroke? _liveStroke;
@@ -356,7 +361,7 @@ public partial class ScreenshotOverlayWindow : Window
 
             default:
                 accent = Color.FromRgb(0x7C, 0xA8, 0xFF);
-                HintText.Text = "拖动框选或单击窗口 · 工具快捷键 R E A P T H M N · Enter 复制 · Esc 取消";
+                HintText.Text = "拖动框选或单击窗口 · 工具 R E A P T H M N X · Shift+R/E 填充 · Enter 复制 · Esc 取消";
                 ToolGroup.Visibility = Visibility.Visible;
                 HistorySeparator.Visibility = Visibility.Visible;
                 HistoryGroup.Visibility = Visibility.Visible;
@@ -417,7 +422,7 @@ public partial class ScreenshotOverlayWindow : Window
             return;
         }
 
-        if (Toolbar.Visibility == Visibility.Visible && Toolbar.IsMouseOver)
+        if (IsPointerOverToolbars())
         {
             return;
         }
@@ -686,7 +691,8 @@ public partial class ScreenshotOverlayWindow : Window
     }
 
     private void Root_PreviewMouseRightButtonDown(object sender, MouseButtonEventArgs e)
-    {        if (_closed)
+    {
+        if (_closed || IsPointerOverToolbars())
         {
             return;
         }
@@ -731,6 +737,14 @@ public partial class ScreenshotOverlayWindow : Window
                 return;
             }
 
+            if (Keyboard.Modifiers == ModifierKeys.Shift && e.Key is Key.R or Key.E)
+            {
+                e.Handled = true;
+                _fillShapes = true;
+                SetDrawingTool(e.Key == Key.R ? AnnotationTool.Rectangle : AnnotationTool.Ellipse);
+                return;
+            }
+
             if (Keyboard.Modifiers == ModifierKeys.None)
             {
                 if (e.Key == Key.V)
@@ -743,6 +757,12 @@ public partial class ScreenshotOverlayWindow : Window
                 if (GetToolForKey(e.Key) is { } tool)
                 {
                     e.Handled = true;
+
+                    if (tool is AnnotationTool.Rectangle or AnnotationTool.Ellipse)
+                    {
+                        _fillShapes = false;
+                    }
+
                     SetDrawingTool(tool);
                     return;
                 }
@@ -750,8 +770,7 @@ public partial class ScreenshotOverlayWindow : Window
                 if (_annotating && e.Key == Key.F)
                 {
                     e.Handled = true;
-                    _fillShapes = !_fillShapes;
-                    UpdateToolOptionVisuals();
+                    ToggleFill();
                     return;
                 }
 
@@ -768,6 +787,29 @@ public partial class ScreenshotOverlayWindow : Window
                     AdjustBrush(1);
                     return;
                 }
+            }
+
+            if (_annotating &&
+                _annotationTool == AnnotationTool.Text &&
+                Keyboard.Modifiers == ModifierKeys.Control &&
+                (e.Key == Key.B || e.Key == Key.I))
+            {
+                e.Handled = true;
+
+                if (e.Key == Key.B)
+                {
+                    _textBold = !_textBold;
+                }
+                else
+                {
+                    _textItalic = !_textItalic;
+                }
+
+                UpdateToolOptionVisuals();
+                ShowToolHud(e.Key == Key.B
+                    ? (_textBold ? "加粗" : "取消加粗")
+                    : (_textItalic ? "斜体" : "取消斜体"));
+                return;
             }
 
             if (Keyboard.Modifiers.HasFlag(ModifierKeys.Control) &&
@@ -839,7 +881,7 @@ public partial class ScreenshotOverlayWindow : Window
 
     private void Window_MouseWheel(object sender, MouseWheelEventArgs e)
     {
-        if (_closed || !_annotating || !_hasSelection || Toolbar.IsMouseOver)
+        if (_closed || !_annotating || !_hasSelection || IsPointerOverToolbars())
         {
             return;
         }
@@ -858,6 +900,7 @@ public partial class ScreenshotOverlayWindow : Window
         Key.H => AnnotationTool.Highlighter,
         Key.M => AnnotationTool.Mosaic,
         Key.N => AnnotationTool.Step,
+        Key.X => AnnotationTool.Eraser,
         _ => null
     };
 
@@ -1305,7 +1348,8 @@ public partial class ScreenshotOverlayWindow : Window
     }
 
     private bool IsPointerOverToolbars() =>
-        Toolbar.Visibility == Visibility.Visible && Toolbar.IsMouseOver;
+        (Toolbar.Visibility == Visibility.Visible && Toolbar.IsMouseOver) ||
+        (OptionBar.Visibility == Visibility.Visible && OptionBar.IsMouseOver);
 
     private void UpdateMagnifier(Point point)
     {
@@ -1742,6 +1786,7 @@ public partial class ScreenshotOverlayWindow : Window
             (ToolTextButton, AnnotationTool.Text),
             (ToolHighlighterButton, AnnotationTool.Highlighter),
             (ToolMosaicButton, AnnotationTool.Mosaic),
+            (ToolEraserButton, AnnotationTool.Eraser),
             (ToolStepButton, AnnotationTool.Step)
         };
 
@@ -1757,42 +1802,66 @@ public partial class ScreenshotOverlayWindow : Window
 
     private void UpdateToolOptionVisuals()
     {
-        var colorTool = _annotating && _annotationTool != AnnotationTool.Mosaic;
+        var isShape = _annotationTool is AnnotationTool.Rectangle or AnnotationTool.Ellipse;
+        var colorTool = _annotating &&
+                        _annotationTool is not (AnnotationTool.Mosaic or AnnotationTool.Eraser);
         OptionColorGroup.Visibility = colorTool ? Visibility.Visible : Visibility.Collapsed;
         OptionColorSeparator.Visibility = colorTool ? Visibility.Visible : Visibility.Collapsed;
 
-        ShapeOptionGroup.Visibility = _annotating &&
-                                      _annotationTool is AnnotationTool.Rectangle or AnnotationTool.Ellipse
+        ShapeOptionGroup.Visibility = _annotating && isShape
             ? Visibility.Visible
             : Visibility.Collapsed;
         BrushOptionGroup.Visibility = _annotating &&
-                                      _annotationTool is AnnotationTool.Pen or AnnotationTool.Arrow or AnnotationTool.Highlighter
+                                      _annotationTool is AnnotationTool.Pen or AnnotationTool.Arrow
+                                          or AnnotationTool.Highlighter or AnnotationTool.Rectangle
+                                          or AnnotationTool.Ellipse
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+        ArrowOptionGroup.Visibility = _annotating && _annotationTool == AnnotationTool.Arrow
             ? Visibility.Visible
             : Visibility.Collapsed;
         TextOptionGroup.Visibility = _annotating && _annotationTool == AnnotationTool.Text
             ? Visibility.Visible
             : Visibility.Collapsed;
+        TextStyleOptionGroup.Visibility = _annotating && _annotationTool == AnnotationTool.Text
+            ? Visibility.Visible
+            : Visibility.Collapsed;
         MosaicOptionGroup.Visibility = _annotating && _annotationTool == AnnotationTool.Mosaic
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+        EraserOptionGroup.Visibility = _annotating && _annotationTool == AnnotationTool.Eraser
             ? Visibility.Visible
             : Visibility.Collapsed;
 
         var accent = UiColors.Brush("#FF2F7CF6");
         var normal = UiColors.Brush("#FF3C4250");
-        FillToggleButton.Background = _fillShapes ? accent : Brushes.Transparent;
-        FillToggleButton.Foreground = _fillShapes ? Brushes.White : normal;
-        FillToggleIcon.Fill = _fillShapes ? Brushes.White : Brushes.Transparent;
+        SetOptionButtonState(ShapeOutlineButton, !_fillShapes, accent, normal);
+        SetOptionButtonState(ShapeFillButton, _fillShapes, accent, normal);
+
+        SetOptionButtonState(ArrowEndButton, _arrowHead == ArrowHeadMode.End, accent, normal);
+        SetOptionButtonState(ArrowBothButton, _arrowHead == ArrowHeadMode.Both, accent, normal);
+        SetOptionButtonState(ArrowLineButton, _arrowHead == ArrowHeadMode.None, accent, normal);
+        SetOptionButtonState(BoldToggleButton, _textBold, accent, normal);
+        SetOptionButtonState(ItalicToggleButton, _textItalic, accent, normal);
 
         BrushValueText.Text = (_annotationTool == AnnotationTool.Highlighter
             ? _highlighterThickness
             : _strokeThickness).ToString("0");
         TextValueText.Text = _textSize.ToString("0");
         MosaicValueText.Text = _mosaicBlockDip.ToString();
+        EraserValueText.Text = _eraserSize.ToString("0");
 
         OptionBar.Visibility = _annotating && _hasSelection
             ? Visibility.Visible
             : Visibility.Collapsed;
 
         PositionOptionBar();
+    }
+
+    private static void SetOptionButtonState(Button button, bool active, Brush accent, Brush normal)
+    {
+        button.Background = active ? accent : Brushes.Transparent;
+        button.Foreground = active ? Brushes.White : normal;
     }
 
     private void PositionOptionBar()
@@ -1818,11 +1887,78 @@ public partial class ScreenshotOverlayWindow : Window
         OptionBar.Margin = new Thickness(left, top, 0, 0);
     }
 
-    private void FillToggle_Click(object sender, RoutedEventArgs e)
+    private void ShapeStyle_Click(object sender, RoutedEventArgs e)
     {
+        if (sender is not FrameworkElement element || element.Tag is not string tag)
+        {
+            return;
+        }
+
         e.Handled = true;
+        _fillShapes = tag == "Fill";
+        UpdateAnnotationToolVisuals();
+        ShowToolHud(_fillShapes ? "实心填充" : "空心");
+        Keyboard.Focus(Root);
+    }
+
+    private void ToggleFill()
+    {
         _fillShapes = !_fillShapes;
+        UpdateAnnotationToolVisuals();
+        ShowToolHud(_fillShapes ? "实心填充" : "空心");
+    }
+
+    private void ArrowStyle_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement element ||
+            element.Tag is not string tag ||
+            !Enum.TryParse<ArrowHeadMode>(tag, out var mode))
+        {
+            return;
+        }
+
+        e.Handled = true;
+        _arrowHead = mode;
         UpdateToolOptionVisuals();
+        ShowToolHud(mode switch
+        {
+            ArrowHeadMode.Both => "双向箭头",
+            ArrowHeadMode.None => "直线",
+            _ => "末端箭头"
+        });
+        Keyboard.Focus(Root);
+    }
+
+    private void TextStyle_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement element || element.Tag is not string tag)
+        {
+            return;
+        }
+
+        e.Handled = true;
+
+        switch (tag)
+        {
+            case "Bold":
+                _textBold = !_textBold;
+                break;
+
+            case "Italic":
+                _textItalic = !_textItalic;
+                break;
+        }
+
+        if (_textEditor is not null)
+        {
+            _textEditor.FontWeight = _textBold ? FontWeights.Bold : FontWeights.Normal;
+            _textEditor.FontStyle = _textItalic ? FontStyles.Italic : FontStyles.Normal;
+        }
+
+        UpdateToolOptionVisuals();
+        ShowToolHud(tag == "Bold"
+            ? (_textBold ? "加粗" : "取消加粗")
+            : (_textItalic ? "斜体" : "取消斜体"));
         Keyboard.Focus(Root);
     }
 
@@ -1873,6 +2009,12 @@ public partial class ScreenshotOverlayWindow : Window
             return;
         }
 
+        if (_annotationTool == AnnotationTool.Eraser)
+        {
+            BeginErase(point);
+            return;
+        }
+
         if (_annotationTool == AnnotationTool.Step)
         {
             PlaceStep(point);
@@ -1893,7 +2035,10 @@ public partial class ScreenshotOverlayWindow : Window
             Thickness = _annotationTool == AnnotationTool.Highlighter
                 ? _highlighterThickness
                 : _strokeThickness,
-            TextSize = _textSize
+            TextSize = _textSize,
+            Bold = _textBold,
+            Italic = _textItalic,
+            ArrowHead = _arrowHead
         };
 
         if (_annotationTool == AnnotationTool.Mosaic)
@@ -1916,6 +2061,12 @@ public partial class ScreenshotOverlayWindow : Window
 
     private void UpdateAnnotationStroke(Point rootPoint)
     {
+        if (_annotationTool == AnnotationTool.Eraser)
+        {
+            EraseAt(RootToSelectionDip(rootPoint));
+            return;
+        }
+
         if (_liveStroke is null)
         {
             return;
@@ -1988,6 +2139,7 @@ public partial class ScreenshotOverlayWindow : Window
     private void FinishAnnotationStroke()
     {
         _drawingAnnotation = false;
+        _eraseHistoryPushed = false;
         Mouse.Capture(null);
 
         var stroke = _liveStroke;
@@ -2001,6 +2153,54 @@ public partial class ScreenshotOverlayWindow : Window
 
         AnnotationView.SetContent(_strokes, null, 1.0);
         UpdateHistoryVisuals();
+    }
+
+    private void BeginErase(Point point)
+    {
+        _drawingAnnotation = true;
+        _eraseHistoryPushed = false;
+        Mouse.Capture(Root);
+        EraseAt(point);
+    }
+
+    private void EraseAt(Point point)
+    {
+        if (point.X < 0 ||
+            point.Y < 0 ||
+            point.X > AnnotationView.ActualWidth ||
+            point.Y > AnnotationView.ActualHeight)
+        {
+            return;
+        }
+
+        var radius = _eraserSize / 2;
+        var removed = false;
+
+        for (var i = _strokes.Count - 1; i >= 0; i--)
+        {
+            if (!AnnotationHitTester.HitTest(_strokes[i], point, radius))
+            {
+                continue;
+            }
+
+            if (!_eraseHistoryPushed)
+            {
+                PushHistory();
+                _eraseHistoryPushed = true;
+            }
+
+            _strokes.RemoveAt(i);
+            removed = true;
+        }
+
+        if (!removed)
+        {
+            return;
+        }
+
+        AnnotationView.SetContent(_strokes, null, 1.0);
+        UpdateHistoryVisuals();
+        ShowToolHud("已擦除标注");
     }
 
     private void PlaceStep(Point point)
@@ -2129,6 +2329,14 @@ public partial class ScreenshotOverlayWindow : Window
             case AnnotationTool.Step:
                 return;
 
+            case AnnotationTool.Eraser:
+                _eraserSize = Math.Clamp(
+                    _eraserSize + (direction * 2),
+                    AnnotationDefaults.MinEraserSize,
+                    AnnotationDefaults.MaxEraserSize);
+                label = $"橡皮 {_eraserSize:0}";
+                break;
+
             default:
                 _strokeThickness = Math.Clamp(
                     _strokeThickness + direction,
@@ -2230,6 +2438,11 @@ public partial class ScreenshotOverlayWindow : Window
 
     private static bool IsMeaningfulStroke(AnnotationStroke stroke)
     {
+        if (stroke.Tool is AnnotationTool.Eraser)
+        {
+            return false;
+        }
+
         if (stroke.Tool == AnnotationTool.Step)
         {
             return stroke.Points.Count > 0;
@@ -2331,6 +2544,7 @@ public partial class ScreenshotOverlayWindow : Window
     {
         _liveStroke = null;
         _drawingAnnotation = false;
+        _eraseHistoryPushed = false;
 
         if (Mouse.Captured == Root)
         {
@@ -2379,7 +2593,8 @@ public partial class ScreenshotOverlayWindow : Window
             MinWidth = 90,
             MaxWidth = 360,
             FontSize = _textSize,
-            FontWeight = FontWeights.SemiBold,
+            FontWeight = _textBold ? FontWeights.Bold : FontWeights.Normal,
+            FontStyle = _textItalic ? FontStyles.Italic : FontStyles.Normal,
             Padding = new Thickness(5, 3, 5, 3),
             Background = UiColors.Brush("#CC10141C"),
             Foreground = brush,
@@ -2441,7 +2656,9 @@ public partial class ScreenshotOverlayWindow : Window
             Tool = AnnotationTool.Text,
             Color = _annotationColor,
             Text = text,
-            TextSize = _textSize
+            TextSize = _textSize,
+            Bold = _textBold,
+            Italic = _textItalic
         };
 
         stroke.Points.Add(_textPoint);

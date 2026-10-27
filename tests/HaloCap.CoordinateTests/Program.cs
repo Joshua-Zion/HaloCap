@@ -48,7 +48,12 @@ internal static class Program
             ("Square constraint keeps sides equal", SquareConstraintKeepsSidesEqual),
             ("Arrow snap locks to 45 degrees", ArrowSnapLocksToAngles),
             ("Mosaic snap aligns to blocks", MosaicSnapAlignsToBlocks),
-            ("Mosaic tile averages blocks", MosaicTileAveragesBlocks)
+            ("Mosaic tile averages blocks", MosaicTileAveragesBlocks),
+            ("Eraser hit test follows pen path", EraserHitTestFollowsPenPath),
+            ("Eraser hit test respects shape fill", EraserHitTestRespectsShapeFill),
+            ("Eraser hit test covers step and mosaic", EraserHitTestCoversStepAndMosaic),
+            ("Eraser hit test measures text bounds", EraserHitTestMeasuresTextBounds),
+            ("Arrow both mode paints start head", ArrowBothModePaintsStartHead)
         };
 
         var failures = 0;
@@ -461,6 +466,137 @@ internal static class Program
             var hollowMiddle = ReadPixel(hollowImage, 32, 32);
             True(hollowMiddle.R > 200 && hollowMiddle.G > 200, "outline rectangle interior should stay white");
         });
+    }
+
+    private static void EraserHitTestFollowsPenPath()
+    {
+        var pen = new AnnotationStroke
+        {
+            Tool = AnnotationTool.Pen,
+            Thickness = 4
+        };
+
+        pen.Points.Add(new Point(10, 10));
+        pen.Points.Add(new Point(50, 50));
+
+        True(AnnotationHitTester.HitTest(pen, new Point(30, 30), 2), "point on the stroke should hit");
+        True(!AnnotationHitTester.HitTest(pen, new Point(30, 45), 2), "point away from the stroke should miss");
+        True(AnnotationHitTester.HitTest(pen, new Point(10, 10), 1), "stroke start should hit");
+    }
+
+    private static void EraserHitTestRespectsShapeFill()
+    {
+        var outline = new AnnotationStroke
+        {
+            Tool = AnnotationTool.Rectangle,
+            Thickness = 2
+        };
+
+        outline.Points.Add(new Point(10, 10));
+        outline.Points.Add(new Point(90, 70));
+
+        True(AnnotationHitTester.HitTest(outline, new Point(50, 10), 1), "border should hit");
+        True(!AnnotationHitTester.HitTest(outline, new Point(50, 40), 1), "hollow interior should miss");
+
+        var filled = new AnnotationStroke
+        {
+            Tool = AnnotationTool.Rectangle,
+            Thickness = 2,
+            Filled = true
+        };
+
+        filled.Points.Add(new Point(10, 10));
+        filled.Points.Add(new Point(90, 70));
+
+        True(AnnotationHitTester.HitTest(filled, new Point(50, 40), 1), "filled interior should hit");
+        True(!AnnotationHitTester.HitTest(filled, new Point(120, 40), 1), "outside should miss");
+    }
+
+    private static void EraserHitTestCoversStepAndMosaic()
+    {
+        var step = new AnnotationStroke { Tool = AnnotationTool.Step };
+        step.Points.Add(new Point(50, 50));
+
+        True(AnnotationHitTester.HitTest(step, new Point(58, 50), 2), "step edge should hit");
+        True(!AnnotationHitTester.HitTest(step, new Point(70, 50), 2), "far step point should miss");
+
+        var mosaic = new AnnotationStroke { Tool = AnnotationTool.Mosaic };
+        mosaic.Points.Add(new Point(10, 10));
+        mosaic.Points.Add(new Point(50, 50));
+
+        True(AnnotationHitTester.HitTest(mosaic, new Point(54, 54), 6), "mosaic edge should hit");
+        True(!AnnotationHitTester.HitTest(mosaic, new Point(20, 80), 6), "outside mosaic should miss");
+    }
+
+    private static void EraserHitTestMeasuresTextBounds()
+    {
+        RunSta(() =>
+        {
+            var text = new AnnotationStroke
+            {
+                Tool = AnnotationTool.Text,
+                Text = "光圈 HaloCap",
+                TextSize = 18
+            };
+
+            text.Points.Add(new Point(20, 20));
+
+            True(AnnotationHitTester.HitTest(text, new Point(30, 28), 1), "text anchor should hit");
+            True(!AnnotationHitTester.HitTest(text, new Point(30, 80), 1), "below text should miss");
+        });
+    }
+
+    private static void ArrowBothModePaintsStartHead()
+    {
+        RunSta(() =>
+        {
+            var source = CreateSolidBitmap(160, 80, Colors.White);
+
+            AnnotationStroke Create(ArrowHeadMode mode)
+            {
+                var stroke = new AnnotationStroke
+                {
+                    Tool = AnnotationTool.Arrow,
+                    Color = Colors.Red,
+                    Thickness = 8,
+                    ArrowHead = mode
+                };
+
+                stroke.Points.Add(new Point(30, 40));
+                stroke.Points.Add(new Point(130, 40));
+                return stroke;
+            }
+
+            var line = AnnotationRenderer.Compose(source, new[] { Create(ArrowHeadMode.None) });
+            var both = AnnotationRenderer.Compose(source, new[] { Create(ArrowHeadMode.Both) });
+
+            var lineStart = CountInk(line, 30, 20, 28, 40);
+            var bothStart = CountInk(both, 30, 20, 28, 40);
+            True(bothStart > lineStart + 15, "both mode should paint a head at the start");
+
+            var lineEnd = CountInk(line, 104, 20, 34, 40);
+            var bothEnd = CountInk(both, 104, 20, 34, 40);
+            True(bothEnd > lineEnd + 15, "both mode should keep the head at the end");
+        });
+    }
+
+    private static int CountInk(BitmapSource bitmap, int x, int y, int width, int height)
+    {
+        var count = 0;
+
+        for (var row = y; row < y + height; row++)
+        {
+            for (var column = x; column < x + width; column++)
+            {
+                var pixel = ReadPixel(bitmap, column, row);
+                if (pixel.R > 180 && pixel.G < 150 && pixel.B < 150)
+                {
+                    count++;
+                }
+            }
+        }
+
+        return count;
     }
 
     private static void RunSta(Action action)

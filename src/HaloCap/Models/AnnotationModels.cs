@@ -15,7 +15,15 @@ internal enum AnnotationTool
     Text,
     Highlighter,
     Mosaic,
-    Step
+    Step,
+    Eraser
+}
+
+internal enum ArrowHeadMode
+{
+    End,
+    Both,
+    None
 }
 
 internal sealed class AnnotationStroke
@@ -28,7 +36,13 @@ internal sealed class AnnotationStroke
 
     public double TextSize { get; init; } = AnnotationDefaults.TextSize;
 
+    public bool Bold { get; init; } = true;
+
+    public bool Italic { get; init; }
+
     public bool Filled { get; init; }
+
+    public ArrowHeadMode ArrowHead { get; init; } = ArrowHeadMode.End;
 
     public BitmapSource? Mosaic { get; set; }
 
@@ -51,6 +65,9 @@ internal static class AnnotationDefaults
     public const int MosaicBlockDip = 12;
     public const int MinMosaicBlockDip = 6;
     public const int MaxMosaicBlockDip = 30;
+    public const double EraserSize = 18;
+    public const double MinEraserSize = 8;
+    public const double MaxEraserSize = 48;
     public const double StepRadius = 11;
 
     public static readonly Color[] Palette =

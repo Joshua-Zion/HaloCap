@@ -424,6 +424,9 @@
                             <Path Style="{StaticResource OverlayIconStyle}" Data="M5 19L19 5 M11 5h8v8" />
                         </Viewbox>
                     </Button>
+
+                    <Border Width="1" Margin="4,7" Background="#1A000000" />
+
                     <Button x:Name="ToolPenButton"
                             AutomationProperties.AutomationId="tool.pen"
                             Style="{StaticResource AnnotationToolButtonStyle}"
@@ -469,6 +472,18 @@
                         <Viewbox Width="16" Height="16">
                             <Path Style="{StaticResource OverlayIconStyle}"
                                   Data="M4 4h6v6H4Z M14 4h6v6h-6Z M4 14h6v6H4Z M14 14h6v6h-6Z" />
+                        </Viewbox>
+                    </Button>
+                    <Button x:Name="ToolEraserButton"
+                            AutomationProperties.AutomationId="tool.eraser"
+                            Style="{StaticResource AnnotationToolButtonStyle}"
+                            Tag="Eraser"
+                            ToolTip="橡皮擦 (X) · 滚轮调大小 · 划过删除整条标注"
+                            AutomationProperties.Name="橡皮擦"
+                            Click="AnnotationTool_Click">
+                        <Viewbox Width="16" Height="16">
+                            <Path Style="{StaticResource OverlayIconStyle}"
+                                  Data="M4 20h16 M7 17.5L14 7l4 3.2-7 10H7v-2.7Z M11 12l4 3.2" />
                         </Viewbox>
                     </Button>
                     <Button x:Name="ToolStepButton"
@@ -699,18 +714,29 @@
                 <Border x:Name="OptionColorSeparator" Width="1" Margin="4,6" Background="#1A000000" />
 
                 <StackPanel x:Name="ShapeOptionGroup" Orientation="Horizontal">
-                    <Button x:Name="FillToggleButton"
+                    <TextBlock Text="样式" FontSize="11" Foreground="#5A6270" Margin="6,0,5,0" VerticalAlignment="Center" />
+                    <Button x:Name="ShapeOutlineButton"
+                            AutomationProperties.AutomationId="option.outline"
+                            Style="{StaticResource AnnotationToolButtonStyle}"
+                            Tag="Outline"
+                            ToolTip="空心形状 (F 切换)"
+                            AutomationProperties.Name="空心形状"
+                            Click="ShapeStyle_Click">
+                        <Viewbox Width="16" Height="16">
+                            <Path Style="{StaticResource OverlayIconStyle}" Data="M4 5h16v14H4Z" />
+                        </Viewbox>
+                    </Button>
+                    <Button x:Name="ShapeFillButton"
                             AutomationProperties.AutomationId="option.fill"
                             Style="{StaticResource AnnotationToolButtonStyle}"
-                            ToolTip="填充形状 (F)"
-                            AutomationProperties.Name="填充形状"
-                            Click="FillToggle_Click">
+                            Tag="Fill"
+                            ToolTip="实心填充 (F 切换)"
+                            AutomationProperties.Name="实心填充"
+                            Click="ShapeStyle_Click">
                         <Viewbox Width="16" Height="16">
-                            <Path x:Name="FillToggleIcon"
+                            <Path Style="{StaticResource OverlayIconStyle}"
                                   Data="M4 5h16v14H4Z"
-                                  Fill="Transparent"
-                                  Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
-                                  StrokeThickness="1.2" />
+                                  Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" />
                         </Viewbox>
                     </Button>
                 </StackPanel>
@@ -722,6 +748,44 @@
                     <Button Style="{StaticResource OptionStepButtonStyle}" AutomationProperties.AutomationId="option.up" Tag="Up" ToolTip="变粗 (Ctrl+滚轮)" Content="+" Click="OptionStep_Click" />
                 </StackPanel>
 
+                <StackPanel x:Name="ArrowOptionGroup" Orientation="Horizontal">
+                    <TextBlock Text="箭头" FontSize="11" Foreground="#5A6270" Margin="6,0,5,0" VerticalAlignment="Center" />
+                    <Button x:Name="ArrowEndButton"
+                            AutomationProperties.AutomationId="option.arrowEnd"
+                            Style="{StaticResource AnnotationToolButtonStyle}"
+                            Tag="End"
+                            ToolTip="末端箭头"
+                            AutomationProperties.Name="末端箭头"
+                            Click="ArrowStyle_Click">
+                        <Viewbox Width="16" Height="16">
+                            <Path Style="{StaticResource OverlayIconStyle}" Data="M4 12h14 M12 6l6 6-6 6" />
+                        </Viewbox>
+                    </Button>
+                    <Button x:Name="ArrowBothButton"
+                            AutomationProperties.AutomationId="option.arrowBoth"
+                            Style="{StaticResource AnnotationToolButtonStyle}"
+                            Tag="Both"
+                            ToolTip="双向箭头"
+                            AutomationProperties.Name="双向箭头"
+                            Click="ArrowStyle_Click">
+                        <Viewbox Width="16" Height="16">
+                            <Path Style="{StaticResource OverlayIconStyle}"
+                                  Data="M4 12h16 M4 12l5-5 M4 12l5 5 M20 12l-5-5 M20 12l-5 5" />
+                        </Viewbox>
+                    </Button>
+                    <Button x:Name="ArrowLineButton"
+                            AutomationProperties.AutomationId="option.arrowLine"
+                            Style="{StaticResource AnnotationToolButtonStyle}"
+                            Tag="None"
+                            ToolTip="直线（无箭头）"
+                            AutomationProperties.Name="直线"
+                            Click="ArrowStyle_Click">
+                        <Viewbox Width="16" Height="16">
+                            <Path Style="{StaticResource OverlayIconStyle}" Data="M4 12h16" />
+                        </Viewbox>
+                    </Button>
+                </StackPanel>
+
                 <StackPanel x:Name="TextOptionGroup" Orientation="Horizontal">
                     <TextBlock Text="字号" FontSize="11" Foreground="#5A6270" Margin="4,0,6,0" VerticalAlignment="Center" />
                     <Button Style="{StaticResource OptionStepButtonStyle}" Tag="Down" ToolTip="变小 (滚轮)" Content="−" Click="OptionStep_Click" />
@@ -729,11 +793,46 @@
                     <Button Style="{StaticResource OptionStepButtonStyle}" Tag="Up" ToolTip="变大 (滚轮)" Content="+" Click="OptionStep_Click" />
                 </StackPanel>
 
+                <StackPanel x:Name="TextStyleOptionGroup" Orientation="Horizontal">
+                    <Button x:Name="BoldToggleButton"
+                            AutomationProperties.AutomationId="option.bold"
+                            Style="{StaticResource AnnotationToolButtonStyle}"
+                            Tag="Bold"
+                            ToolTip="加粗 (Ctrl+B)"
+                            AutomationProperties.Name="加粗"
+                            Click="TextStyle_Click">
+                        <TextBlock Text="B"
+                                   FontSize="13"
+                                   FontWeight="Bold"
+                                   Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" />
+                    </Button>
+                    <Button x:Name="ItalicToggleButton"
+                            AutomationProperties.AutomationId="option.italic"
+                            Style="{StaticResource AnnotationToolButtonStyle}"
+                            Tag="Italic"
+                            ToolTip="斜体 (Ctrl+I)"
+                            AutomationProperties.Name="斜体"
+                            Click="TextStyle_Click">
+                        <TextBlock Text="I"
+                                   FontSize="13"
+                                   FontWeight="SemiBold"
+                                   FontStyle="Italic"
+                                   Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" />
+                    </Button>
+                </StackPanel>
+
                 <StackPanel x:Name="MosaicOptionGroup" Orientation="Horizontal">
                     <TextBlock Text="密度" FontSize="11" Foreground="#5A6270" Margin="4,0,6,0" VerticalAlignment="Center" />
                     <Button Style="{StaticResource OptionStepButtonStyle}" Tag="Down" ToolTip="更密 (滚轮)" Content="−" Click="OptionStep_Click" />
                     <TextBlock x:Name="MosaicValueText" Width="26" FontSize="11.5" Foreground="#2A303B" TextAlignment="Center" VerticalAlignment="Center" />
                     <Button Style="{StaticResource OptionStepButtonStyle}" Tag="Up" ToolTip="更疏 (滚轮)" Content="+" Click="OptionStep_Click" />
+                </StackPanel>
+
+                <StackPanel x:Name="EraserOptionGroup" Orientation="Horizontal">
+                    <TextBlock Text="大小" FontSize="11" Foreground="#5A6270" Margin="4,0,6,0" VerticalAlignment="Center" />
+                    <Button Style="{StaticResource OptionStepButtonStyle}" Tag="Down" ToolTip="变小 (滚轮)" Content="−" Click="OptionStep_Click" />
+                    <TextBlock x:Name="EraserValueText" Width="26" FontSize="11.5" Foreground="#2A303B" TextAlignment="Center" VerticalAlignment="Center" />
+                    <Button Style="{StaticResource OptionStepButtonStyle}" Tag="Up" ToolTip="变大 (滚轮)" Content="+" Click="OptionStep_Click" />
                 </StackPanel>
             </StackPanel>
         </Border>

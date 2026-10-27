@@ -12,8 +12,10 @@ internal static class AnnotationRenderer
 {
     private const double ArrowHeadAngle = Math.PI / 7.0;
 
-    private static readonly Typeface TextTypeface = new(
-        new FontFamily("Microsoft YaHei UI, Segoe UI"),
+    private static readonly FontFamily TextFontFamily = new("Microsoft YaHei UI, Segoe UI");
+
+    private static readonly Typeface StepTypeface = new(
+        TextFontFamily,
         FontStyles.Normal,
         FontWeights.SemiBold,
         FontStretches.Normal);
@@ -77,6 +79,11 @@ internal static class AnnotationRenderer
             return;
         }
 
+        if (stroke.Tool == AnnotationTool.Eraser)
+        {
+            return;
+        }
+
         var color = stroke.Color;
 
         if (stroke.Tool == AnnotationTool.Text)
@@ -89,11 +96,17 @@ internal static class AnnotationRenderer
             var textBrush = new SolidColorBrush(color);
             textBrush.Freeze();
 
+            var typeface = new Typeface(
+                TextFontFamily,
+                stroke.Italic ? FontStyles.Italic : FontStyles.Normal,
+                stroke.Bold ? FontWeights.Bold : FontWeights.Normal,
+                FontStretches.Normal);
+
             var formatted = new FormattedText(
                 stroke.Text,
                 CultureInfo.CurrentUICulture,
                 FlowDirection.LeftToRight,
-                TextTypeface,
+                typeface,
                 stroke.TextSize * scale,
                 textBrush,
                 1.0);
@@ -180,21 +193,40 @@ internal static class AnnotationRenderer
                 }
 
                 context.DrawLine(pen, start, end);
-
-                var head = Math.Max(8 * scale, stroke.Thickness * scale * 3.2);
                 var angle = Math.Atan2(vector.Y, vector.X);
 
-                for (var i = 1; i <= 2; i++)
+                if (stroke.ArrowHead is ArrowHeadMode.End or ArrowHeadMode.Both)
                 {
-                    var wingAngle = angle + Math.PI - (i * ArrowHeadAngle);
-                    var wing = new Point(
-                        end.X + (head * Math.Cos(wingAngle)),
-                        end.Y + (head * Math.Sin(wingAngle)));
-                    context.DrawLine(pen, end, wing);
+                    DrawArrowHead(context, pen, end, angle, stroke, scale);
+                }
+
+                if (stroke.ArrowHead == ArrowHeadMode.Both)
+                {
+                    DrawArrowHead(context, pen, start, angle + Math.PI, stroke, scale);
                 }
 
                 break;
             }
+        }
+    }
+
+    private static void DrawArrowHead(
+        DrawingContext context,
+        Pen pen,
+        Point tip,
+        double angle,
+        AnnotationStroke stroke,
+        double scale)
+    {
+        var head = Math.Max(8 * scale, stroke.Thickness * scale * 3.2);
+
+        for (var direction = -1; direction <= 1; direction += 2)
+        {
+            var wingAngle = angle + Math.PI + (direction * ArrowHeadAngle);
+            var wing = new Point(
+                tip.X + (head * Math.Cos(wingAngle)),
+                tip.Y + (head * Math.Sin(wingAngle)));
+            context.DrawLine(pen, tip, wing);
         }
     }
 
@@ -223,7 +255,7 @@ internal static class AnnotationRenderer
             stroke.Text ?? "?",
             CultureInfo.CurrentUICulture,
             FlowDirection.LeftToRight,
-            TextTypeface,
+            StepTypeface,
             13.0 * scale,
             ink,
             1.0);

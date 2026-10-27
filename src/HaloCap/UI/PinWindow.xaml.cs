@@ -45,7 +45,12 @@ public partial class PinWindow : Window
     private double _highlighterThickness = AnnotationDefaults.HighlighterThickness;
     private double _textSize = AnnotationDefaults.TextSize;
     private int _mosaicBlockDip = AnnotationDefaults.MosaicBlockDip;
+    private double _eraserSize = AnnotationDefaults.EraserSize;
     private bool _fillShapes;
+    private bool _textBold = true;
+    private bool _textItalic;
+    private ArrowHeadMode _arrowHead = ArrowHeadMode.End;
+    private bool _eraseHistoryPushed;
     private Point _mosaicStart;
     private Int32Rect _mosaicLastRect;
     private AnnotationStroke? _liveStroke;
@@ -166,7 +171,7 @@ public partial class PinWindow : Window
 
     private void Root_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
-        if (e.ChangedButton != MouseButton.Left)
+        if (e.ChangedButton != MouseButton.Left || IsPointerOverAnnotationBar())
         {
             return;
         }
@@ -202,6 +207,11 @@ public partial class PinWindow : Window
 
     private void Window_MouseWheel(object sender, MouseWheelEventArgs e)
     {
+        if (IsPointerOverAnnotationBar())
+        {
+            return;
+        }
+
         if (_annotating)
         {
             e.Handled = true;
@@ -343,11 +353,29 @@ public partial class PinWindow : Window
 
         if (_annotating)
         {
+            if (Keyboard.Modifiers == ModifierKeys.Shift && e.Key is Key.R or Key.E)
+            {
+                e.Handled = true;
+                _fillShapes = true;
+                _annotationTool = e.Key == Key.R
+                    ? AnnotationTool.Rectangle
+                    : AnnotationTool.Ellipse;
+                UpdateAnnotationToolVisuals();
+                Keyboard.Focus(Root);
+                return;
+            }
+
             if (Keyboard.Modifiers == ModifierKeys.None)
             {
                 if (GetToolForKey(e.Key) is { } tool)
                 {
                     e.Handled = true;
+
+                    if (tool is AnnotationTool.Rectangle or AnnotationTool.Ellipse)
+                    {
+                        _fillShapes = false;
+                    }
+
                     _annotationTool = tool;
                     UpdateAnnotationToolVisuals();
                     Keyboard.Focus(Root);
@@ -357,8 +385,7 @@ public partial class PinWindow : Window
                 if (e.Key == Key.F)
                 {
                     e.Handled = true;
-                    _fillShapes = !_fillShapes;
-                    UpdateAnnotationToolVisuals();
+                    ToggleFill();
                     return;
                 }
 
@@ -375,6 +402,28 @@ public partial class PinWindow : Window
                     AdjustBrush(1);
                     return;
                 }
+            }
+
+            if (_annotationTool == AnnotationTool.Text &&
+                Keyboard.Modifiers == ModifierKeys.Control &&
+                (e.Key == Key.B || e.Key == Key.I))
+            {
+                e.Handled = true;
+
+                if (e.Key == Key.B)
+                {
+                    _textBold = !_textBold;
+                }
+                else
+                {
+                    _textItalic = !_textItalic;
+                }
+
+                UpdateAnnotationToolVisuals();
+                ShowHud(e.Key == Key.B
+                    ? (_textBold ? "加粗" : "取消加粗")
+                    : (_textItalic ? "斜体" : "取消斜体"));
+                return;
             }
 
             if (Keyboard.Modifiers.HasFlag(ModifierKeys.Control) &&
@@ -429,6 +478,7 @@ public partial class PinWindow : Window
         Key.H => AnnotationTool.Highlighter,
         Key.M => AnnotationTool.Mosaic,
         Key.N => AnnotationTool.Step,
+        Key.X => AnnotationTool.Eraser,
         _ => null
     };
 
@@ -529,13 +579,16 @@ public partial class PinWindow : Window
 
         if (enabled)
         {
-            ShowHud("标注模式 · 滚轮调粗细 · 空格退出");
+            ShowHud("标注模式 · 滚轮调参数 · X 橡皮 · 空格退出");
         }
     }
 
+    private bool IsPointerOverAnnotationBar() =>
+        AnnotationBarHost.Visibility == Visibility.Visible && AnnotationBarHost.IsMouseOver;
+
     private void Root_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
-        if (!_annotating || e.ChangedButton != MouseButton.Left)
+        if (!_annotating || e.ChangedButton != MouseButton.Left || IsPointerOverAnnotationBar())
         {
             return;
         }
@@ -576,6 +629,12 @@ public partial class PinWindow : Window
 
         var imagePoint = ToImagePoint(display);
 
+        if (_annotationTool == AnnotationTool.Eraser)
+        {
+            BeginErase(imagePoint);
+            return;
+        }
+
         if (_annotationTool == AnnotationTool.Text)
         {
             BeginTextEditor(display, imagePoint);
@@ -596,7 +655,10 @@ public partial class PinWindow : Window
             Thickness = _annotationTool == AnnotationTool.Highlighter
                 ? _highlighterThickness
                 : _strokeThickness,
-            TextSize = _textSize
+            TextSize = _textSize,
+            Bold = _textBold,
+            Italic = _textItalic,
+            ArrowHead = _arrowHead
         };
 
         if (_annotationTool == AnnotationTool.Mosaic)
@@ -619,17 +681,25 @@ public partial class PinWindow : Window
 
     private void Root_PreviewMouseMove(object sender, MouseEventArgs e)
     {
-        if (!_annotating)
-        {
-            return;
-        }
-
-        if (!_drawingAnnotation || _liveStroke is null)
+        if (!_annotating || !_drawingAnnotation)
         {
             return;
         }
 
         var point = ToImagePoint(e.GetPosition(Root));
+
+        if (_annotationTool == AnnotationTool.Eraser)
+        {
+            e.Handled = true;
+            EraseAt(point);
+            return;
+        }
+
+        if (_liveStroke is null)
+        {
+            return;
+        }
+
         var shift = Keyboard.Modifiers.HasFlag(ModifierKeys.Shift);
 
         if (_annotationTool == AnnotationTool.Mosaic)
@@ -704,6 +774,7 @@ public partial class PinWindow : Window
 
         e.Handled = true;
         _drawingAnnotation = false;
+        _eraseHistoryPushed = false;
         Mouse.Capture(null);
 
         var stroke = _liveStroke;
@@ -718,6 +789,46 @@ public partial class PinWindow : Window
 
         UpdateAnnotationScale();
         UpdateHistoryVisuals();
+    }
+
+    private void BeginErase(Point imagePoint)
+    {
+        _drawingAnnotation = true;
+        _eraseHistoryPushed = false;
+        Mouse.Capture(Root);
+        EraseAt(imagePoint);
+    }
+
+    private void EraseAt(Point imagePoint)
+    {
+        var radius = _eraserSize / 2;
+        var removed = false;
+
+        for (var i = _strokes.Count - 1; i >= 0; i--)
+        {
+            if (!AnnotationHitTester.HitTest(_strokes[i], imagePoint, radius))
+            {
+                continue;
+            }
+
+            if (!_eraseHistoryPushed)
+            {
+                PushHistory();
+                _eraseHistoryPushed = true;
+            }
+
+            _strokes.RemoveAt(i);
+            removed = true;
+        }
+
+        if (!removed)
+        {
+            return;
+        }
+
+        UpdateAnnotationScale();
+        UpdateHistoryVisuals();
+        ShowHud("已擦除标注 · Ctrl+Z 撤销");
     }
 
     private void PlaceStep(Point imagePoint)
@@ -839,6 +950,14 @@ public partial class PinWindow : Window
             case AnnotationTool.Step:
                 return;
 
+            case AnnotationTool.Eraser:
+                _eraserSize = Math.Clamp(
+                    _eraserSize + (direction * 2),
+                    AnnotationDefaults.MinEraserSize,
+                    AnnotationDefaults.MaxEraserSize);
+                label = $"橡皮 {_eraserSize:0}";
+                break;
+
             default:
                 _strokeThickness = Math.Clamp(
                     _strokeThickness + direction,
@@ -928,6 +1047,7 @@ public partial class PinWindow : Window
     {
         var accent = UiColors.Brush("#FF2F7CF6");
         var normal = UiColors.Brush("#FF3C4250");
+        var isShape = _annotationTool is AnnotationTool.Rectangle or AnnotationTool.Ellipse;
 
         var buttons = new (Button Button, AnnotationTool Tool)[]
         {
@@ -938,6 +1058,7 @@ public partial class PinWindow : Window
             (ToolTextButton, AnnotationTool.Text),
             (ToolHighlighterButton, AnnotationTool.Highlighter),
             (ToolMosaicButton, AnnotationTool.Mosaic),
+            (ToolEraserButton, AnnotationTool.Eraser),
             (ToolStepButton, AnnotationTool.Step)
         };
 
@@ -948,37 +1069,124 @@ public partial class PinWindow : Window
             button.Foreground = active ? Brushes.White : normal;
         }
 
-        var showColors = _annotationTool != AnnotationTool.Mosaic;
+        var showColors = _annotationTool is not (AnnotationTool.Mosaic or AnnotationTool.Eraser);
         PinColorGroup.Visibility = showColors ? Visibility.Visible : Visibility.Collapsed;
-        PinShapeGroup.Visibility = _annotationTool is AnnotationTool.Rectangle or AnnotationTool.Ellipse
+        PinShapeGroup.Visibility = isShape ? Visibility.Visible : Visibility.Collapsed;
+        PinBrushGroup.Visibility = _annotationTool is AnnotationTool.Pen or AnnotationTool.Arrow
+            or AnnotationTool.Highlighter or AnnotationTool.Rectangle or AnnotationTool.Ellipse
             ? Visibility.Visible
             : Visibility.Collapsed;
-        PinBrushGroup.Visibility = _annotationTool is AnnotationTool.Pen or AnnotationTool.Arrow or AnnotationTool.Highlighter
+        PinArrowGroup.Visibility = _annotationTool == AnnotationTool.Arrow
             ? Visibility.Visible
             : Visibility.Collapsed;
         PinTextGroup.Visibility = _annotationTool == AnnotationTool.Text
             ? Visibility.Visible
             : Visibility.Collapsed;
+        PinTextStyleGroup.Visibility = _annotationTool == AnnotationTool.Text
+            ? Visibility.Visible
+            : Visibility.Collapsed;
         PinMosaicGroup.Visibility = _annotationTool == AnnotationTool.Mosaic
             ? Visibility.Visible
             : Visibility.Collapsed;
+        PinEraserGroup.Visibility = _annotationTool == AnnotationTool.Eraser
+            ? Visibility.Visible
+            : Visibility.Collapsed;
 
-        FillToggleButton.Background = _fillShapes ? accent : Brushes.Transparent;
-        FillToggleButton.Foreground = _fillShapes ? Brushes.White : normal;
-        FillToggleIcon.Fill = _fillShapes ? Brushes.White : Brushes.Transparent;
+        SetOptionButtonState(ShapeOutlineButton, !_fillShapes, accent, normal);
+        SetOptionButtonState(ShapeFillButton, _fillShapes, accent, normal);
+
+        SetOptionButtonState(ArrowEndButton, _arrowHead == ArrowHeadMode.End, accent, normal);
+        SetOptionButtonState(ArrowBothButton, _arrowHead == ArrowHeadMode.Both, accent, normal);
+        SetOptionButtonState(ArrowLineButton, _arrowHead == ArrowHeadMode.None, accent, normal);
+        SetOptionButtonState(BoldToggleButton, _textBold, accent, normal);
+        SetOptionButtonState(ItalicToggleButton, _textItalic, accent, normal);
 
         BrushValueText.Text = (_annotationTool == AnnotationTool.Highlighter
             ? _highlighterThickness
             : _strokeThickness).ToString("0");
         TextValueText.Text = _textSize.ToString("0");
         MosaicValueText.Text = _mosaicBlockDip.ToString();
+        EraserValueText.Text = _eraserSize.ToString("0");
     }
 
-    private void FillToggle_Click(object sender, RoutedEventArgs e)
+    private static void SetOptionButtonState(Button button, bool active, Brush accent, Brush normal)
     {
+        button.Background = active ? accent : Brushes.Transparent;
+        button.Foreground = active ? Brushes.White : normal;
+    }
+
+    private void ShapeStyle_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement element || element.Tag is not string tag)
+        {
+            return;
+        }
+
         e.Handled = true;
+        _fillShapes = tag == "Fill";
+        UpdateAnnotationToolVisuals();
+        ShowHud(_fillShapes ? "实心填充" : "空心");
+        Keyboard.Focus(Root);
+    }
+
+    private void ToggleFill()
+    {
         _fillShapes = !_fillShapes;
         UpdateAnnotationToolVisuals();
+        ShowHud(_fillShapes ? "实心填充" : "空心");
+    }
+
+    private void ArrowStyle_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement element ||
+            element.Tag is not string tag ||
+            !Enum.TryParse<ArrowHeadMode>(tag, out var mode))
+        {
+            return;
+        }
+
+        e.Handled = true;
+        _arrowHead = mode;
+        UpdateAnnotationToolVisuals();
+        ShowHud(mode switch
+        {
+            ArrowHeadMode.Both => "双向箭头",
+            ArrowHeadMode.None => "直线",
+            _ => "末端箭头"
+        });
+        Keyboard.Focus(Root);
+    }
+
+    private void TextStyle_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement element || element.Tag is not string tag)
+        {
+            return;
+        }
+
+        e.Handled = true;
+
+        switch (tag)
+        {
+            case "Bold":
+                _textBold = !_textBold;
+                break;
+
+            case "Italic":
+                _textItalic = !_textItalic;
+                break;
+        }
+
+        if (_textEditor is not null)
+        {
+            _textEditor.FontWeight = _textBold ? FontWeights.Bold : FontWeights.Normal;
+            _textEditor.FontStyle = _textItalic ? FontStyles.Italic : FontStyles.Normal;
+        }
+
+        UpdateAnnotationToolVisuals();
+        ShowHud(tag == "Bold"
+            ? (_textBold ? "加粗" : "取消加粗")
+            : (_textItalic ? "斜体" : "取消斜体"));
         Keyboard.Focus(Root);
     }
 
@@ -1081,6 +1289,7 @@ public partial class PinWindow : Window
     {
         _liveStroke = null;
         _drawingAnnotation = false;
+        _eraseHistoryPushed = false;
 
         if (Mouse.Captured == Root)
         {
@@ -1119,7 +1328,8 @@ public partial class PinWindow : Window
             MinWidth = 80,
             MaxWidth = 320,
             FontSize = _textSize * AnnotationScale,
-            FontWeight = FontWeights.SemiBold,
+            FontWeight = _textBold ? FontWeights.Bold : FontWeights.Normal,
+            FontStyle = _textItalic ? FontStyles.Italic : FontStyles.Normal,
             Padding = new Thickness(5, 3, 5, 3),
             Background = UiColors.Brush("#CC10141C"),
             Foreground = brush,
@@ -1181,7 +1391,9 @@ public partial class PinWindow : Window
             Tool = AnnotationTool.Text,
             Color = _annotationColor,
             Text = text,
-            TextSize = _textSize
+            TextSize = _textSize,
+            Bold = _textBold,
+            Italic = _textItalic
         };
 
         stroke.Points.Add(_textPoint);
@@ -1212,6 +1424,11 @@ public partial class PinWindow : Window
 
     private static bool IsMeaningfulStroke(AnnotationStroke stroke)
     {
+        if (stroke.Tool is AnnotationTool.Eraser)
+        {
+            return false;
+        }
+
         if (stroke.Tool == AnnotationTool.Step)
         {
             return stroke.Points.Count > 0;

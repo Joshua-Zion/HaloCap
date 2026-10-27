@@ -88,6 +88,7 @@
             <Setter Property="Margin" Value="1,0" />
             <Setter Property="Cursor" Value="Hand" />
             <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Foreground" Value="#3C4250" />
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
@@ -98,7 +99,10 @@
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Host" Property="Background" Value="#1FFFFFFF" />
+                                <Setter TargetName="Host" Property="Background" Value="#14000000" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.32" />
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -107,7 +111,7 @@
         </Style>
 
         <Style x:Key="PinToolIconStyle" TargetType="Path">
-            <Setter Property="Stroke" Value="#DCE4F1" />
+            <Setter Property="Stroke" Value="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" />
             <Setter Property="StrokeThickness" Value="1.35" />
             <Setter Property="StrokeStartLineCap" Value="Round" />
             <Setter Property="StrokeEndLineCap" Value="Round" />
@@ -118,8 +122,8 @@
         </Style>
 
         <Style x:Key="PinColorSwatchStyle" TargetType="Button">
-            <Setter Property="Width" Value="26" />
-            <Setter Property="Height" Value="26" />
+            <Setter Property="Width" Value="24" />
+            <Setter Property="Height" Value="24" />
             <Setter Property="Margin" Value="1,0" />
             <Setter Property="Cursor" Value="Hand" />
             <Setter Property="BorderBrush" Value="Transparent" />
@@ -129,13 +133,13 @@
                         <Border x:Name="Ring"
                                 BorderBrush="{TemplateBinding BorderBrush}"
                                 BorderThickness="2"
-                                CornerRadius="13"
+                                CornerRadius="12"
                                 Background="Transparent">
                             <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Ring" Property="Background" Value="#22FFFFFF" />
+                                <Setter TargetName="Ring" Property="Background" Value="#14000000" />
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -145,7 +149,7 @@
 
         <Style x:Key="PinBarButtonStyle" TargetType="Button">
             <Setter Property="Background" Value="Transparent" />
-            <Setter Property="Foreground" Value="#E8EDF6" />
+            <Setter Property="Foreground" Value="#2A303B" />
             <Setter Property="FontSize" Value="11" />
             <Setter Property="Cursor" Value="Hand" />
             <Setter Property="Padding" Value="8,5" />
@@ -160,7 +164,7 @@
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Host" Property="Background" Value="#1FFFFFFF" />
+                                <Setter TargetName="Host" Property="Background" Value="#14000000" />
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -231,20 +235,21 @@
                  Visibility="Collapsed"
                  Panel.ZIndex="10">
             <Border x:Name="AnnotationBar"
-                    Padding="5"
-                    CornerRadius="11"
-                    Background="#F211151D"
-                    BorderBrush="#30FFFFFF"
+                    Padding="4"
+                    CornerRadius="10"
+                    Background="#FAF8F9FB"
+                    BorderBrush="#22000000"
                     BorderThickness="1"
                     Cursor="Arrow">
                 <Border.Effect>
-                    <DropShadowEffect Color="#FF000000" BlurRadius="22" ShadowDepth="5" Opacity="0.5" />
+                    <DropShadowEffect Color="#FF000000" BlurRadius="20" ShadowDepth="4" Opacity="0.24" />
                 </Border.Effect>
                 <StackPanel Orientation="Horizontal">
                     <Button x:Name="ToolPenButton"
+                            AutomationProperties.AutomationId="tool.pen"
                             Style="{StaticResource PinToolButtonStyle}"
                             Tag="Pen"
-                            ToolTip="画笔"
+                            ToolTip="画笔 (P) · 滚轮调粗细"
                             Click="AnnotationTool_Click">
                         <Viewbox Width="15" Height="15">
                             <Path Style="{StaticResource PinToolIconStyle}"
@@ -252,18 +257,20 @@
                         </Viewbox>
                     </Button>
                     <Button x:Name="ToolRectangleButton"
+                            AutomationProperties.AutomationId="tool.rectangle"
                             Style="{StaticResource PinToolButtonStyle}"
                             Tag="Rectangle"
-                            ToolTip="矩形"
+                            ToolTip="矩形 (R) · Shift 正方形"
                             Click="AnnotationTool_Click">
                         <Viewbox Width="15" Height="15">
                             <Path Style="{StaticResource PinToolIconStyle}" Data="M4 5h16v14H4Z" />
                         </Viewbox>
                     </Button>
                     <Button x:Name="ToolEllipseButton"
+                            AutomationProperties.AutomationId="tool.ellipse"
                             Style="{StaticResource PinToolButtonStyle}"
                             Tag="Ellipse"
-                            ToolTip="椭圆"
+                            ToolTip="椭圆 (E) · Shift 正圆"
                             Click="AnnotationTool_Click">
                         <Viewbox Width="15" Height="15">
                             <Path Style="{StaticResource PinToolIconStyle}"
@@ -271,87 +278,212 @@
                         </Viewbox>
                     </Button>
                     <Button x:Name="ToolArrowButton"
+                            AutomationProperties.AutomationId="tool.arrow"
                             Style="{StaticResource PinToolButtonStyle}"
                             Tag="Arrow"
-                            ToolTip="箭头"
+                            ToolTip="箭头 (A) · Shift 锁定角度"
                             Click="AnnotationTool_Click">
                         <Viewbox Width="15" Height="15">
                             <Path Style="{StaticResource PinToolIconStyle}" Data="M5 19L19 5 M11 5h8v8" />
                         </Viewbox>
                     </Button>
                     <Button x:Name="ToolTextButton"
+                            AutomationProperties.AutomationId="tool.text"
                             Style="{StaticResource PinToolButtonStyle}"
                             Tag="Text"
-                            ToolTip="文字"
+                            ToolTip="文字 (T) · 滚轮调字号"
                             Click="AnnotationTool_Click">
                         <Viewbox Width="15" Height="15">
                             <Path Style="{StaticResource PinToolIconStyle}" Data="M5 6V4h14v2 M12 4v16 M9 20h6" />
                         </Viewbox>
                     </Button>
                     <Button x:Name="ToolHighlighterButton"
+                            AutomationProperties.AutomationId="tool.highlighter"
                             Style="{StaticResource PinToolButtonStyle}"
                             Tag="Highlighter"
-                            ToolTip="荧光笔"
+                            ToolTip="荧光笔 (H) · 滚轮调粗细"
                             Click="AnnotationTool_Click">
                         <Viewbox Width="15" Height="15">
                             <Path Style="{StaticResource PinToolIconStyle}"
                                   Data="M6 20h12 M8 16l-2 2 M8 16l8-9 3 3-8 9H8Z" />
                         </Viewbox>
                     </Button>
+                    <Button x:Name="ToolMosaicButton"
+                            AutomationProperties.AutomationId="tool.mosaic"
+                            Style="{StaticResource PinToolButtonStyle}"
+                            Tag="Mosaic"
+                            ToolTip="马赛克 (M) · 滚轮调密度"
+                            Click="AnnotationTool_Click">
+                        <Viewbox Width="15" Height="15">
+                            <Path Style="{StaticResource PinToolIconStyle}"
+                                  Data="M4 4h6v6H4Z M14 4h6v6h-6Z M4 14h6v6H4Z M14 14h6v6h-6Z" />
+                        </Viewbox>
+                    </Button>
+                    <Button x:Name="ToolStepButton"
+                            AutomationProperties.AutomationId="tool.step"
+                            Style="{StaticResource PinToolButtonStyle}"
+                            Tag="Step"
+                            ToolTip="序号 (N)"
+                            Click="AnnotationTool_Click">
+                        <Viewbox Width="15" Height="15">
+                            <Path Style="{StaticResource PinToolIconStyle}"
+                                  Data="M12 3.5a8.5 8.5 0 1 1 0 17 8.5 8.5 0 0 1 0-17Z M10.5 9l1.7-1.3V16 M9.8 16h4.6" />
+                        </Viewbox>
+                    </Button>
 
                     <Border Width="1" Margin="4,6" Background="#26FFFFFF" />
 
+                    <StackPanel x:Name="PinColorGroup" Orientation="Horizontal">
                     <Button x:Name="ColorRedButton"
+                            AutomationProperties.AutomationId="color.red"
                             Style="{StaticResource PinColorSwatchStyle}"
                             Tag="#FFFF5A5A"
                             ToolTip="红色"
+                            AutomationProperties.Name="红色"
                             Click="AnnotationColor_Click">
-                        <Ellipse Width="13" Height="13" Fill="#FFFF5A5A" />
+                        <Ellipse Width="12" Height="12" Fill="#FFFF5A5A" />
+                    </Button>
+                    <Button x:Name="ColorOrangeButton"
+                            AutomationProperties.AutomationId="color.orange"
+                            Style="{StaticResource PinColorSwatchStyle}"
+                            Tag="#FFFFA94D"
+                            ToolTip="橙色"
+                            AutomationProperties.Name="橙色"
+                            Click="AnnotationColor_Click">
+                        <Ellipse Width="12" Height="12" Fill="#FFFFA94D" />
                     </Button>
                     <Button x:Name="ColorYellowButton"
+                            AutomationProperties.AutomationId="color.yellow"
                             Style="{StaticResource PinColorSwatchStyle}"
                             Tag="#FFFFD166"
                             ToolTip="黄色"
+                            AutomationProperties.Name="黄色"
                             Click="AnnotationColor_Click">
-                        <Ellipse Width="13" Height="13" Fill="#FFFFD166" />
+                        <Ellipse Width="12" Height="12" Fill="#FFFFD166" />
                     </Button>
                     <Button x:Name="ColorGreenButton"
+                            AutomationProperties.AutomationId="color.green"
                             Style="{StaticResource PinColorSwatchStyle}"
                             Tag="#FF7CE38B"
                             ToolTip="绿色"
+                            AutomationProperties.Name="绿色"
                             Click="AnnotationColor_Click">
-                        <Ellipse Width="13" Height="13" Fill="#FF7CE38B" />
+                        <Ellipse Width="12" Height="12" Fill="#FF7CE38B" />
                     </Button>
                     <Button x:Name="ColorBlueButton"
+                            AutomationProperties.AutomationId="color.blue"
                             Style="{StaticResource PinColorSwatchStyle}"
                             Tag="#FF6CA8FF"
                             ToolTip="蓝色"
+                            AutomationProperties.Name="蓝色"
                             Click="AnnotationColor_Click">
-                        <Ellipse Width="13" Height="13" Fill="#FF6CA8FF" />
+                        <Ellipse Width="12" Height="12" Fill="#FF6CA8FF" />
+                    </Button>
+                    <Button x:Name="ColorPurpleButton"
+                            AutomationProperties.AutomationId="color.purple"
+                            Style="{StaticResource PinColorSwatchStyle}"
+                            Tag="#FFB08CFF"
+                            ToolTip="紫色"
+                            AutomationProperties.Name="紫色"
+                            Click="AnnotationColor_Click">
+                        <Ellipse Width="12" Height="12" Fill="#FFB08CFF" />
+                    </Button>
+                    <Button x:Name="ColorDarkButton"
+                            AutomationProperties.AutomationId="color.dark"
+                            Style="{StaticResource PinColorSwatchStyle}"
+                            Tag="#FF242933"
+                            ToolTip="黑色"
+                            AutomationProperties.Name="黑色"
+                            Click="AnnotationColor_Click">
+                        <Ellipse Width="12" Height="12" Fill="#FF242933" Stroke="#5CFFFFFF" StrokeThickness="1" />
                     </Button>
                     <Button x:Name="ColorWhiteButton"
+                            AutomationProperties.AutomationId="color.white"
                             Style="{StaticResource PinColorSwatchStyle}"
                             Tag="#FFFFFFFF"
                             ToolTip="白色"
+                            AutomationProperties.Name="白色"
                             Click="AnnotationColor_Click">
-                        <Ellipse Width="13" Height="13" Fill="#FFFFFFFF" />
+                        <Ellipse Width="12" Height="12" Fill="#FFFFFFFF" Stroke="#26000000" StrokeThickness="1" />
                     </Button>
+                    </StackPanel>
+
+                    <StackPanel x:Name="PinShapeGroup" Orientation="Horizontal">
+                        <Button x:Name="FillToggleButton"
+                                AutomationProperties.AutomationId="option.fill"
+                                Style="{StaticResource PinToolButtonStyle}"
+                                ToolTip="填充形状 (F)"
+                                Click="FillToggle_Click">
+                            <Viewbox Width="15" Height="15">
+                                <Path x:Name="FillToggleIcon"
+                                      Data="M4 5h16v14H4Z"
+                                      Fill="Transparent"
+                                      Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"
+                                      StrokeThickness="1.2" />
+                            </Viewbox>
+                        </Button>
+                    </StackPanel>
+
+                    <StackPanel x:Name="PinBrushGroup" Orientation="Horizontal">
+                        <TextBlock Text="粗细" FontSize="11" Foreground="#5A6270" Margin="4,0,5,0" VerticalAlignment="Center" />
+                        <Button Style="{StaticResource PinBarButtonStyle}" Padding="6,3" Tag="Down" ToolTip="变细 (滚轮)" Content="−" Click="OptionStep_Click" />
+                        <TextBlock x:Name="BrushValueText" Width="24" FontSize="11.5" Foreground="#2A303B" TextAlignment="Center" VerticalAlignment="Center" />
+                        <Button Style="{StaticResource PinBarButtonStyle}" Padding="6,3" Tag="Up" ToolTip="变粗 (滚轮)" Content="+" Click="OptionStep_Click" />
+                    </StackPanel>
+
+                    <StackPanel x:Name="PinTextGroup" Orientation="Horizontal">
+                        <TextBlock Text="字号" FontSize="11" Foreground="#5A6270" Margin="4,0,5,0" VerticalAlignment="Center" />
+                        <Button Style="{StaticResource PinBarButtonStyle}" Padding="6,3" Tag="Down" ToolTip="变小 (滚轮)" Content="−" Click="OptionStep_Click" />
+                        <TextBlock x:Name="TextValueText" Width="24" FontSize="11.5" Foreground="#2A303B" TextAlignment="Center" VerticalAlignment="Center" />
+                        <Button Style="{StaticResource PinBarButtonStyle}" Padding="6,3" Tag="Up" ToolTip="变大 (滚轮)" Content="+" Click="OptionStep_Click" />
+                    </StackPanel>
+
+                    <StackPanel x:Name="PinMosaicGroup" Orientation="Horizontal">
+                        <TextBlock Text="密度" FontSize="11" Foreground="#5A6270" Margin="4,0,5,0" VerticalAlignment="Center" />
+                        <Button Style="{StaticResource PinBarButtonStyle}" Padding="6,3" Tag="Down" ToolTip="更密 (滚轮)" Content="−" Click="OptionStep_Click" />
+                        <TextBlock x:Name="MosaicValueText" Width="24" FontSize="11.5" Foreground="#2A303B" TextAlignment="Center" VerticalAlignment="Center" />
+                        <Button Style="{StaticResource PinBarButtonStyle}" Padding="6,3" Tag="Up" ToolTip="更疏 (滚轮)" Content="+" Click="OptionStep_Click" />
+                    </StackPanel>
 
                     <Border Width="1" Margin="4,6" Background="#26FFFFFF" />
 
-                    <Button Style="{StaticResource PinBarButtonStyle}"
+                    <Button x:Name="UndoButton"
+                            AutomationProperties.AutomationId="history.undo"
+                            Style="{StaticResource PinToolButtonStyle}"
                             Tag="Undo"
                             ToolTip="撤销 (Ctrl+Z)"
-                            Click="AnnotationAction_Click"
-                            Content="撤销" />
-                    <Button Style="{StaticResource PinBarButtonStyle}"
+                            Click="AnnotationAction_Click">
+                        <Viewbox Width="15" Height="15">
+                            <Path Style="{StaticResource PinToolIconStyle}"
+                                  Data="M9 6L4 11l5 5 M4 11h9a5 5 0 0 1 5 5v2" />
+                        </Viewbox>
+                    </Button>
+                    <Button x:Name="RedoButton"
+                            AutomationProperties.AutomationId="history.redo"
+                            Style="{StaticResource PinToolButtonStyle}"
+                            Tag="Redo"
+                            ToolTip="重做 (Ctrl+Y)"
+                            Click="AnnotationAction_Click">
+                        <Viewbox Width="15" Height="15">
+                            <Path Style="{StaticResource PinToolIconStyle}"
+                                  Data="M15 6l5 5-5 5 M20 11h-9a5 5 0 0 0-5 5v2" />
+                        </Viewbox>
+                    </Button>
+                    <Button x:Name="ClearButton"
+                            AutomationProperties.AutomationId="history.clear"
+                            Style="{StaticResource PinToolButtonStyle}"
                             Tag="Clear"
                             ToolTip="清空标注"
-                            Click="AnnotationAction_Click"
-                            Content="清空" />
+                            Click="AnnotationAction_Click">
+                        <Viewbox Width="15" Height="15">
+                            <Path Style="{StaticResource PinToolIconStyle}"
+                                  Data="M5 7h14 M9 7V4h6v3 M7 7l1 13h8l1-13 M10 11v6 M14 11v6" />
+                        </Viewbox>
+                    </Button>
                     <Button Style="{StaticResource PinBarButtonStyle}"
                             Tag="Done"
-                            Foreground="#7CA8FF"
+                            Foreground="#FFFFFFFF"
+                            Background="#FF2F7CF6"
                             ToolTip="退出标注 (Space)"
                             Click="AnnotationAction_Click"
                             Content="完成" />

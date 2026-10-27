@@ -67,10 +67,18 @@ public partial class ScreenshotOverlayWindow : Window
     private bool _annotating;
     private AnnotationTool _annotationTool = AnnotationTool.Pen;
     private Color _annotationColor = AnnotationDefaults.Palette[0];
+    private double _strokeThickness = AnnotationDefaults.Thickness;
+    private double _highlighterThickness = AnnotationDefaults.HighlighterThickness;
+    private double _textSize = AnnotationDefaults.TextSize;
+    private int _mosaicBlockDip = AnnotationDefaults.MosaicBlockDip;
+    private bool _fillShapes;
+    private Point _mosaicStart;
+    private Int32Rect _mosaicLastRect;
     private AnnotationStroke? _liveStroke;
     private bool _drawingAnnotation;
     private TextBox? _textEditor;
     private Point _textPoint;
+    private readonly DispatcherTimer _toolHudTimer;
 
     internal ScreenshotOverlayWindow(
         ScreenshotSession session,
@@ -100,6 +108,14 @@ public partial class ScreenshotOverlayWindow : Window
         RefreshMapping();
         UpdateAnnotationToolVisuals();
         UpdateAnnotationColorVisuals();
+
+        _toolHudTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1100) };
+        _toolHudTimer.Tick += (_, _) =>
+        {
+            _toolHudTimer.Stop();
+            FadeToolHudOut();
+        };
+
         SourceInitialized += (_, _) => ApplyOverlayWindowStyle();
 
         Loaded += (_, _) =>
@@ -111,10 +127,12 @@ public partial class ScreenshotOverlayWindow : Window
         {
             RefreshMapping();
             UpdateAnnotationFrame();
-            PositionToolbars(animate: false);
+            PositionToolbar();
         };
         Closed += (_, _) =>
         {
+            _toolHudTimer.Stop();
+
             if (Mouse.Captured == Root)
             {
                 Mouse.Capture(null);
@@ -315,30 +333,38 @@ public partial class ScreenshotOverlayWindow : Window
         {
             case CaptureSessionMode.Record:
                 accent = Color.FromRgb(0xFF, 0x7A, 0x7A);
-                HintText.Text = "拖动或单击选择录屏区域 · Shift+方向键微调 · Enter 开始录制 · Esc 取消";
+                HintText.Text = "拖动或单击选择录屏区域 · 方向键微调 · Enter 开始录制 · Esc 取消";
+                ToolGroup.Visibility = Visibility.Collapsed;
+                HistorySeparator.Visibility = Visibility.Collapsed;
+                HistoryGroup.Visibility = Visibility.Collapsed;
                 PinButton.Visibility = Visibility.Collapsed;
                 CopyButton.Visibility = Visibility.Collapsed;
                 SaveButton.Visibility = Visibility.Collapsed;
                 OcrButton.Visibility = Visibility.Collapsed;
-                AnnotateButton.Visibility = Visibility.Collapsed;
                 StartRecordButton.Visibility = Visibility.Visible;
                 break;
 
             case CaptureSessionMode.Ocr:
                 accent = Color.FromRgb(0xB0, 0x8C, 0xFF);
                 HintText.Text = "拖动或单击选择识别区域 · 松开后立即识别 · Esc 取消";
-                AnnotateButton.Visibility = Visibility.Collapsed;
                 break;
 
             case CaptureSessionMode.Pin:
                 accent = Color.FromRgb(0xF5, 0xB9, 0x63);
                 HintText.Text = "拖动或单击选择贴图区域 · 松开后立即贴图 · Esc 取消";
-                AnnotateButton.Visibility = Visibility.Collapsed;
                 break;
 
             default:
                 accent = Color.FromRgb(0x7C, 0xA8, 0xFF);
-                HintText.Text = "拖动框选或单击窗口 · 方向键微调 · 双击复制 · Space 标注 · Esc 取消";
+                HintText.Text = "拖动框选或单击窗口 · 工具快捷键 R E A P T H M N · Enter 复制 · Esc 取消";
+                ToolGroup.Visibility = Visibility.Visible;
+                HistorySeparator.Visibility = Visibility.Visible;
+                HistoryGroup.Visibility = Visibility.Visible;
+                PinButton.Visibility = Visibility.Visible;
+                CopyButton.Visibility = Visibility.Visible;
+                SaveButton.Visibility = Visibility.Visible;
+                OcrButton.Visibility = Visibility.Visible;
+                StartRecordButton.Visibility = Visibility.Collapsed;
                 break;
         }
 
@@ -347,8 +373,8 @@ public partial class ScreenshotOverlayWindow : Window
         SelectionBorder.BorderBrush = brush;
         ElementBorder.Stroke = brush;
         MagnifierPixelRing.Stroke = brush;
-        CornerTopLeft.Fill = brush;
-        CornerTopRight.Fill = brush;
+        ToolHudDot.Fill = brush;
+        CornerTopLeft.Fill = brush;        CornerTopRight.Fill = brush;
         CornerBottomLeft.Fill = brush;
         CornerBottomRight.Fill = brush;
         EdgeTop.Fill = brush;
@@ -392,11 +418,6 @@ public partial class ScreenshotOverlayWindow : Window
         }
 
         if (Toolbar.Visibility == Visibility.Visible && Toolbar.IsMouseOver)
-        {
-            return;
-        }
-
-        if (AnnotationBar.Visibility == Visibility.Visible && AnnotationBar.IsMouseOver)
         {
             return;
         }
@@ -462,7 +483,7 @@ public partial class ScreenshotOverlayWindow : Window
         _session.NotifySelectionStarted(this);
 
         ClearAnnotations();
-        SetAnnotationMode(false);
+        SetDrawingTool(null);
 
         _clickElementPx = _hoverElementPx;
         ClearElementHover();
@@ -533,7 +554,7 @@ public partial class ScreenshotOverlayWindow : Window
 
             UpdateSelectionVisual(showSize: true);
             UpdateAnnotationFrame();
-            PositionToolbars(animate: false);
+            PositionToolbar();
 
             if (_dragKind == DragKind.Create)
             {
@@ -603,7 +624,7 @@ public partial class ScreenshotOverlayWindow : Window
         if (kind != DragKind.Create)
         {
             UpdateSelectionVisual(showSize: true);
-            PositionToolbars(animate: false);
+            PositionToolbar();
             return;
         }
 
@@ -674,7 +695,7 @@ public partial class ScreenshotOverlayWindow : Window
 
         if (_annotating)
         {
-            SetAnnotationMode(false);
+            SetDrawingTool(null);
             return;
         }
 
@@ -700,7 +721,7 @@ public partial class ScreenshotOverlayWindow : Window
 
             if (_annotating)
             {
-                SetAnnotationMode(false);
+                SetDrawingTool(null);
                 return;
             }
 
@@ -714,37 +735,78 @@ public partial class ScreenshotOverlayWindow : Window
             return;
         }
 
-        if (e.Key == Key.Space && _mode == CaptureSessionMode.Screenshot && _hasSelection)
+        if (_hasSelection && _mode == CaptureSessionMode.Screenshot)
         {
-            e.Handled = true;
-            SetAnnotationMode(!_annotating);
-            return;
-        }
-
-        if (_annotating && Keyboard.Modifiers == ModifierKeys.None && GetToolForKey(e.Key) is { } tool)
-        {
-            e.Handled = true;
-            _annotationTool = tool;
-            UpdateAnnotationToolVisuals();
-            return;
-        }
-
-        if (_annotating &&
-            Keyboard.Modifiers.HasFlag(ModifierKeys.Control) &&
-            (e.Key == Key.Z || e.Key == Key.Y))
-        {
-            e.Handled = true;
-
-            if (e.Key == Key.Y || Keyboard.Modifiers.HasFlag(ModifierKeys.Shift))
+            if (e.Key == Key.Space)
             {
-                RedoAnnotation();
-            }
-            else
-            {
-                UndoAnnotation();
+                e.Handled = true;
+                SetDrawingTool(_annotating ? null : _annotationTool);
+                return;
             }
 
-            return;
+            if (Keyboard.Modifiers == ModifierKeys.None)
+            {
+                if (e.Key == Key.V)
+                {
+                    e.Handled = true;
+                    SetDrawingTool(null);
+                    return;
+                }
+
+                if (GetToolForKey(e.Key) is { } tool)
+                {
+                    e.Handled = true;
+                    SetDrawingTool(tool);
+                    return;
+                }
+
+                if (_annotating && e.Key == Key.F)
+                {
+                    e.Handled = true;
+                    _fillShapes = !_fillShapes;
+                    UpdateToolOptionVisuals();
+                    return;
+                }
+
+                if (_annotating && e.Key == Key.OemOpenBrackets)
+                {
+                    e.Handled = true;
+                    AdjustBrush(-1);
+                    return;
+                }
+
+                if (_annotating && e.Key == Key.OemCloseBrackets)
+                {
+                    e.Handled = true;
+                    AdjustBrush(1);
+                    return;
+                }
+            }
+
+            if (Keyboard.Modifiers.HasFlag(ModifierKeys.Control) &&
+                (e.Key == Key.Z || e.Key == Key.Y))
+            {
+                e.Handled = true;
+
+                if (e.Key == Key.Y || Keyboard.Modifiers.HasFlag(ModifierKeys.Shift))
+                {
+                    RedoAnnotation();
+                }
+                else
+                {
+                    UndoAnnotation();
+                }
+
+                return;
+            }
+
+            if (Keyboard.Modifiers.HasFlag(ModifierKeys.Control) && e.Key == Key.T)
+            {
+                e.Handled = true;
+                CommitTextEditor();
+                _session.RequestAction(this, CaptureCommand.Pin);
+                return;
+            }
         }
 
         if (_hasSelection &&
@@ -788,14 +850,27 @@ public partial class ScreenshotOverlayWindow : Window
         }
     }
 
+    private void Window_MouseWheel(object sender, MouseWheelEventArgs e)
+    {
+        if (_closed || !_annotating || !_hasSelection || Toolbar.IsMouseOver)
+        {
+            return;
+        }
+
+        e.Handled = true;
+        AdjustBrush(e.Delta > 0 ? 1 : -1);
+    }
+
     private static AnnotationTool? GetToolForKey(Key key) => key switch
     {
-        Key.P => AnnotationTool.Pen,
         Key.R => AnnotationTool.Rectangle,
         Key.E => AnnotationTool.Ellipse,
         Key.A => AnnotationTool.Arrow,
+        Key.P => AnnotationTool.Pen,
         Key.T => AnnotationTool.Text,
         Key.H => AnnotationTool.Highlighter,
+        Key.M => AnnotationTool.Mosaic,
+        Key.N => AnnotationTool.Step,
         _ => null
     };
 
@@ -814,7 +889,7 @@ public partial class ScreenshotOverlayWindow : Window
 
         UpdateSelectionVisual(showSize: true);
         UpdateAnnotationFrame();
-        PositionToolbars(animate: false);
+        PositionToolbar();
     }
 
     private void ActionButton_Click(object sender, RoutedEventArgs e)
@@ -877,7 +952,7 @@ public partial class ScreenshotOverlayWindow : Window
         _selectionPx = default;
 
         ClearAnnotations();
-        SetAnnotationMode(false);
+        SetDrawingTool(null);
 
         try
         {
@@ -1119,7 +1194,7 @@ public partial class ScreenshotOverlayWindow : Window
     private void ShowToolbar()
     {
         Toolbar.Visibility = Visibility.Visible;
-        PositionToolbars(animate: false);
+        PositionToolbar();
 
         var offset = new TranslateTransform(0, 6);
         _toolbarOffset = offset;
@@ -1135,21 +1210,23 @@ public partial class ScreenshotOverlayWindow : Window
             new DoubleAnimation(6, 0, TimeSpan.FromMilliseconds(140)) { EasingFunction = ease });
     }
 
-    private void PositionToolbars(bool animate)
+    private void PositionToolbar()
     {
-        _ = animate;
-
         if (Toolbar.Visibility != Visibility.Visible || !_hasSelection)
         {
             return;
         }
 
         var desired = MeasureWithoutMargin(Toolbar);
-        var left = _selectionPx.Left / _mapScaleX;
-        var top = (_selectionPx.Top + _selectionPx.Height) / _mapScaleY + 12;
+        var selectionLeft = _selectionPx.Left / _mapScaleX;
         var selectionTop = _selectionPx.Top / _mapScaleY;
+        var selectionRight = (_selectionPx.Left + _selectionPx.Width) / _mapScaleX;
+        var selectionBottom = (_selectionPx.Top + _selectionPx.Height) / _mapScaleY;
         var rootWidth = Root.ActualWidth;
         var rootHeight = Root.ActualHeight;
+
+        var left = selectionRight - desired.Width;
+        var top = selectionBottom + 12;
 
         if (top + desired.Height > rootHeight - 8)
         {
@@ -1159,7 +1236,7 @@ public partial class ScreenshotOverlayWindow : Window
         if (top < 8)
         {
             top = Math.Clamp(
-                (_selectionPx.Top + _selectionPx.Height) / _mapScaleY - desired.Height - 10,
+                selectionBottom - desired.Height - 10,
                 8,
                 Math.Max(8, rootHeight - desired.Height - 8));
         }
@@ -1168,25 +1245,7 @@ public partial class ScreenshotOverlayWindow : Window
         top = Math.Clamp(top, 8, Math.Max(8, rootHeight - desired.Height - 8));
         Toolbar.Margin = new Thickness(left, top, 0, 0);
 
-        if (AnnotationBar.Visibility == Visibility.Visible)
-        {
-            PositionAnnotationBar(top, desired.Height, left);
-        }
-    }
-
-    private void PositionAnnotationBar(double mainTop, double mainHeight, double mainLeft)
-    {
-        var desired = MeasureWithoutMargin(AnnotationBar);
-        var below = mainTop + mainHeight + 8;
-        var above = mainTop - desired.Height - 8;
-
-        var top = below + desired.Height <= Root.ActualHeight - 8 ? below : above;
-        var left = Math.Clamp(
-            mainLeft,
-            8,
-            Math.Max(8, Root.ActualWidth - desired.Width - 8));
-        top = Math.Clamp(top, 8, Math.Max(8, Root.ActualHeight - desired.Height - 8));
-        AnnotationBar.Margin = new Thickness(left, top, 0, 0);
+        PositionOptionBar();
     }
 
     private void HideToolbar()
@@ -1200,7 +1259,8 @@ public partial class ScreenshotOverlayWindow : Window
 
         Toolbar.Opacity = 1;
         Toolbar.Visibility = Visibility.Collapsed;
-        AnnotationBar.Visibility = Visibility.Collapsed;
+        OptionBar.Visibility = Visibility.Collapsed;
+        HideToolHud();
     }
 
     private void UpdateCrosshair(Point point)
@@ -1258,8 +1318,7 @@ public partial class ScreenshotOverlayWindow : Window
     }
 
     private bool IsPointerOverToolbars() =>
-        (Toolbar.Visibility == Visibility.Visible && Toolbar.IsMouseOver) ||
-        (AnnotationBar.Visibility == Visibility.Visible && AnnotationBar.IsMouseOver);
+        Toolbar.Visibility == Visibility.Visible && Toolbar.IsMouseOver;
 
     private void UpdateMagnifier(Point point)
     {
@@ -1572,52 +1631,48 @@ public partial class ScreenshotOverlayWindow : Window
         AnnotationView.SetContent(_strokes, _liveStroke, 1.0);
     }
 
-    private void AnnotateButton_Click(object sender, RoutedEventArgs e)
+    private void SetDrawingTool(AnnotationTool? tool)
     {
-        e.Handled = true;
-        SetAnnotationMode(!_annotating);
-    }
-
-    private void SetAnnotationMode(bool enabled)
-    {
-        if (enabled && (!_hasSelection || _mode != CaptureSessionMode.Screenshot))
+        if (tool is not null && (!_hasSelection || _mode != CaptureSessionMode.Screenshot))
         {
             return;
         }
 
-        if (_annotating == enabled)
+        if (!_annotating && tool is null)
         {
             return;
         }
 
-        _annotating = enabled;
-        AnnotationBar.Visibility = enabled ? Visibility.Visible : Visibility.Collapsed;
-
-        if (!enabled)
+        if (tool is not null)
         {
-            CancelTextEditor();
-            CancelLiveStroke();
+            if (_textEditor is not null)
+            {
+                CommitTextEditor();
+            }
+
+            _annotationTool = tool.Value;
+            _annotating = true;
+            HideMagnifier();
+            ClearElementHover();
+            Root.Cursor = Cursors.Cross;
+            HideCrosshair();
         }
         else
         {
-            HideMagnifier();
-            ClearElementHover();
+            CancelTextEditor();
+            CancelLiveStroke();
+            _annotating = false;
+            Root.Cursor = Cursors.Arrow;
         }
 
+        UpdateAnnotationToolVisuals();
         UpdateHistoryVisuals();
-
-        SetCornersVisible(_hasSelection && !enabled);
-        AnnotateButton.Background = enabled
-            ? UiColors.Brush("#337CA8FF")
-            : Brushes.Transparent;
-
-        Root.Cursor = Cursors.Cross;
-        HideCrosshair();
+        SetCornersVisible(_hasSelection && !_annotating);
 
         if (_hasSelection)
         {
             UpdateAnnotationFrame();
-            PositionToolbars(animate: false);
+            PositionToolbar();
         }
 
         Keyboard.Focus(Root);
@@ -1630,13 +1685,19 @@ public partial class ScreenshotOverlayWindow : Window
             return;
         }
 
+        if (tag == "Select")
+        {
+            SetDrawingTool(null);
+            Keyboard.Focus(Root);
+            return;
+        }
+
         if (!Enum.TryParse<AnnotationTool>(tag, out var tool))
         {
             return;
         }
 
-        _annotationTool = tool;
-        UpdateAnnotationToolVisuals();
+        SetDrawingTool(tool);
         Keyboard.Focus(Root);
     }
 
@@ -1672,10 +1733,6 @@ public partial class ScreenshotOverlayWindow : Window
             case "Clear":
                 ClearAnnotationStrokes();
                 break;
-
-            case "Done":
-                SetAnnotationMode(false);
-                break;
         }
 
         Keyboard.Focus(Root);
@@ -1683,39 +1740,137 @@ public partial class ScreenshotOverlayWindow : Window
 
     private void UpdateAnnotationToolVisuals()
     {
-        var selected = UiColors.Brush("#33FFFFFF");
+        var accent = UiColors.Brush("#FF2F7CF6");
+        var normal = UiColors.Brush("#FF3C4250");
+
+        ToolSelectButton.Background = _annotating ? Brushes.Transparent : accent;
+        ToolSelectButton.Foreground = _annotating ? normal : Brushes.White;
 
         var buttons = new (Button Button, AnnotationTool Tool)[]
         {
-            (ToolPenButton, AnnotationTool.Pen),
             (ToolRectangleButton, AnnotationTool.Rectangle),
             (ToolEllipseButton, AnnotationTool.Ellipse),
             (ToolArrowButton, AnnotationTool.Arrow),
+            (ToolPenButton, AnnotationTool.Pen),
             (ToolTextButton, AnnotationTool.Text),
-            (ToolHighlighterButton, AnnotationTool.Highlighter)
+            (ToolHighlighterButton, AnnotationTool.Highlighter),
+            (ToolMosaicButton, AnnotationTool.Mosaic),
+            (ToolStepButton, AnnotationTool.Step)
         };
 
         foreach (var (button, tool) in buttons)
         {
-            button.Background = tool == _annotationTool ? selected : Brushes.Transparent;
+            var active = _annotating && tool == _annotationTool;
+            button.Background = active ? accent : Brushes.Transparent;
+            button.Foreground = active ? Brushes.White : normal;
         }
+
+        UpdateToolOptionVisuals();
+    }
+
+    private void UpdateToolOptionVisuals()
+    {
+        var colorTool = _annotating && _annotationTool != AnnotationTool.Mosaic;
+        OptionColorGroup.Visibility = colorTool ? Visibility.Visible : Visibility.Collapsed;
+        OptionColorSeparator.Visibility = colorTool ? Visibility.Visible : Visibility.Collapsed;
+
+        ShapeOptionGroup.Visibility = _annotating &&
+                                      _annotationTool is AnnotationTool.Rectangle or AnnotationTool.Ellipse
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+        BrushOptionGroup.Visibility = _annotating &&
+                                      _annotationTool is AnnotationTool.Pen or AnnotationTool.Arrow or AnnotationTool.Highlighter
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+        TextOptionGroup.Visibility = _annotating && _annotationTool == AnnotationTool.Text
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+        MosaicOptionGroup.Visibility = _annotating && _annotationTool == AnnotationTool.Mosaic
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+
+        var accent = UiColors.Brush("#FF2F7CF6");
+        var normal = UiColors.Brush("#FF3C4250");
+        FillToggleButton.Background = _fillShapes ? accent : Brushes.Transparent;
+        FillToggleButton.Foreground = _fillShapes ? Brushes.White : normal;
+        FillToggleIcon.Fill = _fillShapes ? Brushes.White : Brushes.Transparent;
+
+        BrushValueText.Text = (_annotationTool == AnnotationTool.Highlighter
+            ? _highlighterThickness
+            : _strokeThickness).ToString("0");
+        TextValueText.Text = _textSize.ToString("0");
+        MosaicValueText.Text = _mosaicBlockDip.ToString();
+
+        OptionBar.Visibility = _annotating && _hasSelection
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+
+        PositionOptionBar();
+    }
+
+    private void PositionOptionBar()
+    {
+        if (OptionBar.Visibility != Visibility.Visible)
+        {
+            return;
+        }
+
+        var size = MeasureWithoutMargin(OptionBar);
+        var toolbarSize = MeasureWithoutMargin(Toolbar);
+        var toolbarMargin = Toolbar.Margin;
+        var left = toolbarMargin.Left;
+        var top = toolbarMargin.Top + toolbarSize.Height + 6;
+
+        if (top + size.Height > Root.ActualHeight - 8)
+        {
+            top = toolbarMargin.Top - size.Height - 6;
+        }
+
+        left = Math.Clamp(left, 8, Math.Max(8, Root.ActualWidth - size.Width - 8));
+        top = Math.Clamp(top, 8, Math.Max(8, Root.ActualHeight - size.Height - 8));
+        OptionBar.Margin = new Thickness(left, top, 0, 0);
+    }
+
+    private void FillToggle_Click(object sender, RoutedEventArgs e)
+    {
+        e.Handled = true;
+        _fillShapes = !_fillShapes;
+        UpdateToolOptionVisuals();
+        Keyboard.Focus(Root);
+    }
+
+    private void OptionStep_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement element || element.Tag is not string tag)
+        {
+            return;
+        }
+
+        e.Handled = true;
+        AdjustBrush(tag == "Up" ? 1 : -1);
+        Keyboard.Focus(Root);
     }
 
     private void UpdateAnnotationColorVisuals()
     {
+        var activeRing = UiColors.Brush("#FF2A303B");
+
         var buttons = new (Button Button, string Hex)[]
         {
             (ColorRedButton, "#FFFF5A5A"),
+            (ColorOrangeButton, "#FFFFA94D"),
             (ColorYellowButton, "#FFFFD166"),
             (ColorGreenButton, "#FF7CE38B"),
             (ColorBlueButton, "#FF6CA8FF"),
+            (ColorPurpleButton, "#FFB08CFF"),
+            (ColorDarkButton, "#FF242933"),
             (ColorWhiteButton, "#FFFFFFFF")
         };
 
         foreach (var (button, hex) in buttons)
         {
             var color = UiColors.Parse(hex);
-            button.BorderBrush = color == _annotationColor ? Brushes.White : Brushes.Transparent;
+            button.BorderBrush = color == _annotationColor ? activeRing : Brushes.Transparent;
         }
     }
 
@@ -1731,6 +1886,12 @@ public partial class ScreenshotOverlayWindow : Window
             return;
         }
 
+        if (_annotationTool == AnnotationTool.Step)
+        {
+            PlaceStep(point);
+            return;
+        }
+
         if (_annotationTool == AnnotationTool.Text)
         {
             BeginTextEditor(rootPoint, point);
@@ -1741,12 +1902,26 @@ public partial class ScreenshotOverlayWindow : Window
         {
             Tool = _annotationTool,
             Color = _annotationColor,
+            Filled = _fillShapes,
             Thickness = _annotationTool == AnnotationTool.Highlighter
-                ? AnnotationDefaults.HighlighterThickness
-                : AnnotationDefaults.Thickness
+                ? _highlighterThickness
+                : _strokeThickness,
+            TextSize = _textSize
         };
 
-        _liveStroke.Points.Add(point);
+        if (_annotationTool == AnnotationTool.Mosaic)
+        {
+            _mosaicStart = point;
+            _mosaicLastRect = default;
+            _liveStroke.Points.Add(point);
+            _liveStroke.Points.Add(point);
+            UpdateMosaicStroke(_liveStroke, point);
+        }
+        else
+        {
+            _liveStroke.Points.Add(point);
+        }
+
         _drawingAnnotation = true;
         Mouse.Capture(Root);
         AnnotationView.SetContent(_strokes, _liveStroke, 1.0);
@@ -1760,26 +1935,63 @@ public partial class ScreenshotOverlayWindow : Window
         }
 
         var point = RootToSelectionDip(rootPoint);
+        var shift = Keyboard.Modifiers.HasFlag(ModifierKeys.Shift);
+
+        if (_annotationTool == AnnotationTool.Mosaic)
+        {
+            UpdateMosaicStroke(
+                _liveStroke,
+                shift ? AnnotationGeometry.ConstrainSquare(_mosaicStart, point) : point);
+            return;
+        }
 
         if (_annotationTool is AnnotationTool.Pen or AnnotationTool.Highlighter)
         {
-            var last = _liveStroke.Points[_liveStroke.Points.Count - 1];
-            if ((point - last).Length < 0.8)
+            if (shift)
             {
-                return;
-            }
+                if (_liveStroke.Points.Count > 2)
+                {
+                    _liveStroke.Points.RemoveRange(2, _liveStroke.Points.Count - 2);
+                }
 
-            _liveStroke.Points.Add(point);
-        }
-        else
-        {
-            if (_liveStroke.Points.Count == 1)
-            {
-                _liveStroke.Points.Add(point);
+                if (_liveStroke.Points.Count == 1)
+                {
+                    _liveStroke.Points.Add(point);
+                }
+                else
+                {
+                    _liveStroke.Points[1] = point;
+                }
             }
             else
             {
-                _liveStroke.Points[1] = point;
+                var last = _liveStroke.Points[_liveStroke.Points.Count - 1];
+                if ((point - last).Length < 0.8)
+                {
+                    return;
+                }
+
+                _liveStroke.Points.Add(point);
+            }
+        }
+        else
+        {
+            var end = point;
+
+            if (shift && _liveStroke.Points.Count > 0)
+            {
+                end = _annotationTool == AnnotationTool.Arrow
+                    ? AnnotationGeometry.SnapToAngle(_liveStroke.Points[0], point)
+                    : AnnotationGeometry.ConstrainSquare(_liveStroke.Points[0], point);
+            }
+
+            if (_liveStroke.Points.Count == 1)
+            {
+                _liveStroke.Points.Add(end);
+            }
+            else
+            {
+                _liveStroke.Points[1] = end;
             }
         }
 
@@ -1804,8 +2016,249 @@ public partial class ScreenshotOverlayWindow : Window
         UpdateHistoryVisuals();
     }
 
+    private void PlaceStep(Point point)
+    {
+        var radius = AnnotationDefaults.StepRadius;
+        var maxX = Math.Max(radius, AnnotationView.ActualWidth - radius);
+        var maxY = Math.Max(radius, AnnotationView.ActualHeight - radius);
+        var center = new Point(
+            Math.Clamp(point.X, radius, maxX),
+            Math.Clamp(point.Y, radius, maxY));
+
+        var number = 1;
+
+        foreach (var stroke in _strokes)
+        {
+            if (stroke.Tool == AnnotationTool.Step &&
+                int.TryParse(stroke.Text, out var existing) &&
+                existing >= number)
+            {
+                number = existing + 1;
+            }
+        }
+
+        var step = new AnnotationStroke
+        {
+            Tool = AnnotationTool.Step,
+            Color = _annotationColor,
+            Text = number.ToString()
+        };
+
+        step.Points.Add(center);
+        PushHistory();
+        _strokes.Add(step);
+        AnnotationView.SetContent(_strokes, null, 1.0);
+        UpdateHistoryVisuals();
+        ShowToolHud($"序号 {number}");
+    }
+
+    private void UpdateMosaicStroke(AnnotationStroke stroke, Point current)
+    {
+        if (_frozenSource is null)
+        {
+            return;
+        }
+
+        var rect = AnnotationGeometry.NormalizeRect(_mosaicStart, current);
+
+        if (rect.Width < 0.5 || rect.Height < 0.5)
+        {
+            return;
+        }
+
+        var scaleX = _mapScaleX;
+        var scaleY = _mapScaleY;
+        var left = _selectionPx.Left + (int)Math.Round(rect.Left * scaleX);
+        var top = _selectionPx.Top + (int)Math.Round(rect.Top * scaleY);
+        var right = _selectionPx.Left + (int)Math.Round(rect.Right * scaleX);
+        var bottom = _selectionPx.Top + (int)Math.Round(rect.Bottom * scaleY);
+        var blockPixels = Math.Max(4, (int)Math.Round(_mosaicBlockDip * scaleX));
+        var snapped = MosaicRenderer.SnapToBlocks(left, top, right, bottom, _selectionPx, blockPixels);
+
+        if (snapped.Width <= 0 || snapped.Height <= 0)
+        {
+            return;
+        }
+
+        if (snapped.Equals(_mosaicLastRect) && stroke.Mosaic is not null)
+        {
+            return;
+        }
+
+        var tile = MosaicRenderer.CreateTile(_frozenSource, snapped, blockPixels);
+
+        if (tile is null)
+        {
+            return;
+        }
+
+        _mosaicLastRect = snapped;
+        stroke.Mosaic = tile;
+        stroke.Points[0] = new Point(
+            (snapped.X - _selectionPx.Left) / scaleX,
+            (snapped.Y - _selectionPx.Top) / scaleY);
+        stroke.Points[1] = new Point(
+            (snapped.X + snapped.Width - _selectionPx.Left) / scaleX,
+            (snapped.Y + snapped.Height - _selectionPx.Top) / scaleY);
+        AnnotationView.SetContent(_strokes, stroke, 1.0);
+    }
+
+    private void AdjustBrush(int direction)
+    {
+        if (!_annotating)
+        {
+            return;
+        }
+
+        string label;
+
+        switch (_annotationTool)
+        {
+            case AnnotationTool.Text:
+                _textSize = Math.Clamp(
+                    _textSize + (direction * 2),
+                    AnnotationDefaults.MinTextSize,
+                    AnnotationDefaults.MaxTextSize);
+                label = $"字号 {_textSize:0}";
+                break;
+
+            case AnnotationTool.Highlighter:
+                _highlighterThickness = Math.Clamp(
+                    _highlighterThickness + (direction * 2),
+                    AnnotationDefaults.MinHighlighterThickness,
+                    AnnotationDefaults.MaxHighlighterThickness);
+                label = $"荧光笔 {_highlighterThickness:0}";
+                break;
+
+            case AnnotationTool.Mosaic:
+                _mosaicBlockDip = Math.Clamp(
+                    _mosaicBlockDip + (direction * 2),
+                    AnnotationDefaults.MinMosaicBlockDip,
+                    AnnotationDefaults.MaxMosaicBlockDip);
+                _mosaicLastRect = default;
+                label = $"马赛克 {_mosaicBlockDip}";
+                break;
+
+            case AnnotationTool.Step:
+                return;
+
+            default:
+                _strokeThickness = Math.Clamp(
+                    _strokeThickness + direction,
+                    AnnotationDefaults.MinThickness,
+                    AnnotationDefaults.MaxThickness);
+                label = $"粗细 {_strokeThickness:0}";
+                break;
+        }
+
+        if (_liveStroke is not null &&
+            _annotationTool is not AnnotationTool.Mosaic and not AnnotationTool.Text)
+        {
+            _liveStroke.Thickness = _annotationTool == AnnotationTool.Highlighter
+                ? _highlighterThickness
+                : _strokeThickness;
+            AnnotationView.SetContent(_strokes, _liveStroke, 1.0);
+        }
+
+        ShowToolHud(label);
+        UpdateToolOptionVisuals();
+    }
+
+    private void ShowToolHud(string text)
+    {
+        ToolHudText.Text = text;
+        ToolHud.Visibility = Visibility.Visible;
+        ToolHud.BeginAnimation(OpacityProperty, null);
+        ToolHud.Opacity = 1;
+        _toolHudTimer.Stop();
+        _toolHudTimer.Start();
+        PositionToolHud();
+    }
+
+    private void PositionToolHud()
+    {
+        var size = MeasureWithoutMargin(ToolHud);
+        var rootWidth = Root.ActualWidth;
+        var rootHeight = Root.ActualHeight;
+        Point? cursor = null;
+
+        if (NativeMethods.GetCursorPos(out var raw))
+        {
+            var x = (raw.X - _monitor.Bounds.Left) / _mapScaleX;
+            var y = (raw.Y - _monitor.Bounds.Top) / _mapScaleY;
+
+            if (x >= 0 && y >= 0 && x <= rootWidth && y <= rootHeight)
+            {
+                cursor = new Point(x, y);
+            }
+        }
+
+        double left;
+        double top;
+
+        if (cursor is { } point)
+        {
+            left = point.X + 18;
+            top = point.Y + 24;
+
+            if (left + size.Width > rootWidth - 8)
+            {
+                left = point.X - size.Width - 18;
+            }
+
+            if (top + size.Height > rootHeight - 8)
+            {
+                top = point.Y - size.Height - 18;
+            }
+        }
+        else
+        {
+            left = Toolbar.Margin.Left;
+            top = Toolbar.Margin.Top - size.Height - 8;
+        }
+
+        left = Math.Clamp(left, 8, Math.Max(8, rootWidth - size.Width - 8));
+        top = Math.Clamp(top, 8, Math.Max(8, rootHeight - size.Height - 8));
+        ToolHud.Margin = new Thickness(left, top, 0, 0);
+    }
+
+    private void FadeToolHudOut()
+    {
+        var fade = new DoubleAnimation(0, TimeSpan.FromMilliseconds(160))
+        {
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseIn }
+        };
+
+        fade.Completed += (_, _) => ToolHud.Visibility = Visibility.Collapsed;
+        ToolHud.BeginAnimation(OpacityProperty, fade);
+    }
+
+    private void HideToolHud()
+    {
+        _toolHudTimer.Stop();
+        ToolHud.BeginAnimation(OpacityProperty, null);
+        ToolHud.Opacity = 0;
+        ToolHud.Visibility = Visibility.Collapsed;
+    }
+
     private static bool IsMeaningfulStroke(AnnotationStroke stroke)
     {
+        if (stroke.Tool == AnnotationTool.Step)
+        {
+            return stroke.Points.Count > 0;
+        }
+
+        if (stroke.Tool == AnnotationTool.Mosaic)
+        {
+            if (stroke.Mosaic is null || stroke.Points.Count < 2)
+            {
+                return false;
+            }
+
+            var mosaicRect = AnnotationGeometry.NormalizeRect(stroke.Points[0], stroke.Points[1]);
+            return mosaicRect.Width >= 4 && mosaicRect.Height >= 4;
+        }
+
         if (stroke.Points.Count < 2)
         {
             return false;
@@ -1884,6 +2337,7 @@ public partial class ScreenshotOverlayWindow : Window
     {
         UndoButton.IsEnabled = _undoStack.Count > 0 || _liveStroke is not null;
         RedoButton.IsEnabled = _redoStack.Count > 0;
+        ClearButton.IsEnabled = _strokes.Count > 0 || _liveStroke is not null;
     }
 
     private void CancelLiveStroke()
@@ -1937,7 +2391,7 @@ public partial class ScreenshotOverlayWindow : Window
         {
             MinWidth = 90,
             MaxWidth = 360,
-            FontSize = AnnotationDefaults.TextSize,
+            FontSize = _textSize,
             FontWeight = FontWeights.SemiBold,
             Padding = new Thickness(5, 3, 5, 3),
             Background = UiColors.Brush("#CC10141C"),
@@ -1999,7 +2453,8 @@ public partial class ScreenshotOverlayWindow : Window
         {
             Tool = AnnotationTool.Text,
             Color = _annotationColor,
-            Text = text
+            Text = text,
+            TextSize = _textSize
         };
 
         stroke.Points.Add(_textPoint);

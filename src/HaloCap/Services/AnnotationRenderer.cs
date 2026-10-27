@@ -50,6 +50,8 @@ internal static class AnnotationRenderer
         var height = source.PixelHeight * 96.0 / dpiY;
 
         var visual = new DrawingVisual();
+        RenderOptions.SetBitmapScalingMode(visual, BitmapScalingMode.NearestNeighbor);
+
         using (var context = visual.RenderOpen())
         {
             context.DrawImage(source, new Rect(0, 0, width, height));
@@ -92,11 +94,29 @@ internal static class AnnotationRenderer
                 CultureInfo.CurrentUICulture,
                 FlowDirection.LeftToRight,
                 TextTypeface,
-                AnnotationDefaults.TextSize * scale,
+                stroke.TextSize * scale,
                 textBrush,
                 1.0);
 
             context.DrawText(formatted, stroke.Points[0]);
+            return;
+        }
+
+        if (stroke.Tool == AnnotationTool.Step)
+        {
+            DrawStep(context, stroke, scale);
+            return;
+        }
+
+        if (stroke.Tool == AnnotationTool.Mosaic)
+        {
+            if (stroke.Mosaic is not null && stroke.Points.Count >= 2)
+            {
+                context.DrawImage(
+                    stroke.Mosaic,
+                    AnnotationGeometry.NormalizeRect(stroke.Points[0], stroke.Points[1]));
+            }
+
             return;
         }
 
@@ -133,14 +153,17 @@ internal static class AnnotationRenderer
         switch (stroke.Tool)
         {
             case AnnotationTool.Rectangle:
-                context.DrawRectangle(null, pen, new Rect(start, end));
+                context.DrawRectangle(
+                    stroke.Filled ? CreateFill(color) : null,
+                    pen,
+                    new Rect(start, end));
                 break;
 
             case AnnotationTool.Ellipse:
             {
                 var rect = new Rect(start, end);
                 context.DrawEllipse(
-                    null,
+                    stroke.Filled ? CreateFill(color) : null,
                     pen,
                     new Point(rect.Left + (rect.Width / 2), rect.Top + (rect.Height / 2)),
                     rect.Width / 2,
@@ -175,6 +198,41 @@ internal static class AnnotationRenderer
         }
     }
 
+    private static void DrawStep(DrawingContext context, AnnotationStroke stroke, double scale)
+    {
+        if (stroke.Points.Count == 0)
+        {
+            return;
+        }
+
+        var center = stroke.Points[0];
+        var radius = AnnotationDefaults.StepRadius * scale;
+        var inkColor = AnnotationGeometry.IsLightColor(stroke.Color)
+            ? Color.FromRgb(0x1B, 0x1F, 0x24)
+            : Colors.White;
+
+        var fill = new SolidColorBrush(stroke.Color);
+        fill.Freeze();
+        var ink = new SolidColorBrush(inkColor);
+        ink.Freeze();
+        var outline = new Pen(ink, Math.Max(1.0, 1.2 * scale));
+
+        context.DrawEllipse(fill, outline, center, radius, radius);
+
+        var formatted = new FormattedText(
+            stroke.Text ?? "?",
+            CultureInfo.CurrentUICulture,
+            FlowDirection.LeftToRight,
+            TextTypeface,
+            13.0 * scale,
+            ink,
+            1.0);
+
+        context.DrawText(
+            formatted,
+            new Point(center.X - (formatted.Width / 2), center.Y - (formatted.Height / 2)));
+    }
+
     private static void DrawPolyline(
         DrawingContext context,
         IReadOnlyList<Point> points,
@@ -191,6 +249,13 @@ internal static class AnnotationRenderer
         {
             context.DrawLine(pen, points[i - 1], points[i]);
         }
+    }
+
+    private static SolidColorBrush CreateFill(Color color)
+    {
+        var fill = new SolidColorBrush(color);
+        fill.Freeze();
+        return fill;
     }
 
     private static Pen CreatePen(Color color, double thickness)

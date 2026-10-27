@@ -43,7 +43,12 @@ internal static class Program
             ("MoveWithin preserves size", MoveWithinPreservesSize),
             ("ResizeEdges enforces minimum size", ResizeEdgesEnforcesMinimum),
             ("ResizeEdges clamps to container", ResizeEdgesClampsToContainer),
-            ("Annotation compose draws stroke", AnnotationComposeDrawsStroke)
+            ("Annotation compose draws stroke", AnnotationComposeDrawsStroke),
+            ("Annotation compose fills shape", AnnotationComposeFillsShape),
+            ("Square constraint keeps sides equal", SquareConstraintKeepsSidesEqual),
+            ("Arrow snap locks to 45 degrees", ArrowSnapLocksToAngles),
+            ("Mosaic snap aligns to blocks", MosaicSnapAlignsToBlocks),
+            ("Mosaic tile averages blocks", MosaicTileAveragesBlocks)
         };
 
         var failures = 0;
@@ -326,6 +331,135 @@ internal static class Program
 
             var corner = ReadPixel(composed, 2, 60);
             True(corner.R > 200 && corner.G > 200 && corner.B > 200, "untouched corner should stay white");
+        });
+    }
+
+    private static void SquareConstraintKeepsSidesEqual()
+    {
+        var end = AnnotationGeometry.ConstrainSquare(new Point(10, 10), new Point(30, 20));
+        Equal(30.0, end.X, 0.001);
+        Equal(30.0, end.Y, 0.001);
+
+        var negative = AnnotationGeometry.ConstrainSquare(new Point(10, 10), new Point(-5, 20));
+        Equal(-5.0, negative.X, 0.001);
+        Equal(25.0, negative.Y, 0.001);
+    }
+
+    private static void ArrowSnapLocksToAngles()
+    {
+        var horizontal = AnnotationGeometry.SnapToAngle(new Point(0, 0), new Point(100, 5));
+        Equal(0.0, horizontal.Y, 0.001);
+        True(horizontal.X > 99, "horizontal snap should preserve length");
+
+        var vertical = AnnotationGeometry.SnapToAngle(new Point(0, 0), new Point(10, 100));
+        Equal(0.0, vertical.X, 0.001);
+        True(vertical.Y > 99, "vertical snap should preserve length");
+
+        var diagonal = AnnotationGeometry.SnapToAngle(new Point(0, 0), new Point(100, 90));
+        Equal(Math.Abs(diagonal.X), Math.Abs(diagonal.Y), 0.001);
+    }
+
+    private static void MosaicSnapAlignsToBlocks()
+    {
+        var limit = new PhysicalRect(10, 10, 100, 100);
+        var snapped = MosaicRenderer.SnapToBlocks(23, 27, 58, 61, limit, 10);
+        Equal(20, snapped.X);
+        Equal(20, snapped.Y);
+        Equal(40, snapped.Width);
+        Equal(50, snapped.Height);
+
+        var clipped = MosaicRenderer.SnapToBlocks(0, 0, 200, 200, limit, 10);
+        Equal(10, clipped.X);
+        Equal(10, clipped.Y);
+        Equal(100, clipped.Width);
+        Equal(100, clipped.Height);
+    }
+
+    private static void MosaicTileAveragesBlocks()
+    {
+        RunSta(() =>
+        {
+            const int size = 16;
+            var pixels = new byte[size * size * 4];
+
+            for (var y = 0; y < size; y++)
+            {
+                for (var x = 0; x < size; x++)
+                {
+                    var index = ((y * size) + x) * 4;
+                    var red = x < size / 2;
+                    pixels[index] = (byte)(red ? 0 : 255);
+                    pixels[index + 1] = 0;
+                    pixels[index + 2] = (byte)(red ? 255 : 0);
+                    pixels[index + 3] = 255;
+                }
+            }
+
+            var source = BitmapSource.Create(
+                size,
+                size,
+                96,
+                96,
+                PixelFormats.Bgra32,
+                null,
+                pixels,
+                size * 4);
+
+            var tile = MosaicRenderer.CreateTile(source, new Int32Rect(0, 0, size, size), 8);
+
+            if (tile is null)
+            {
+                throw new InvalidOperationException("tile should not be null");
+            }
+
+            Equal(2, tile.PixelWidth);
+            Equal(2, tile.PixelHeight);
+
+            var redPixel = ReadPixel(tile, 0, 0);
+            True(redPixel.R > 250 && redPixel.B < 5, "left block should be red");
+
+            var bluePixel = ReadPixel(tile, 1, 0);
+            True(bluePixel.B > 250 && bluePixel.R < 5, "right block should be blue");
+        });
+    }
+
+    private static void AnnotationComposeFillsShape()
+    {
+        RunSta(() =>
+        {
+            var source = CreateSolidBitmap(64, 64, Colors.White);
+
+            var stroke = new AnnotationStroke
+            {
+                Tool = AnnotationTool.Rectangle,
+                Color = Colors.Red,
+                Thickness = 4,
+                Filled = true
+            };
+
+            stroke.Points.Add(new Point(8, 8));
+            stroke.Points.Add(new Point(56, 56));
+
+            var composed = AnnotationRenderer.Compose(source, new[] { stroke });
+            var middle = ReadPixel(composed, 32, 32);
+            True(middle.R > 150 && middle.G < 120 && middle.B < 120, "filled rectangle interior should be red");
+
+            var outside = ReadPixel(composed, 1, 1);
+            True(outside.R > 200 && outside.G > 200 && outside.B > 200, "outside the rectangle should stay white");
+
+            var hollow = new AnnotationStroke
+            {
+                Tool = AnnotationTool.Rectangle,
+                Color = Colors.Red,
+                Thickness = 4
+            };
+
+            hollow.Points.Add(new Point(8, 8));
+            hollow.Points.Add(new Point(56, 56));
+
+            var hollowImage = AnnotationRenderer.Compose(source, new[] { hollow });
+            var hollowMiddle = ReadPixel(hollowImage, 32, 32);
+            True(hollowMiddle.R > 200 && hollowMiddle.G > 200, "outline rectangle interior should stay white");
         });
     }
 

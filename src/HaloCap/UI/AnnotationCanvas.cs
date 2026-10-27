@@ -16,6 +16,11 @@ public sealed class AnnotationCanvas : FrameworkElement
     private AnnotationStroke? _live;
     private double _scale = 1.0;
 
+    public AnnotationCanvas()
+    {
+        RenderOptions.SetBitmapScalingMode(this, BitmapScalingMode.NearestNeighbor);
+    }
+
     internal void SetContent(
         IReadOnlyList<AnnotationStroke> strokes,
         AnnotationStroke? live,

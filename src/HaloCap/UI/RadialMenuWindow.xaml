@@ -96,7 +96,7 @@
                            HorizontalAlignment="Center"
                            TextAlignment="Center" />
                 <TextBlock x:Name="CenterSubtitle"
-                           Text="点击 · 1–4 · Esc"
+                           Text="拖动移动 · 1–4 · Esc"
                            FontSize="10.5"
                            Foreground="{StaticResource TextTertiaryBrush}"
                            HorizontalAlignment="Center"

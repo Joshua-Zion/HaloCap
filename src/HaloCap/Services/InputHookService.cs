@@ -26,7 +26,7 @@ internal sealed class InputHookService : IDisposable
 
     public Action<int, int>? MouseMove { get; set; }
 
-    public Func<int, int, bool>? MouseDown { get; set; }
+    public Func<int, int, bool, bool>? MouseDown { get; set; }
 
     public Func<int, int, bool>? MouseUp { get; set; }
 
@@ -125,8 +125,14 @@ internal sealed class InputHookService : IDisposable
                         break;
 
                     case NativeMethods.WM_LBUTTONDOWN:
+                        if (MouseDown?.Invoke(data.pt.X, data.pt.Y, true) == true)
+                        {
+                            return new IntPtr(1);
+                        }
+                        break;
+
                     case NativeMethods.WM_RBUTTONDOWN:
-                        if (MouseDown?.Invoke(data.pt.X, data.pt.Y) == true)
+                        if (MouseDown?.Invoke(data.pt.X, data.pt.Y, false) == true)
                         {
                             return new IntPtr(1);
                         }

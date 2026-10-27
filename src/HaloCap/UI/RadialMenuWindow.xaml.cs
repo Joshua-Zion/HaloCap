@@ -208,7 +208,7 @@ public partial class RadialMenuWindow : Window
         {
             CenterTitle.Text = "选择操作";
             CenterTitle.Foreground = (Brush)FindResource("TextPrimaryBrush");
-            CenterSubtitle.Text = "点击 · 1–4 · Esc";
+            CenterSubtitle.Text = "拖动移动 · 1–4 · Esc";
             CenterDot.Fill = UiColors.Brush("#FF4E596B");
             return;
         }

@@ -35,7 +35,13 @@ internal sealed class RadialMenuController : IDisposable
     private POINT _centerPx;
     private double _pixelScale = 1.0;
     private double _windowSizeDip = RadialMenuWindow.MenuSize;
+    private int _windowSizePx;
     private RadialAction? _hovered;
+    private bool _draggingCenter;
+    private int _dragOffsetX;
+    private int _dragOffsetY;
+    private int _dragWindowSizePx;
+    private NativeMethods.RECT _dragWorkArea;
 
     public RadialMenuController(HotkeyDefinition hotkey, RadialMenuSize menuSize)
     {
@@ -68,14 +74,22 @@ internal sealed class RadialMenuController : IDisposable
 
     public void ToggleFromHotkey()
     {
-        if (_isOpen)
-        {
-            HideMenu();
-        }
-        else
+        var cursor = GetCursorPoint();
+
+        if (!_isOpen)
         {
             ShowMenu();
+            return;
         }
+
+        if (IsPointInsideDisk(cursor))
+        {
+            HideMenu();
+            return;
+        }
+
+        // 光标已经离开圆盘：把圆盘移到光标的新位置重新展开。
+        ShowMenu();
     }
 
     public void ShowFromTray()
@@ -94,6 +108,7 @@ internal sealed class RadialMenuController : IDisposable
         }
 
         _isOpen = false;
+        _draggingCenter = false;
         _showGeneration++;
         _hovered = null;
         _hooks.Uninstall();
@@ -109,6 +124,7 @@ internal sealed class RadialMenuController : IDisposable
 
         var cursor = GetCursorPoint();
         _isOpen = true;
+        _draggingCenter = false;
         var generation = ++_showGeneration;
 
         _window.EnsureShownInvisible();
@@ -153,6 +169,7 @@ internal sealed class RadialMenuController : IDisposable
 
         var scale = GetMonitorScale(monitor, handle);
         var placement = ComputePlacement(cursor, monitorInfo.rcWork, scale, _windowSizeDip);
+        _windowSizePx = placement.Size;
 
         NativeMethods.SetWindowPos(
             handle,
@@ -183,6 +200,11 @@ internal sealed class RadialMenuController : IDisposable
                 placement.Size,
                 NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_SHOWWINDOW);
             NativeMethods.GetWindowRect(handle, out rect);
+        }
+
+        if (rect.Width > 0)
+        {
+            _windowSizePx = rect.Width;
         }
 
         _centerPx = new POINT((rect.Left + rect.Right) / 2, (rect.Top + rect.Bottom) / 2);
@@ -293,10 +315,16 @@ internal sealed class RadialMenuController : IDisposable
             return;
         }
 
+        if (_draggingCenter)
+        {
+            DragCenter(new POINT(x, y));
+            return;
+        }
+
         UpdateHover(new POINT(x, y));
     }
 
-    private bool HandleMouseDown(int x, int y)
+    private bool HandleMouseDown(int x, int y, bool isLeftButton)
     {
         if (!_isOpen)
         {
@@ -304,13 +332,115 @@ internal sealed class RadialMenuController : IDisposable
         }
 
         var point = new POINT(x, y);
+
+        if (isLeftButton && IsPointInsideDeadZone(point))
+        {
+            BeginCenterDrag(point);
+            return true;
+        }
+
         _dispatcher.BeginInvoke(
             DispatcherPriority.Input,
             new Action(() => HandleClick(point)));
         return true;
     }
 
-    private bool HandleMouseUp(int x, int y) => _isOpen;
+    private bool HandleMouseUp(int x, int y)
+    {
+        if (!_isOpen)
+        {
+            return false;
+        }
+
+        if (_draggingCenter)
+        {
+            _draggingCenter = false;
+            UpdateHover(new POINT(x, y));
+        }
+
+        return true;
+    }
+
+    private void BeginCenterDrag(POINT point)
+    {
+        _draggingCenter = true;
+        _dragOffsetX = _centerPx.X - point.X;
+        _dragOffsetY = _centerPx.Y - point.Y;
+        _dragWindowSizePx = Math.Max(1, _windowSizePx);
+        _dragWorkArea = GetWorkArea(point);
+        SetHover(null);
+    }
+
+    private void DragCenter(POINT point)
+    {
+        var size = _dragWindowSizePx;
+        var half = size / 2;
+        var desiredLeft = point.X + _dragOffsetX - half;
+        var desiredTop = point.Y + _dragOffsetY - half;
+
+        var minLeft = _dragWorkArea.Left;
+        var maxLeft = _dragWorkArea.Right - size;
+        var minTop = _dragWorkArea.Top;
+        var maxTop = _dragWorkArea.Bottom - size;
+
+        var left = maxLeft >= minLeft
+            ? Math.Clamp(desiredLeft, minLeft, maxLeft)
+            : _dragWorkArea.Left;
+        var top = maxTop >= minTop
+            ? Math.Clamp(desiredTop, minTop, maxTop)
+            : _dragWorkArea.Top;
+
+        NativeMethods.SetWindowPos(
+            _window.Handle,
+            NativeMethods.HWND_TOPMOST,
+            left,
+            top,
+            0,
+            0,
+            NativeMethods.SWP_NOSIZE |
+            NativeMethods.SWP_NOACTIVATE |
+            NativeMethods.SWP_SHOWWINDOW);
+
+        _centerPx = new POINT(left + half, top + half);
+    }
+
+    private bool IsPointInsideDisk(POINT point)
+    {
+        var dx = point.X - _centerPx.X;
+        var dy = point.Y - _centerPx.Y;
+        var radius = RadialMenuWindow.DiskRadius * _pixelScale;
+        return ((dx * dx) + (dy * dy)) <= radius * radius;
+    }
+
+    private bool IsPointInsideDeadZone(POINT point)
+    {
+        var dx = point.X - _centerPx.X;
+        var dy = point.Y - _centerPx.Y;
+        var radius = RadialMenuWindow.DeadZoneRadius * _pixelScale;
+        return ((dx * dx) + (dy * dy)) <= radius * radius;
+    }
+
+    private static NativeMethods.RECT GetWorkArea(POINT point)
+    {
+        var monitor = NativeMethods.MonitorFromPoint(point, NativeMethods.MONITOR_DEFAULTTONEAREST);
+        var info = new NativeMethods.MONITORINFO
+        {
+            cbSize = Marshal.SizeOf<NativeMethods.MONITORINFO>()
+        };
+
+        if (NativeMethods.GetMonitorInfo(monitor, ref info))
+        {
+            return info.rcWork;
+        }
+
+        return new NativeMethods.RECT
+        {
+            Left = -100_000,
+            Top = -100_000,
+            Right = 100_000,
+            Bottom = 100_000
+        };
+    }
 
     private void HandleClick(POINT point)
     {

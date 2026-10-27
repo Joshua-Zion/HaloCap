@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Reflection;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media;
@@ -45,6 +46,7 @@ public partial class SettingsWindow : Window
         _format = screenshotFormat;
         _menuSize = menuSize;
 
+        VersionText.Text = $"v{ResolveVersion()} · 本地离线处理";
         HotkeyValueText.Text = _hotkey.DisplayText;
         UpdateHotkeyHint();
         AutoStartToggle.IsChecked = autoStartEnabled;
@@ -303,6 +305,26 @@ public partial class SettingsWindow : Window
     {
         ErrorText.Text = string.Empty;
         ErrorText.Visibility = Visibility.Collapsed;
+    }
+
+    private static string ResolveVersion()
+    {
+        var assembly = typeof(SettingsWindow).Assembly;
+        var informational = assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
+            .InformationalVersion;
+
+        if (!string.IsNullOrWhiteSpace(informational))
+        {
+            // SDK 会在信息版本后追加 +<commit>，界面上只显示版本号本身。
+            var plus = informational.IndexOf('+');
+            return plus > 0 ? informational[..plus] : informational;
+        }
+
+        var version = assembly.GetName().Version;
+        return version is null
+            ? "未知"
+            : $"{version.Major}.{version.Minor}.{version.Build}";
     }
 
     private void CancelButton_Click(object sender, RoutedEventArgs e) => Close();

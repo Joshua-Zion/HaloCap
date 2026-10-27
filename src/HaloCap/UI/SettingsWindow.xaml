@@ -373,7 +373,7 @@
                 </ScrollViewer>
 
                 <Grid Grid.Row="2" Margin="22,16,22,18">
-                    <TextBlock Text="v1.1.0 · 本地离线处理"
+                    <TextBlock x:Name="VersionText"
                                FontSize="10.5"
                                Foreground="{StaticResource TextTertiaryBrush}"
                                VerticalAlignment="Center" />

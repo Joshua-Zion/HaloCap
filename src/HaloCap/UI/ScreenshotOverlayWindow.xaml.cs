@@ -718,19 +718,6 @@ public partial class ScreenshotOverlayWindow : Window
         if (e.Key == Key.Escape)
         {
             e.Handled = true;
-
-            if (_annotating)
-            {
-                SetDrawingTool(null);
-                return;
-            }
-
-            if (_hasSelection)
-            {
-                ResetToIdle();
-                return;
-            }
-
             _session.CancelAll();
             return;
         }

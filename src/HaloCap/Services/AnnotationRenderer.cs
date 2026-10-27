@@ -135,16 +135,18 @@ internal static class AnnotationRenderer
 
         if (stroke.Tool == AnnotationTool.Highlighter)
         {
-            var fill = new SolidColorBrush(Color.FromArgb(0x66, color.R, color.G, color.B));
-            fill.Freeze();
-            var highlighter = new Pen(fill, Math.Max(2.0, AnnotationDefaults.HighlighterThickness * scale))
+            // 整条几何一次描边并放在不透明组内统一调透明度，
+            // 避免分段半透明叠加导致快速滑动时出现深色圆点。
+            var group = new DrawingGroup { Opacity = 0.42 };
+            using (var groupContext = group.Open())
             {
-                StartLineCap = PenLineCap.Round,
-                EndLineCap = PenLineCap.Round,
-                LineJoin = PenLineJoin.Round
-            };
+                var highlighter = CreatePen(
+                    color,
+                    Math.Max(2.0, stroke.Thickness * scale));
+                DrawPolyline(groupContext, stroke.Points, highlighter);
+            }
 
-            DrawPolyline(context, stroke.Points, highlighter);
+            context.DrawDrawing(group);
             return;
         }
 
@@ -270,6 +272,11 @@ internal static class AnnotationRenderer
         IReadOnlyList<Point> points,
         Pen pen)
     {
+        if (points.Count == 0)
+        {
+            return;
+        }
+
         if (points.Count == 1)
         {
             var radius = Math.Max(0.6, pen.Thickness / 2);
@@ -277,10 +284,24 @@ internal static class AnnotationRenderer
             return;
         }
 
-        for (var i = 1; i < points.Count; i++)
+        var geometry = new StreamGeometry();
+
+        using (var geometryContext = geometry.Open())
         {
-            context.DrawLine(pen, points[i - 1], points[i]);
+            geometryContext.BeginFigure(points[0], false, false);
+
+            var rest = new Point[points.Count - 1];
+
+            for (var i = 1; i < points.Count; i++)
+            {
+                rest[i - 1] = points[i];
+            }
+
+            geometryContext.PolyLineTo(rest, true, true);
         }
+
+        geometry.Freeze();
+        context.DrawGeometry(null, pen, geometry);
     }
 
     private static SolidColorBrush CreateFill(Color color)

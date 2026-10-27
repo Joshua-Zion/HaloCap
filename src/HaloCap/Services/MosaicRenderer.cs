@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -35,6 +36,57 @@ internal static class MosaicRenderer
         y2 = Math.Min(y2, limit.Bottom);
 
         return new Int32Rect(x1, y1, Math.Max(0, x2 - x1), Math.Max(0, y2 - y1));
+    }
+
+    /// <summary>
+    /// 先把底图与已有标注合成为一张区域位图，再做块平均，
+    /// 这样马赛克会覆盖并像素化它下面的所有标注内容。
+    /// </summary>
+    public static BitmapSource? CreateCompositedTile(
+        BitmapSource source,
+        Int32Rect region,
+        IReadOnlyList<AnnotationStroke> priorStrokes,
+        Matrix strokeToRegion,
+        int blockPixels)
+    {
+        if (region.Width < 1 ||
+            region.Height < 1 ||
+            region.X < 0 ||
+            region.Y < 0 ||
+            region.X + region.Width > source.PixelWidth ||
+            region.Y + region.Height > source.PixelHeight)
+        {
+            return null;
+        }
+
+        var visual = new DrawingVisual();
+        RenderOptions.SetBitmapScalingMode(visual, BitmapScalingMode.NearestNeighbor);
+
+        using (var context = visual.RenderOpen())
+        {
+            var cropped = new CroppedBitmap(source, region);
+            cropped.Freeze();
+            context.DrawImage(cropped, new Rect(0, 0, region.Width, region.Height));
+
+            if (priorStrokes.Count > 0)
+            {
+                context.PushTransform(new MatrixTransform(strokeToRegion));
+                AnnotationRenderer.Draw(context, priorStrokes, 1.0);
+                context.Pop();
+            }
+        }
+
+        var target = new RenderTargetBitmap(
+            region.Width,
+            region.Height,
+            96,
+            96,
+            PixelFormats.Pbgra32);
+
+        target.Render(visual);
+        target.Freeze();
+
+        return CreateTile(target, new Int32Rect(0, 0, region.Width, region.Height), blockPixels);
     }
 
     public static BitmapSource? CreateTile(BitmapSource source, Int32Rect region, int blockPixels)

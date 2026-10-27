@@ -40,6 +40,7 @@ public partial class PinWindow : Window
 
     private bool _annotating;
     private AnnotationTool _annotationTool = AnnotationTool.Pen;
+    private AnnotationTool _shapeTool = AnnotationTool.Rectangle;
     private Color _annotationColor = AnnotationDefaults.Palette[0];
     private double _strokeThickness = AnnotationDefaults.Thickness;
     private double _highlighterThickness = AnnotationDefaults.HighlighterThickness;
@@ -357,9 +358,10 @@ public partial class PinWindow : Window
             {
                 e.Handled = true;
                 _fillShapes = true;
-                _annotationTool = e.Key == Key.R
+                _shapeTool = e.Key == Key.R
                     ? AnnotationTool.Rectangle
                     : AnnotationTool.Ellipse;
+                _annotationTool = _shapeTool;
                 UpdateAnnotationToolVisuals();
                 Keyboard.Focus(Root);
                 return;
@@ -373,6 +375,7 @@ public partial class PinWindow : Window
 
                     if (tool is AnnotationTool.Rectangle or AnnotationTool.Ellipse)
                     {
+                        _shapeTool = tool;
                         _fillShapes = false;
                     }
 
@@ -515,9 +518,13 @@ public partial class PinWindow : Window
 
     private BitmapSource GetExportImage()
     {
-        return _strokes.Count > 0
-            ? AnnotationRenderer.Compose(_image, _strokes)
-            : _image;
+        if (_strokes.Count == 0)
+        {
+            return _image;
+        }
+
+        RefreshMosaicTiles();
+        return AnnotationRenderer.Compose(_image, _strokes);
     }
 
     private void ShowHud(string text)
@@ -826,6 +833,7 @@ public partial class PinWindow : Window
             return;
         }
 
+        RefreshMosaicTiles();
         UpdateAnnotationScale();
         UpdateHistoryVisuals();
         ShowHud("已擦除标注 · Ctrl+Z 撤销");
@@ -895,7 +903,7 @@ public partial class PinWindow : Window
             return;
         }
 
-        var tile = MosaicRenderer.CreateTile(_image, snapped, blockPixels);
+        var tile = CreateMosaicTile(snapped, blockPixels, _strokes, pixelsPerDip);
 
         if (tile is null)
         {
@@ -904,11 +912,81 @@ public partial class PinWindow : Window
 
         _mosaicLastRect = snapped;
         stroke.Mosaic = tile;
+        stroke.MosaicBlockPixels = blockPixels;
         stroke.Points[0] = new Point(snapped.X / pixelsPerDip, snapped.Y / pixelsPerDip);
         stroke.Points[1] = new Point(
             (snapped.X + snapped.Width) / pixelsPerDip,
             (snapped.Y + snapped.Height) / pixelsPerDip);
         UpdateAnnotationScale();
+    }
+
+    private BitmapSource? CreateMosaicTile(
+        Int32Rect snapped,
+        int blockPixels,
+        IReadOnlyList<AnnotationStroke> priorStrokes,
+        double pixelsPerDip)
+    {
+        var transform = new Matrix(
+            pixelsPerDip,
+            0,
+            0,
+            pixelsPerDip,
+            -snapped.X,
+            -snapped.Y);
+
+        return MosaicRenderer.CreateCompositedTile(
+            _image,
+            snapped,
+            priorStrokes,
+            transform,
+            blockPixels);
+    }
+
+    private bool RefreshMosaicTiles()
+    {
+        var pixelsPerDip = _image.DpiX > 0.1 ? _image.DpiX / 96.0 : 1.0;
+        var limit = new PhysicalRect(0, 0, _image.PixelWidth, _image.PixelHeight);
+        var prior = new List<AnnotationStroke>();
+        var changed = false;
+
+        foreach (var stroke in _strokes)
+        {
+            if (stroke.Tool == AnnotationTool.Mosaic &&
+                stroke.Points.Count >= 2 &&
+                stroke.MosaicBlockPixels > 0)
+            {
+                var left = (int)Math.Round(stroke.Points[0].X * pixelsPerDip);
+                var top = (int)Math.Round(stroke.Points[0].Y * pixelsPerDip);
+                var right = (int)Math.Round(stroke.Points[1].X * pixelsPerDip);
+                var bottom = (int)Math.Round(stroke.Points[1].Y * pixelsPerDip);
+                var snapped = MosaicRenderer.SnapToBlocks(
+                    left,
+                    top,
+                    right,
+                    bottom,
+                    limit,
+                    stroke.MosaicBlockPixels);
+
+                if (snapped.Width > 0 && snapped.Height > 0)
+                {
+                    var tile = CreateMosaicTile(snapped, stroke.MosaicBlockPixels, prior, pixelsPerDip);
+
+                    if (tile is not null)
+                    {
+                        stroke.Mosaic = tile;
+                        stroke.Points[0] = new Point(snapped.X / pixelsPerDip, snapped.Y / pixelsPerDip);
+                        stroke.Points[1] = new Point(
+                            (snapped.X + snapped.Width) / pixelsPerDip,
+                            (snapped.Y + snapped.Height) / pixelsPerDip);
+                        changed = true;
+                    }
+                }
+            }
+
+            prior.Add(stroke);
+        }
+
+        return changed;
     }
 
     private void AdjustBrush(int direction)
@@ -987,9 +1065,22 @@ public partial class PinWindow : Window
             return;
         }
 
+        if (tag == "Shape")
+        {
+            _annotationTool = _shapeTool;
+            UpdateAnnotationToolVisuals();
+            Keyboard.Focus(Root);
+            return;
+        }
+
         if (!Enum.TryParse<AnnotationTool>(tag, out var tool))
         {
             return;
+        }
+
+        if (tool is AnnotationTool.Rectangle or AnnotationTool.Ellipse)
+        {
+            _shapeTool = tool;
         }
 
         _annotationTool = tool;
@@ -1049,16 +1140,19 @@ public partial class PinWindow : Window
         var normal = UiColors.Brush("#FF3C4250");
         var isShape = _annotationTool is AnnotationTool.Rectangle or AnnotationTool.Ellipse;
 
+        var shapeActive = _annotationTool is
+            AnnotationTool.Rectangle or AnnotationTool.Ellipse;
+        ToolShapeButton.Background = shapeActive ? accent : Brushes.Transparent;
+        ToolShapeButton.Foreground = shapeActive ? Brushes.White : normal;
+
         var buttons = new (Button Button, AnnotationTool Tool)[]
         {
-            (ToolPenButton, AnnotationTool.Pen),
-            (ToolRectangleButton, AnnotationTool.Rectangle),
-            (ToolEllipseButton, AnnotationTool.Ellipse),
             (ToolArrowButton, AnnotationTool.Arrow),
-            (ToolTextButton, AnnotationTool.Text),
+            (ToolPenButton, AnnotationTool.Pen),
             (ToolHighlighterButton, AnnotationTool.Highlighter),
-            (ToolMosaicButton, AnnotationTool.Mosaic),
             (ToolEraserButton, AnnotationTool.Eraser),
+            (ToolTextButton, AnnotationTool.Text),
+            (ToolMosaicButton, AnnotationTool.Mosaic),
             (ToolStepButton, AnnotationTool.Step)
         };
 
@@ -1071,6 +1165,7 @@ public partial class PinWindow : Window
 
         var showColors = _annotationTool is not (AnnotationTool.Mosaic or AnnotationTool.Eraser);
         PinColorGroup.Visibility = showColors ? Visibility.Visible : Visibility.Collapsed;
+        PinShapeKindGroup.Visibility = isShape ? Visibility.Visible : Visibility.Collapsed;
         PinShapeGroup.Visibility = isShape ? Visibility.Visible : Visibility.Collapsed;
         PinBrushGroup.Visibility = _annotationTool is AnnotationTool.Pen or AnnotationTool.Arrow
             or AnnotationTool.Highlighter or AnnotationTool.Rectangle or AnnotationTool.Ellipse
@@ -1092,6 +1187,8 @@ public partial class PinWindow : Window
             ? Visibility.Visible
             : Visibility.Collapsed;
 
+        SetOptionButtonState(ShapeRectangleButton, _annotationTool == AnnotationTool.Rectangle, accent, normal);
+        SetOptionButtonState(ShapeEllipseButton, _annotationTool == AnnotationTool.Ellipse, accent, normal);
         SetOptionButtonState(ShapeOutlineButton, !_fillShapes, accent, normal);
         SetOptionButtonState(ShapeFillButton, _fillShapes, accent, normal);
 
@@ -1113,6 +1210,22 @@ public partial class PinWindow : Window
     {
         button.Background = active ? accent : Brushes.Transparent;
         button.Foreground = active ? Brushes.White : normal;
+    }
+
+    private void ShapeKind_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement element || element.Tag is not string tag)
+        {
+            return;
+        }
+
+        e.Handled = true;
+        var shape = tag == "Ellipse" ? AnnotationTool.Ellipse : AnnotationTool.Rectangle;
+        _shapeTool = shape;
+        _annotationTool = shape;
+        UpdateAnnotationToolVisuals();
+        ShowHud(tag == "Ellipse" ? "椭圆" : "矩形");
+        Keyboard.Focus(Root);
     }
 
     private void ShapeStyle_Click(object sender, RoutedEventArgs e)
@@ -1281,6 +1394,7 @@ public partial class PinWindow : Window
     {
         _strokes.Clear();
         _strokes.AddRange(snapshot);
+        RefreshMosaicTiles();
         UpdateAnnotationScale();
         UpdateHistoryVisuals();
     }

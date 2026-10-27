@@ -49,6 +49,8 @@ internal static class Program
             ("Arrow snap locks to 45 degrees", ArrowSnapLocksToAngles),
             ("Mosaic snap aligns to blocks", MosaicSnapAlignsToBlocks),
             ("Mosaic tile averages blocks", MosaicTileAveragesBlocks),
+            ("Mosaic composite includes prior strokes", MosaicCompositeIncludesPriorStrokes),
+            ("Highlighter keeps uniform opacity at joints", HighlighterKeepsUniformOpacity),
             ("Eraser hit test follows pen path", EraserHitTestFollowsPenPath),
             ("Eraser hit test respects shape fill", EraserHitTestRespectsShapeFill),
             ("Eraser hit test covers step and mosaic", EraserHitTestCoversStepAndMosaic),
@@ -425,6 +427,91 @@ internal static class Program
 
             var bluePixel = ReadPixel(tile, 1, 0);
             True(bluePixel.B > 250 && bluePixel.R < 5, "right block should be blue");
+        });
+    }
+
+    private static void MosaicCompositeIncludesPriorStrokes()
+    {
+        RunSta(() =>
+        {
+            var source = CreateSolidBitmap(40, 40, Colors.White);
+
+            var pen = new AnnotationStroke
+            {
+                Tool = AnnotationTool.Pen,
+                Color = Colors.Red,
+                Thickness = 12
+            };
+
+            pen.Points.Add(new Point(5, 20));
+            pen.Points.Add(new Point(35, 20));
+
+            var tile = MosaicRenderer.CreateCompositedTile(
+                source,
+                new Int32Rect(0, 0, 40, 40),
+                new[] { pen },
+                Matrix.Identity,
+                10);
+
+            if (tile is null)
+            {
+                throw new InvalidOperationException("composited tile should not be null");
+            }
+
+            Equal(4, tile.PixelWidth);
+            Equal(4, tile.PixelHeight);
+
+            var middle = ReadPixel(tile, 2, 2);
+            True(
+                middle.R > 200 && middle.G < 150,
+                "mosaic block should include the red stroke below it");
+
+            var top = ReadPixel(tile, 2, 0);
+            True(
+                top.R > 200 && top.G > 200,
+                "block without strokes should stay white");
+        });
+    }
+
+    private static void HighlighterKeepsUniformOpacity()
+    {
+        RunSta(() =>
+        {
+            var source = CreateSolidBitmap(800, 200, Colors.White);
+            var stroke = new AnnotationStroke
+            {
+                Tool = AnnotationTool.Highlighter,
+                Color = Colors.Red,
+                Thickness = 36
+            };
+
+            stroke.Points.Add(new Point(30, 100));
+            stroke.Points.Add(new Point(200, 100));
+            stroke.Points.Add(new Point(400, 100));
+            stroke.Points.Add(new Point(600, 100));
+            stroke.Points.Add(new Point(770, 100));
+
+            var composed = AnnotationRenderer.Compose(source, new[] { stroke });
+
+            var segment = ReadPixel(composed, 100, 100);
+            var joint = ReadPixel(composed, 200, 100);
+            var middle = ReadPixel(composed, 300, 100);
+
+            True(
+                Math.Abs(segment.R - joint.R) <= 4 &&
+                Math.Abs(segment.G - joint.G) <= 4 &&
+                Math.Abs(segment.B - joint.B) <= 4,
+                "joint pixel should not become darker than the segment");
+
+            True(
+                Math.Abs(segment.R - middle.R) <= 4 &&
+                Math.Abs(segment.G - middle.G) <= 4 &&
+                Math.Abs(segment.B - middle.B) <= 4,
+                "whole highlighter stroke should keep one opacity");
+
+            True(
+                segment.R > 240 && segment.G is > 100 and < 200,
+                "highlighter should be semi-transparent over white");
         });
     }
 

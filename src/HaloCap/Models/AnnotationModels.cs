@@ -46,6 +46,8 @@ internal sealed class AnnotationStroke
 
     public BitmapSource? Mosaic { get; set; }
 
+    public int MosaicBlockPixels { get; set; } = 1;
+
     public List<Point> Points { get; } = new();
 
     public string? Text { get; init; }
@@ -53,7 +55,7 @@ internal sealed class AnnotationStroke
 
 internal static class AnnotationDefaults
 {
-    public const double Thickness = 3;
+    public const double Thickness = 2;
     public const double MinThickness = 1;
     public const double MaxThickness = 24;
     public const double HighlighterThickness = 14;

@@ -112,7 +112,7 @@
 
         <Style x:Key="PinToolIconStyle" TargetType="Path">
             <Setter Property="Stroke" Value="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" />
-            <Setter Property="StrokeThickness" Value="1.35" />
+            <Setter Property="StrokeThickness" Value="1.5" />
             <Setter Property="StrokeStartLineCap" Value="Round" />
             <Setter Property="StrokeEndLineCap" Value="Round" />
             <Setter Property="StrokeLineJoin" Value="Round" />
@@ -245,36 +245,15 @@
                     <DropShadowEffect Color="#FF000000" BlurRadius="20" ShadowDepth="4" Opacity="0.24" />
                 </Border.Effect>
                 <StackPanel Orientation="Horizontal">
-                    <Button x:Name="ToolPenButton"
-                            AutomationProperties.AutomationId="tool.pen"
+                    <Button x:Name="ToolShapeButton"
+                            AutomationProperties.AutomationId="tool.shape"
                             Style="{StaticResource PinToolButtonStyle}"
-                            Tag="Pen"
-                            ToolTip="画笔 (P) · 滚轮调粗细"
+                            Tag="Shape"
+                            ToolTip="形状 (R/E) · 在选项栏切换矩形 / 椭圆"
                             Click="AnnotationTool_Click">
                         <Viewbox Width="15" Height="15">
                             <Path Style="{StaticResource PinToolIconStyle}"
-                                  Data="M4 20l4-1 10-10-3-3L5 16l-1 4Z M14 6l4 4" />
-                        </Viewbox>
-                    </Button>
-                    <Button x:Name="ToolRectangleButton"
-                            AutomationProperties.AutomationId="tool.rectangle"
-                            Style="{StaticResource PinToolButtonStyle}"
-                            Tag="Rectangle"
-                            ToolTip="矩形 (R) · Shift 正方形"
-                            Click="AnnotationTool_Click">
-                        <Viewbox Width="15" Height="15">
-                            <Path Style="{StaticResource PinToolIconStyle}" Data="M4 5h16v14H4Z" />
-                        </Viewbox>
-                    </Button>
-                    <Button x:Name="ToolEllipseButton"
-                            AutomationProperties.AutomationId="tool.ellipse"
-                            Style="{StaticResource PinToolButtonStyle}"
-                            Tag="Ellipse"
-                            ToolTip="椭圆 (E) · Shift 正圆"
-                            Click="AnnotationTool_Click">
-                        <Viewbox Width="15" Height="15">
-                            <Path Style="{StaticResource PinToolIconStyle}"
-                                  Data="M12 5c4.4 0 8 3.1 8 7s-3.6 7-8 7-8-3.1-8-7 3.6-7 8-7Z" />
+                                  Data="M3.5 5.5h9v9h-9Z M15.5 8.5a4.5 4.5 0 1 1 0 9 4.5 4.5 0 0 1 0-9Z" />
                         </Viewbox>
                     </Button>
                     <Button x:Name="ToolArrowButton"
@@ -284,17 +263,19 @@
                             ToolTip="箭头 (A) · Shift 锁定角度"
                             Click="AnnotationTool_Click">
                         <Viewbox Width="15" Height="15">
-                            <Path Style="{StaticResource PinToolIconStyle}" Data="M5 19L19 5 M11 5h8v8" />
+                            <Path Style="{StaticResource PinToolIconStyle}"
+                                  Data="M4.5 19.5 19 5 M11.5 5H19v7.5" />
                         </Viewbox>
                     </Button>
-                    <Button x:Name="ToolTextButton"
-                            AutomationProperties.AutomationId="tool.text"
+                    <Button x:Name="ToolPenButton"
+                            AutomationProperties.AutomationId="tool.pen"
                             Style="{StaticResource PinToolButtonStyle}"
-                            Tag="Text"
-                            ToolTip="文字 (T) · 滚轮调字号"
+                            Tag="Pen"
+                            ToolTip="画笔 (P) · 滚轮调粗细"
                             Click="AnnotationTool_Click">
                         <Viewbox Width="15" Height="15">
-                            <Path Style="{StaticResource PinToolIconStyle}" Data="M5 6V4h14v2 M12 4v16 M9 20h6" />
+                            <Path Style="{StaticResource PinToolIconStyle}"
+                                  Data="M4 20l3.4-.9L19.2 7.3a2.1 2.1 0 0 0-2.9-2.9L4.5 16.2 4 20Z M14.5 6.5l3 3" />
                         </Viewbox>
                     </Button>
                     <Button x:Name="ToolHighlighterButton"
@@ -305,18 +286,7 @@
                             Click="AnnotationTool_Click">
                         <Viewbox Width="15" Height="15">
                             <Path Style="{StaticResource PinToolIconStyle}"
-                                  Data="M6 20h12 M8 16l-2 2 M8 16l8-9 3 3-8 9H8Z" />
-                        </Viewbox>
-                    </Button>
-                    <Button x:Name="ToolMosaicButton"
-                            AutomationProperties.AutomationId="tool.mosaic"
-                            Style="{StaticResource PinToolButtonStyle}"
-                            Tag="Mosaic"
-                            ToolTip="马赛克 (M) · 滚轮调密度"
-                            Click="AnnotationTool_Click">
-                        <Viewbox Width="15" Height="15">
-                            <Path Style="{StaticResource PinToolIconStyle}"
-                                  Data="M4 4h6v6H4Z M14 4h6v6h-6Z M4 14h6v6H4Z M14 14h6v6h-6Z" />
+                                  Data="M5 20h14 M8.5 16.5l-2 3.5 M8.5 16.5l7.5-9 3.2 2.7-7.5 9H8.5Z M12.5 10.8l3.2 2.7" />
                         </Viewbox>
                     </Button>
                     <Button x:Name="ToolEraserButton"
@@ -327,7 +297,29 @@
                             Click="AnnotationTool_Click">
                         <Viewbox Width="15" Height="15">
                             <Path Style="{StaticResource PinToolIconStyle}"
-                                  Data="M4 20h16 M7 17.5L14 7l4 3.2-7 10H7v-2.7Z M11 12l4 3.2" />
+                                  Data="M4 20h16 M7.5 17L16 6l3.8 3.8-8.5 11H7.5v-3.8Z M12 10.5l3.8 3.8" />
+                        </Viewbox>
+                    </Button>
+                    <Button x:Name="ToolTextButton"
+                            AutomationProperties.AutomationId="tool.text"
+                            Style="{StaticResource PinToolButtonStyle}"
+                            Tag="Text"
+                            ToolTip="文字 (T) · 滚轮调字号"
+                            Click="AnnotationTool_Click">
+                        <Viewbox Width="15" Height="15">
+                            <Path Style="{StaticResource PinToolIconStyle}"
+                                  Data="M4 6V4h16v2 M12 4v16 M8 20h8" />
+                        </Viewbox>
+                    </Button>
+                    <Button x:Name="ToolMosaicButton"
+                            AutomationProperties.AutomationId="tool.mosaic"
+                            Style="{StaticResource PinToolButtonStyle}"
+                            Tag="Mosaic"
+                            ToolTip="马赛克 (M) · 滚轮调密度"
+                            Click="AnnotationTool_Click">
+                        <Viewbox Width="15" Height="15">
+                            <Path Style="{StaticResource PinToolIconStyle}"
+                                  Data="M4 4h5v5H4Z M13 4h7v5h-7Z M4 13h7v7H4Z M15 13h5v7h-5Z" />
                         </Viewbox>
                     </Button>
                     <Button x:Name="ToolStepButton"
@@ -338,7 +330,7 @@
                             Click="AnnotationTool_Click">
                         <Viewbox Width="15" Height="15">
                             <Path Style="{StaticResource PinToolIconStyle}"
-                                  Data="M12 3.5a8.5 8.5 0 1 1 0 17 8.5 8.5 0 0 1 0-17Z M10.5 9l1.7-1.3V16 M9.8 16h4.6" />
+                                  Data="M12 3.5a8.5 8.5 0 1 1 0 17 8.5 8.5 0 0 1 0-17Z M10.2 9.2l1.9-1.4V16 M9.6 16h5" />
                         </Viewbox>
                     </Button>
 
@@ -417,6 +409,31 @@
                             Click="AnnotationColor_Click">
                         <Ellipse Width="12" Height="12" Fill="#FFFFFFFF" Stroke="#26000000" StrokeThickness="1" />
                     </Button>
+                    </StackPanel>
+
+                    <StackPanel x:Name="PinShapeKindGroup" Orientation="Horizontal">
+                        <TextBlock Text="形状" FontSize="11" Foreground="#5A6270" Margin="6,0,4,0" VerticalAlignment="Center" />
+                        <Button x:Name="ShapeRectangleButton"
+                                AutomationProperties.AutomationId="option.shapeRectangle"
+                                Style="{StaticResource PinToolButtonStyle}"
+                                Tag="Rectangle"
+                                ToolTip="矩形 (R) · Shift 正方形"
+                                Click="ShapeKind_Click">
+                            <Viewbox Width="15" Height="15">
+                                <Path Style="{StaticResource PinToolIconStyle}" Data="M4 5h16v14H4Z" />
+                            </Viewbox>
+                        </Button>
+                        <Button x:Name="ShapeEllipseButton"
+                                AutomationProperties.AutomationId="option.shapeEllipse"
+                                Style="{StaticResource PinToolButtonStyle}"
+                                Tag="Ellipse"
+                                ToolTip="椭圆 (E) · Shift 正圆"
+                                Click="ShapeKind_Click">
+                            <Viewbox Width="15" Height="15">
+                                <Path Style="{StaticResource PinToolIconStyle}"
+                                      Data="M12 5c4.4 0 8 3.1 8 7s-3.6 7-8 7-8-3.1-8-7 3.6-7 8-7Z" />
+                            </Viewbox>
+                        </Button>
                     </StackPanel>
 
                     <StackPanel x:Name="PinShapeGroup" Orientation="Horizontal">

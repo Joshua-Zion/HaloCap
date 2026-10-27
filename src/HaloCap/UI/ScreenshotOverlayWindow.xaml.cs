@@ -19,6 +19,9 @@ public partial class ScreenshotOverlayWindow : Window
 {
     private const double HandleHitRadius = 9;
     private const int MinSelectionSizePx = 8;
+    private const int MaxHistory = 40;
+    private const int MagnifierPixels = 17;
+    private const int ElementProbeIntervalMs = 24;
 
     private enum DragKind
     {
@@ -34,6 +37,8 @@ public partial class ScreenshotOverlayWindow : Window
     private readonly DrawingBitmap? _frozenBitmap;
     private readonly BitmapSource? _frozenSource;
     private readonly List<AnnotationStroke> _strokes = new();
+    private readonly List<List<AnnotationStroke>> _undoStack = new();
+    private readonly List<List<AnnotationStroke>> _redoStack = new();
 
     private IntPtr _handle;
     private bool _closed;
@@ -45,6 +50,16 @@ public partial class ScreenshotOverlayWindow : Window
     private PhysicalRect _dragStartPx;
     private PhysicalRect _startPx;
     private PhysicalRect _selectionPx;
+    private PhysicalRect _hoverElementPx;
+    private PhysicalRect _clickElementPx;
+    private long _lastElementProbeTick;
+    private WriteableBitmap? _magnifierBitmap;
+    private FormatConvertedBitmap? _magnifierSource;
+    private byte[] _magnifierSample = Array.Empty<byte>();
+    private byte[] _magnifierFrame = Array.Empty<byte>();
+    private int _magnifierBlock = 8;
+    private int _lastProbeX;
+    private int _lastProbeY;
     private double _mapScaleX = 1.0;
     private double _mapScaleY = 1.0;
     private TranslateTransform? _toolbarOffset;
@@ -300,7 +315,7 @@ public partial class ScreenshotOverlayWindow : Window
         {
             case CaptureSessionMode.Record:
                 accent = Color.FromRgb(0xFF, 0x7A, 0x7A);
-                HintText.Text = "拖动选择录屏区域 · 可调整选区 · Enter 开始录制 · Esc 取消";
+                HintText.Text = "拖动或单击选择录屏区域 · Shift+方向键微调 · Enter 开始录制 · Esc 取消";
                 PinButton.Visibility = Visibility.Collapsed;
                 CopyButton.Visibility = Visibility.Collapsed;
                 SaveButton.Visibility = Visibility.Collapsed;
@@ -311,25 +326,27 @@ public partial class ScreenshotOverlayWindow : Window
 
             case CaptureSessionMode.Ocr:
                 accent = Color.FromRgb(0xB0, 0x8C, 0xFF);
-                HintText.Text = "拖动选择要识别的区域 · 松开后立即识别 · Esc 取消";
+                HintText.Text = "拖动或单击选择识别区域 · 松开后立即识别 · Esc 取消";
                 AnnotateButton.Visibility = Visibility.Collapsed;
                 break;
 
             case CaptureSessionMode.Pin:
                 accent = Color.FromRgb(0xF5, 0xB9, 0x63);
-                HintText.Text = "拖动选择贴图区域 · 松开后立即贴图 · Esc 取消";
+                HintText.Text = "拖动或单击选择贴图区域 · 松开后立即贴图 · Esc 取消";
                 AnnotateButton.Visibility = Visibility.Collapsed;
                 break;
 
             default:
                 accent = Color.FromRgb(0x7C, 0xA8, 0xFF);
-                HintText.Text = "拖动选择区域 · 可拖动/缩放选区 · 标注 (Space) · Enter 复制 · Esc 取消";
+                HintText.Text = "拖动框选或单击窗口 · 方向键微调 · 双击复制 · Space 标注 · Esc 取消";
                 break;
         }
 
         var brush = new SolidColorBrush(accent);
         brush.Freeze();
         SelectionBorder.BorderBrush = brush;
+        ElementBorder.Stroke = brush;
+        MagnifierPixelRing.Stroke = brush;
         CornerTopLeft.Fill = brush;
         CornerTopRight.Fill = brush;
         CornerBottomLeft.Fill = brush;
@@ -407,6 +424,15 @@ public partial class ScreenshotOverlayWindow : Window
             return;
         }
 
+        if (e.ClickCount == 2 &&
+            _hasSelection &&
+            _mode == CaptureSessionMode.Screenshot &&
+            IsInsideSelection(point))
+        {
+            _session.RequestAction(this, CaptureCommand.Copy);
+            return;
+        }
+
         if (_hasSelection && !_dragging)
         {
             var mask = HitTestSelectionHandle(point);
@@ -437,6 +463,10 @@ public partial class ScreenshotOverlayWindow : Window
 
         ClearAnnotations();
         SetAnnotationMode(false);
+
+        _clickElementPx = _hoverElementPx;
+        ClearElementHover();
+        HideMagnifier();
 
         _dragKind = DragKind.Create;
         _dragging = true;
@@ -504,6 +534,16 @@ public partial class ScreenshotOverlayWindow : Window
             UpdateSelectionVisual(showSize: true);
             UpdateAnnotationFrame();
             PositionToolbars(animate: false);
+
+            if (_dragKind == DragKind.Create)
+            {
+                UpdateMagnifier(point);
+            }
+            else
+            {
+                HideMagnifier();
+            }
+
             e.Handled = true;
             return;
         }
@@ -511,24 +551,27 @@ public partial class ScreenshotOverlayWindow : Window
         if (_hasSelection)
         {
             if (!_annotating &&
-                (Toolbar.Visibility != Visibility.Visible || !Toolbar.IsMouseOver) &&
-                (AnnotationBar.Visibility != Visibility.Visible || !AnnotationBar.IsMouseOver))
+                !IsPointerOverToolbars())
             {
                 UpdateSelectionCursor(point);
             }
 
             HideCrosshair();
+            HideMagnifier();
             return;
         }
 
-        if (Toolbar.Visibility != Visibility.Visible || !Toolbar.IsMouseOver)
-        {
-            UpdateCrosshair(point);
-        }
-        else
+        if (IsPointerOverToolbars())
         {
             HideCrosshair();
+            HideMagnifier();
+            ClearElementHover();
+            return;
         }
+
+        UpdateCrosshair(point);
+        UpdateMagnifier(point);
+        UpdateElementHover(point);
     }
 
     private void Root_PreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
@@ -564,13 +607,28 @@ public partial class ScreenshotOverlayWindow : Window
             return;
         }
 
+        if (!ScreenGeometry.IsUsableSelection(_selectionPx, MinSelectionSizePx) &&
+            ScreenGeometry.IsUsableSelection(_clickElementPx, MinSelectionSizePx))
+        {
+            _selectionPx = _clickElementPx;
+        }
+
+        _clickElementPx = default;
+
         if (!ScreenGeometry.IsUsableSelection(_selectionPx))
         {
             ResetToIdle();
             return;
         }
 
+        CompleteNewSelection();
+    }
+
+    private void CompleteNewSelection()
+    {
         _hasSelection = true;
+        HideMagnifier();
+        ClearElementHover();
         UpdateSelectionVisual(showSize: true);
         UpdateAnnotationFrame();
         HintChip.Visibility = Visibility.Collapsed;
@@ -590,14 +648,42 @@ public partial class ScreenshotOverlayWindow : Window
         }
     }
 
-    private void Root_PreviewMouseRightButtonDown(object sender, MouseButtonEventArgs e)
+    private void Root_MouseLeave(object sender, MouseEventArgs e)
     {
-        if (_closed)
+        if (_closed || _dragging || _drawingAnnotation)
+        {
+            return;
+        }
+
+        HideCrosshair();
+        HideMagnifier();
+
+        if (!_hasSelection && !_annotating)
+        {
+            ClearElementHover();
+        }
+    }
+
+    private void Root_PreviewMouseRightButtonDown(object sender, MouseButtonEventArgs e)
+    {        if (_closed)
         {
             return;
         }
 
         e.Handled = true;
+
+        if (_annotating)
+        {
+            SetAnnotationMode(false);
+            return;
+        }
+
+        if (_hasSelection)
+        {
+            ResetToIdle();
+            return;
+        }
+
         _session.CancelAll();
     }
 
@@ -618,6 +704,12 @@ public partial class ScreenshotOverlayWindow : Window
                 return;
             }
 
+            if (_hasSelection)
+            {
+                ResetToIdle();
+                return;
+            }
+
             _session.CancelAll();
             return;
         }
@@ -629,10 +721,38 @@ public partial class ScreenshotOverlayWindow : Window
             return;
         }
 
-        if (_annotating && e.Key == Key.Z && Keyboard.Modifiers.HasFlag(ModifierKeys.Control))
+        if (_annotating && Keyboard.Modifiers == ModifierKeys.None && GetToolForKey(e.Key) is { } tool)
         {
             e.Handled = true;
-            UndoAnnotation();
+            _annotationTool = tool;
+            UpdateAnnotationToolVisuals();
+            return;
+        }
+
+        if (_annotating &&
+            Keyboard.Modifiers.HasFlag(ModifierKeys.Control) &&
+            (e.Key == Key.Z || e.Key == Key.Y))
+        {
+            e.Handled = true;
+
+            if (e.Key == Key.Y || Keyboard.Modifiers.HasFlag(ModifierKeys.Shift))
+            {
+                RedoAnnotation();
+            }
+            else
+            {
+                UndoAnnotation();
+            }
+
+            return;
+        }
+
+        if (_hasSelection &&
+            !_annotating &&
+            e.Key is Key.Left or Key.Right or Key.Up or Key.Down)
+        {
+            e.Handled = true;
+            NudgeSelection(e.Key);
             return;
         }
 
@@ -666,6 +786,35 @@ public partial class ScreenshotOverlayWindow : Window
                 _session.RequestAction(this, CaptureCommand.Save);
             }
         }
+    }
+
+    private static AnnotationTool? GetToolForKey(Key key) => key switch
+    {
+        Key.P => AnnotationTool.Pen,
+        Key.R => AnnotationTool.Rectangle,
+        Key.E => AnnotationTool.Ellipse,
+        Key.A => AnnotationTool.Arrow,
+        Key.T => AnnotationTool.Text,
+        Key.H => AnnotationTool.Highlighter,
+        _ => null
+    };
+
+    private void NudgeSelection(Key key)
+    {
+        var step = Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) ? 10 : 1;
+        var dx = key == Key.Left ? -step : key == Key.Right ? step : 0;
+        var dy = key == Key.Up ? -step : key == Key.Down ? step : 0;
+
+        _selectionPx = ScreenGeometry.MoveWithin(
+            _selectionPx,
+            dx,
+            dy,
+            _monitor.Bounds.Width,
+            _monitor.Bounds.Height);
+
+        UpdateSelectionVisual(showSize: true);
+        UpdateAnnotationFrame();
+        PositionToolbars(animate: false);
     }
 
     private void ActionButton_Click(object sender, RoutedEventArgs e)
@@ -744,6 +893,7 @@ public partial class ScreenshotOverlayWindow : Window
 
         HideToolbar();
         HideCrosshair();
+        HideMagnifier();
         SizeBadge.Visibility = Visibility.Collapsed;
         SelectionBorder.Visibility = Visibility.Collapsed;
         SetCornersVisible(false);
@@ -754,6 +904,9 @@ public partial class ScreenshotOverlayWindow : Window
         DimBottom.Visibility = Visibility.Collapsed;
         DimLeft.Visibility = Visibility.Collapsed;
         DimRight.Visibility = Visibility.Collapsed;
+        ElementBorder.Visibility = Visibility.Collapsed;
+        _hoverElementPx = default;
+        _clickElementPx = default;
         HintChip.Visibility = Visibility.Visible;
 
         PositionCrosshairFromCursor();
@@ -812,7 +965,7 @@ public partial class ScreenshotOverlayWindow : Window
 
         if (showSize)
         {
-            UpdateSizeBadge(left, top, selectionWidth, selectionHeight);
+            UpdateSizeBadge(_selectionPx, left, top);
         }
     }
 
@@ -850,13 +1003,23 @@ public partial class ScreenshotOverlayWindow : Window
         EdgeRight.Visibility = state;
     }
 
-    private void UpdateSizeBadge(double left, double top, double selectionWidth, double selectionHeight)
+    private static Size MeasureWithoutMargin(FrameworkElement element)
     {
-        SizeText.Text = $"{_selectionPx.Width} × {_selectionPx.Height}";
-        SizeBadge.Visibility = Visibility.Visible;
-        SizeBadge.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        element.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        var desired = element.DesiredSize;
+        var margin = element.Margin;
 
-        var badge = SizeBadge.DesiredSize;
+        return new Size(
+            Math.Max(0, desired.Width - margin.Left - margin.Right),
+            Math.Max(0, desired.Height - margin.Top - margin.Bottom));
+    }
+
+    private void UpdateSizeBadge(PhysicalRect rect, double left, double top)
+    {
+        SizeText.Text = $"{rect.Width} × {rect.Height}";
+        SizeBadge.Visibility = Visibility.Visible;
+
+        var badge = MeasureWithoutMargin(SizeBadge);
         var badgeTop = top - badge.Height - 8;
         if (badgeTop < 6)
         {
@@ -981,8 +1144,7 @@ public partial class ScreenshotOverlayWindow : Window
             return;
         }
 
-        Toolbar.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
-        var desired = Toolbar.DesiredSize;
+        var desired = MeasureWithoutMargin(Toolbar);
         var left = _selectionPx.Left / _mapScaleX;
         var top = (_selectionPx.Top + _selectionPx.Height) / _mapScaleY + 12;
         var selectionTop = _selectionPx.Top / _mapScaleY;
@@ -1014,8 +1176,7 @@ public partial class ScreenshotOverlayWindow : Window
 
     private void PositionAnnotationBar(double mainTop, double mainHeight, double mainLeft)
     {
-        AnnotationBar.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
-        var desired = AnnotationBar.DesiredSize;
+        var desired = MeasureWithoutMargin(AnnotationBar);
         var below = mainTop + mainHeight + 8;
         var above = mainTop - desired.Height - 8;
 
@@ -1092,6 +1253,295 @@ public partial class ScreenshotOverlayWindow : Window
             (cursor.Y - _monitor.Bounds.Top) / _mapScaleY);
 
         UpdateCrosshair(point);
+        UpdateMagnifier(point);
+        UpdateElementHover(point);
+    }
+
+    private bool IsPointerOverToolbars() =>
+        (Toolbar.Visibility == Visibility.Visible && Toolbar.IsMouseOver) ||
+        (AnnotationBar.Visibility == Visibility.Visible && AnnotationBar.IsMouseOver);
+
+    private void UpdateMagnifier(Point point)
+    {
+        if (_closed ||
+            _annotating ||
+            _hasSelection ||
+            _frozenBitmap is null ||
+            _frozenSource is null)
+        {
+            HideMagnifier();
+            return;
+        }
+
+        if (point.X < 0 ||
+            point.Y < 0 ||
+            point.X > Root.ActualWidth ||
+            point.Y > Root.ActualHeight)
+        {
+            HideMagnifier();
+            return;
+        }
+
+        var pixelX = (int)Math.Round(point.X * _mapScaleX);
+        var pixelY = (int)Math.Round(point.Y * _mapScaleY);
+
+        if (pixelX < 0 ||
+            pixelY < 0 ||
+            pixelX >= _frozenBitmap.Width ||
+            pixelY >= _frozenBitmap.Height)
+        {
+            HideMagnifier();
+            return;
+        }
+
+        if (Magnifier.Visibility != Visibility.Visible)
+        {
+            EnsureMagnifierResources();
+            Magnifier.Visibility = Visibility.Visible;
+        }
+
+        var color = RenderMagnifierFrame(pixelX, pixelY);
+        var swatch = new SolidColorBrush(color);
+        swatch.Freeze();
+        MagnifierSwatch.Background = swatch;
+        MagnifierHex.Text = $"#{color.R:X2}{color.G:X2}{color.B:X2}";
+        MagnifierCoord.Text = $"{_monitor.Bounds.Left + pixelX}, {_monitor.Bounds.Top + pixelY}";
+
+        var panel = MeasureWithoutMargin(Magnifier);
+        var panelWidth = panel.Width;
+        var panelHeight = panel.Height;
+        var rootWidth = Root.ActualWidth;
+        var rootHeight = Root.ActualHeight;
+        const double gap = 24;
+
+        var left = point.X + gap;
+        if (left + panelWidth > rootWidth - 6)
+        {
+            left = point.X - panelWidth - gap;
+        }
+
+        var top = point.Y + gap;
+        if (top + panelHeight > rootHeight - 6)
+        {
+            top = point.Y - panelHeight - gap;
+        }
+
+        left = Math.Clamp(left, 6, Math.Max(6, rootWidth - panelWidth - 6));
+        top = Math.Clamp(top, 6, Math.Max(6, rootHeight - panelHeight - 6));
+        Magnifier.Margin = new Thickness(left, top, 0, 0);
+    }
+
+    private void HideMagnifier()
+    {
+        if (Magnifier.Visibility == Visibility.Collapsed)
+        {
+            return;
+        }
+
+        Magnifier.Visibility = Visibility.Collapsed;
+    }
+
+    private void EnsureMagnifierResources()
+    {
+        if (_magnifierBitmap is not null || _frozenSource is null)
+        {
+            return;
+        }
+
+        var scale = _monitor.Scale > 0.1 ? _monitor.Scale : 1.0;
+        _magnifierBlock = Math.Max(4, (int)Math.Round(8 * scale));
+        var size = _magnifierBlock * MagnifierPixels;
+
+        _magnifierSource = new FormatConvertedBitmap(_frozenSource, PixelFormats.Bgr32, null, 0);
+        _magnifierSource.Freeze();
+
+        _magnifierBitmap = new WriteableBitmap(size, size, 96, 96, PixelFormats.Bgr32, null);
+        _magnifierSample = new byte[MagnifierPixels * MagnifierPixels * 4];
+        _magnifierFrame = new byte[size * size * 4];
+        MagnifierImage.Source = _magnifierBitmap;
+    }
+
+    private Color RenderMagnifierFrame(int pixelX, int pixelY)
+    {
+        EnsureMagnifierResources();
+
+        if (_magnifierBitmap is null || _magnifierSource is null || _frozenBitmap is null)
+        {
+            return Colors.Black;
+        }
+
+        var half = MagnifierPixels / 2;
+        var sampleLeft = pixelX - half;
+        var sampleTop = pixelY - half;
+        Array.Clear(_magnifierSample, 0, _magnifierSample.Length);
+
+        var left = Math.Max(0, sampleLeft);
+        var top = Math.Max(0, sampleTop);
+        var right = Math.Min(_frozenBitmap.Width, sampleLeft + MagnifierPixels);
+        var bottom = Math.Min(_frozenBitmap.Height, sampleTop + MagnifierPixels);
+
+        if (right > left && bottom > top)
+        {
+            var width = right - left;
+            var height = bottom - top;
+            var stride = width * 4;
+            var region = new byte[stride * height];
+            _magnifierSource.CopyPixels(new Int32Rect(left, top, width, height), region, stride, 0);
+
+            for (var row = 0; row < height; row++)
+            {
+                var destination = (((top - sampleTop) + row) * MagnifierPixels + (left - sampleLeft)) * 4;
+                Buffer.BlockCopy(region, row * stride, _magnifierSample, destination, stride);
+            }
+        }
+
+        var block = _magnifierBlock;
+        var frameWidth = _magnifierBitmap.PixelWidth;
+
+        for (var sampleY = 0; sampleY < MagnifierPixels; sampleY++)
+        {
+            for (var sampleX = 0; sampleX < MagnifierPixels; sampleX++)
+            {
+                var sourceIndex = ((sampleY * MagnifierPixels) + sampleX) * 4;
+                var blue = _magnifierSample[sourceIndex];
+                var green = _magnifierSample[sourceIndex + 1];
+                var red = _magnifierSample[sourceIndex + 2];
+
+                for (var y = 0; y < block; y++)
+                {
+                    var frameIndex = ((((sampleY * block) + y) * frameWidth) + (sampleX * block)) * 4;
+
+                    for (var x = 0; x < block; x++)
+                    {
+                        _magnifierFrame[frameIndex] = blue;
+                        _magnifierFrame[frameIndex + 1] = green;
+                        _magnifierFrame[frameIndex + 2] = red;
+                        _magnifierFrame[frameIndex + 3] = 255;
+                        frameIndex += 4;
+                    }
+                }
+            }
+        }
+
+        _magnifierBitmap.WritePixels(
+            new Int32Rect(0, 0, frameWidth, _magnifierBitmap.PixelHeight),
+            _magnifierFrame,
+            frameWidth * 4,
+            0);
+
+        var centerIndex = ((half * MagnifierPixels) + half) * 4;
+        return Color.FromRgb(
+            _magnifierSample[centerIndex + 2],
+            _magnifierSample[centerIndex + 1],
+            _magnifierSample[centerIndex]);
+    }
+
+    private void UpdateElementHover(Point point)
+    {
+        if (_hasSelection || _dragging || _annotating)
+        {
+            ClearElementHover();
+            return;
+        }
+
+        if (point.X < 0 ||
+            point.Y < 0 ||
+            point.X > Root.ActualWidth ||
+            point.Y > Root.ActualHeight)
+        {
+            ClearElementHover();
+            return;
+        }
+
+        var screenX = _monitor.Bounds.Left + (int)Math.Round(point.X * _mapScaleX);
+        var screenY = _monitor.Bounds.Top + (int)Math.Round(point.Y * _mapScaleY);
+        var now = Environment.TickCount64;
+
+        if (now - _lastElementProbeTick < ElementProbeIntervalMs &&
+            Math.Abs(screenX - _lastProbeX) < 2 &&
+            Math.Abs(screenY - _lastProbeY) < 2)
+        {
+            return;
+        }
+
+        _lastElementProbeTick = now;
+        _lastProbeX = screenX;
+        _lastProbeY = screenY;
+
+        PhysicalRect? region;
+
+        try
+        {
+            region = WindowProbe.FindRegionUnderPoint(screenX, screenY, _monitor.Bounds, _handle);
+        }
+        catch
+        {
+            region = null;
+        }
+
+        if (region is null)
+        {
+            ClearElementHover();
+            return;
+        }
+
+        ShowElementHover(region.Value);
+    }
+
+    private void ShowElementHover(PhysicalRect rect)
+    {
+        if (_hoverElementPx.Equals(rect) && ElementBorder.Visibility == Visibility.Visible)
+        {
+            return;
+        }
+
+        _hoverElementPx = rect;
+
+        var left = rect.Left / _mapScaleX;
+        var top = rect.Top / _mapScaleY;
+        var right = Math.Min(Root.ActualWidth, left + (rect.Width / _mapScaleX));
+        var bottom = Math.Min(Root.ActualHeight, top + (rect.Height / _mapScaleY));
+
+        left = Math.Clamp(left, 0, Root.ActualWidth);
+        top = Math.Clamp(top, 0, Root.ActualHeight);
+
+        var width = Math.Max(0, right - left);
+        var height = Math.Max(0, bottom - top);
+
+        DimFull.Visibility = Visibility.Collapsed;
+        UpdateDimRect(DimTop, 0, 0, Root.ActualWidth, top);
+        UpdateDimRect(DimBottom, 0, bottom, Root.ActualWidth, Math.Max(0, Root.ActualHeight - bottom));
+        UpdateDimRect(DimLeft, 0, top, left, height);
+        UpdateDimRect(DimRight, right, top, Math.Max(0, Root.ActualWidth - right), height);
+
+        ElementBorder.Visibility = Visibility.Visible;
+        ElementBorder.Width = width;
+        ElementBorder.Height = height;
+        Canvas.SetLeft(ElementBorder, left);
+        Canvas.SetTop(ElementBorder, top);
+
+        UpdateSizeBadge(rect, left, top);
+    }
+
+    private void ClearElementHover()
+    {
+        if (ElementBorder.Visibility == Visibility.Collapsed && _hoverElementPx.Width == 0)
+        {
+            return;
+        }
+
+        _hoverElementPx = default;
+        ElementBorder.Visibility = Visibility.Collapsed;
+        SizeBadge.Visibility = Visibility.Collapsed;
+
+        if (!_hasSelection && !_dragging && !_annotating)
+        {
+            DimFull.Visibility = Visibility.Visible;
+            DimTop.Visibility = Visibility.Collapsed;
+            DimBottom.Visibility = Visibility.Collapsed;
+            DimLeft.Visibility = Visibility.Collapsed;
+            DimRight.Visibility = Visibility.Collapsed;
+        }
     }
 
     private PhysicalRect ToLocalPhysical(Point dipPoint)
@@ -1146,7 +1596,15 @@ public partial class ScreenshotOverlayWindow : Window
         if (!enabled)
         {
             CancelTextEditor();
+            CancelLiveStroke();
         }
+        else
+        {
+            HideMagnifier();
+            ClearElementHover();
+        }
+
+        UpdateHistoryVisuals();
 
         SetCornersVisible(_hasSelection && !enabled);
         AnnotateButton.Background = enabled
@@ -1207,8 +1665,12 @@ public partial class ScreenshotOverlayWindow : Window
                 UndoAnnotation();
                 break;
 
+            case "Redo":
+                RedoAnnotation();
+                break;
+
             case "Clear":
-                ClearAnnotations();
+                ClearAnnotationStrokes();
                 break;
 
             case "Done":
@@ -1334,10 +1796,12 @@ public partial class ScreenshotOverlayWindow : Window
 
         if (stroke is not null && IsMeaningfulStroke(stroke))
         {
+            PushHistory();
             _strokes.Add(stroke);
         }
 
         AnnotationView.SetContent(_strokes, null, 1.0);
+        UpdateHistoryVisuals();
     }
 
     private static bool IsMeaningfulStroke(AnnotationStroke stroke)
@@ -1367,25 +1831,98 @@ public partial class ScreenshotOverlayWindow : Window
     {
         if (_liveStroke is not null)
         {
-            _liveStroke = null;
-            _drawingAnnotation = false;
-            Mouse.Capture(null);
+            CancelLiveStroke();
+            return;
         }
-        else if (_strokes.Count > 0)
+
+        if (_undoStack.Count == 0)
         {
-            _strokes.RemoveAt(_strokes.Count - 1);
+            return;
+        }
+
+        _redoStack.Add(new List<AnnotationStroke>(_strokes));
+        var previous = _undoStack[_undoStack.Count - 1];
+        _undoStack.RemoveAt(_undoStack.Count - 1);
+        RestoreStrokes(previous);
+    }
+
+    private void RedoAnnotation()
+    {
+        if (_redoStack.Count == 0)
+        {
+            return;
+        }
+
+        _undoStack.Add(new List<AnnotationStroke>(_strokes));
+        var next = _redoStack[_redoStack.Count - 1];
+        _redoStack.RemoveAt(_redoStack.Count - 1);
+        RestoreStrokes(next);
+    }
+
+    private void RestoreStrokes(List<AnnotationStroke> snapshot)
+    {
+        _strokes.Clear();
+        _strokes.AddRange(snapshot);
+        AnnotationView.SetContent(_strokes, null, 1.0);
+        UpdateHistoryVisuals();
+    }
+
+    private void PushHistory()
+    {
+        _undoStack.Add(new List<AnnotationStroke>(_strokes));
+
+        if (_undoStack.Count > MaxHistory)
+        {
+            _undoStack.RemoveAt(0);
+        }
+
+        _redoStack.Clear();
+        UpdateHistoryVisuals();
+    }
+
+    private void UpdateHistoryVisuals()
+    {
+        UndoButton.IsEnabled = _undoStack.Count > 0 || _liveStroke is not null;
+        RedoButton.IsEnabled = _redoStack.Count > 0;
+    }
+
+    private void CancelLiveStroke()
+    {
+        _liveStroke = null;
+        _drawingAnnotation = false;
+
+        if (Mouse.Captured == Root)
+        {
+            Mouse.Capture(null);
         }
 
         AnnotationView.SetContent(_strokes, null, 1.0);
+        UpdateHistoryVisuals();
+    }
+
+    private void ClearAnnotationStrokes()
+    {
+        if (_strokes.Count == 0 && _liveStroke is null)
+        {
+            return;
+        }
+
+        PushHistory();
+        CancelTextEditor();
+        CancelLiveStroke();
+        _strokes.Clear();
+        AnnotationView.SetContent(_strokes, null, 1.0);
+        UpdateHistoryVisuals();
     }
 
     private void ClearAnnotations()
     {
         CancelTextEditor();
+        _undoStack.Clear();
+        _redoStack.Clear();
         _strokes.Clear();
-        _liveStroke = null;
-        _drawingAnnotation = false;
-        AnnotationView.SetContent(_strokes, null, 1.0);
+        CancelLiveStroke();
+        UpdateHistoryVisuals();
     }
 
     private void BeginTextEditor(Point rootPoint, Point selectionPoint)
@@ -1466,8 +2003,10 @@ public partial class ScreenshotOverlayWindow : Window
         };
 
         stroke.Points.Add(_textPoint);
+        PushHistory();
         _strokes.Add(stroke);
         AnnotationView.SetContent(_strokes, null, 1.0);
+        UpdateHistoryVisuals();
     }
 
     private void CancelTextEditor()

@@ -84,6 +84,9 @@
                             <Trigger Property="IsMouseOver" Value="True">
                                 <Setter TargetName="Host" Property="Background" Value="#1FFFFFFF" />
                             </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.35" />
+                            </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
                 </Setter.Value>
@@ -124,7 +127,8 @@
           PreviewMouseLeftButtonDown="Root_PreviewMouseLeftButtonDown"
           PreviewMouseMove="Root_PreviewMouseMove"
           PreviewMouseLeftButtonUp="Root_PreviewMouseLeftButtonUp"
-          PreviewMouseRightButtonDown="Root_PreviewMouseRightButtonDown">
+          PreviewMouseRightButtonDown="Root_PreviewMouseRightButtonDown"
+          MouseLeave="Root_MouseLeave">
         <Image x:Name="FrozenImage"
                Stretch="Fill"
                IsHitTestVisible="False"
@@ -166,7 +170,88 @@
             <Rectangle x:Name="EdgeBottom" Width="7" Height="7" Fill="#FF7CA8FF" Visibility="Collapsed" />
             <Rectangle x:Name="EdgeLeft" Width="7" Height="7" Fill="#FF7CA8FF" Visibility="Collapsed" />
             <Rectangle x:Name="EdgeRight" Width="7" Height="7" Fill="#FF7CA8FF" Visibility="Collapsed" />
+
+            <Rectangle x:Name="ElementBorder"
+                       StrokeThickness="1.5"
+                       Stroke="#FF7CA8FF"
+                       Fill="Transparent"
+                       Visibility="Collapsed" />
         </Canvas>
+
+        <Grid x:Name="Magnifier"
+              Width="136"
+              HorizontalAlignment="Left"
+              VerticalAlignment="Top"
+              IsHitTestVisible="False"
+              Visibility="Collapsed">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="136" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <Border Grid.Row="0"
+                    CornerRadius="10"
+                    Background="#FF0B0F16">
+                <Border.Effect>
+                    <DropShadowEffect Color="#FF000000" BlurRadius="18" ShadowDepth="3" Opacity="0.42" />
+                </Border.Effect>
+                <Grid x:Name="MagnifierViewport" Width="136" Height="136">
+                    <Grid.Clip>
+                        <RectangleGeometry Rect="0,0,136,136" RadiusX="9" RadiusY="9" />
+                    </Grid.Clip>
+                    <Image x:Name="MagnifierImage"
+                           Width="136"
+                           Height="136"
+                           Stretch="Fill"
+                           RenderOptions.BitmapScalingMode="NearestNeighbor" />
+                    <Canvas IsHitTestVisible="False">
+                        <Rectangle x:Name="MagnifierPixelRing"
+                                   Width="9"
+                                   Height="9"
+                                   Stroke="#FF7CA8FF"
+                                   StrokeThickness="1.5"
+                                   Canvas.Left="63.5"
+                                   Canvas.Top="63.5" />
+                    </Canvas>
+                    <Border CornerRadius="10"
+                            BorderBrush="#5CFFFFFF"
+                            BorderThickness="1"
+                            IsHitTestVisible="False" />
+                </Grid>
+            </Border>
+
+            <Border Grid.Row="1"
+                    Margin="0,5,0,0"
+                    Padding="8,6"
+                    CornerRadius="8"
+                    Background="#F210141C"
+                    BorderBrush="#33FFFFFF"
+                    BorderThickness="1">
+                <StackPanel>
+                    <StackPanel Orientation="Horizontal">
+                        <Border x:Name="MagnifierSwatch"
+                                Width="11"
+                                Height="11"
+                                CornerRadius="3"
+                                Background="#FFFFFFFF"
+                                BorderBrush="#4DFFFFFF"
+                                BorderThickness="1"
+                                VerticalAlignment="Center" />
+                        <TextBlock x:Name="MagnifierHex"
+                                   Margin="7,0,0,0"
+                                   FontFamily="Consolas, Microsoft YaHei UI"
+                                   FontSize="11"
+                                   Foreground="#E8EDF6"
+                                   VerticalAlignment="Center" />
+                    </StackPanel>
+                    <TextBlock x:Name="MagnifierCoord"
+                               Margin="0,3,0,0"
+                               FontFamily="Consolas, Microsoft YaHei UI"
+                               FontSize="10"
+                               Foreground="#8D9AAF" />
+                </StackPanel>
+            </Border>
+        </Grid>
 
         <Canvas x:Name="EditorLayer" ClipToBounds="True" />
 
@@ -353,7 +438,7 @@
                 <Button x:Name="ToolPenButton"
                         Style="{StaticResource AnnotationToolButtonStyle}"
                         Tag="Pen"
-                        ToolTip="画笔"
+                        ToolTip="画笔 (P)"
                         AutomationProperties.Name="画笔"
                         Click="AnnotationTool_Click">
                     <Viewbox Width="15" Height="15">
@@ -364,7 +449,7 @@
                 <Button x:Name="ToolRectangleButton"
                         Style="{StaticResource AnnotationToolButtonStyle}"
                         Tag="Rectangle"
-                        ToolTip="矩形"
+                        ToolTip="矩形 (R)"
                         AutomationProperties.Name="矩形"
                         Click="AnnotationTool_Click">
                     <Viewbox Width="15" Height="15">
@@ -374,7 +459,7 @@
                 <Button x:Name="ToolEllipseButton"
                         Style="{StaticResource AnnotationToolButtonStyle}"
                         Tag="Ellipse"
-                        ToolTip="椭圆"
+                        ToolTip="椭圆 (E)"
                         AutomationProperties.Name="椭圆"
                         Click="AnnotationTool_Click">
                     <Viewbox Width="15" Height="15">
@@ -385,7 +470,7 @@
                 <Button x:Name="ToolArrowButton"
                         Style="{StaticResource AnnotationToolButtonStyle}"
                         Tag="Arrow"
-                        ToolTip="箭头"
+                        ToolTip="箭头 (A)"
                         AutomationProperties.Name="箭头"
                         Click="AnnotationTool_Click">
                     <Viewbox Width="15" Height="15">
@@ -395,7 +480,7 @@
                 <Button x:Name="ToolTextButton"
                         Style="{StaticResource AnnotationToolButtonStyle}"
                         Tag="Text"
-                        ToolTip="文字"
+                        ToolTip="文字 (T)"
                         AutomationProperties.Name="文字"
                         Click="AnnotationTool_Click">
                     <Viewbox Width="15" Height="15">
@@ -405,7 +490,7 @@
                 <Button x:Name="ToolHighlighterButton"
                         Style="{StaticResource AnnotationToolButtonStyle}"
                         Tag="Highlighter"
-                        ToolTip="荧光笔"
+                        ToolTip="荧光笔 (H)"
                         AutomationProperties.Name="荧光笔"
                         Click="AnnotationTool_Click">
                     <Viewbox Width="15" Height="15">
@@ -454,25 +539,49 @@
 
                 <Border Width="1" Margin="4,6" Background="#26FFFFFF" />
 
-                <Button Style="{StaticResource OverlayButtonStyle}"
+                <Button x:Name="UndoButton"
+                        Style="{StaticResource AnnotationToolButtonStyle}"
                         Tag="Undo"
-                        FontSize="11"
-                        Padding="8,5"
                         ToolTip="撤销 (Ctrl+Z)"
-                        Click="AnnotationAction_Click"
-                        Content="撤销" />
-                <Button Style="{StaticResource OverlayButtonStyle}"
+                        AutomationProperties.Name="撤销"
+                        Click="AnnotationAction_Click">
+                    <Viewbox Width="15" Height="15">
+                        <Path Style="{StaticResource OverlayIconStyle}"
+                              Data="M9 6L4 11l5 5 M4 11h9a5 5 0 0 1 5 5v2" />
+                    </Viewbox>
+                </Button>
+                <Button x:Name="RedoButton"
+                        Style="{StaticResource AnnotationToolButtonStyle}"
+                        Tag="Redo"
+                        ToolTip="重做 (Ctrl+Y)"
+                        AutomationProperties.Name="重做"
+                        Click="AnnotationAction_Click">
+                    <Viewbox Width="15" Height="15">
+                        <Path Style="{StaticResource OverlayIconStyle}"
+                              Data="M15 6l5 5-5 5 M20 11h-9a5 5 0 0 0-5 5v2" />
+                    </Viewbox>
+                </Button>
+                <Button x:Name="ClearButton"
+                        Style="{StaticResource AnnotationToolButtonStyle}"
                         Tag="Clear"
-                        FontSize="11"
-                        Padding="8,5"
                         ToolTip="清空标注"
-                        Click="AnnotationAction_Click"
-                        Content="清空" />
-                <Button Style="{StaticResource OverlayButtonStyle}"
+                        AutomationProperties.Name="清空标注"
+                        Click="AnnotationAction_Click">
+                    <Viewbox Width="15" Height="15">
+                        <Path Style="{StaticResource OverlayIconStyle}"
+                              Data="M5 7h14 M9 7V4h6v3 M7 7l1 13h8l1-13 M10 11v6 M14 11v6" />
+                    </Viewbox>
+                </Button>
+
+                <Border Width="1" Margin="4,6" Background="#26FFFFFF" />
+
+                <Button x:Name="DoneButton"
+                        Style="{StaticResource OverlayButtonStyle}"
                         Tag="Done"
                         FontSize="11"
-                        Padding="8,5"
-                        Foreground="#7CA8FF"
+                        Padding="9,6"
+                        Foreground="#8FBAFF"
+                        Background="#267CA8FF"
                         ToolTip="退出标注 (Space)"
                         Click="AnnotationAction_Click"
                         Content="完成" />

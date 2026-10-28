@@ -320,7 +320,7 @@ public partial class PinWindow : Window
         Width = Math.Max(24, _initialRect.Width) / scale;
         Height = Math.Max(24, _initialRect.Height) / scale;
 
-        ShowHud("已恢复初始大小");
+        ShowHud("已恢复实际大小");
     }
 
     private void Window_PreviewKeyDown(object sender, KeyEventArgs e)

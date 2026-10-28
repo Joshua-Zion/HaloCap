@@ -170,7 +170,7 @@
 
     <Window.ContextMenu>
         <ContextMenu Style="{StaticResource PinMenuStyle}">
-            <MenuItem Header="标注图片"
+            <MenuItem Header="标注"
                       InputGestureText="Space"
                       Style="{StaticResource PinMenuItemStyle}"
                       Click="AnnotateMenuItem_Click" />
@@ -184,16 +184,16 @@
                       Style="{StaticResource PinMenuItemStyle}"
                       Click="SaveMenuItem_Click" />
             <Separator Style="{StaticResource PinSeparatorStyle}" />
-            <MenuItem Header="恢复初始大小"
+            <MenuItem Header="实际大小"
                       InputGestureText="Ctrl+0"
                       Style="{StaticResource PinMenuItemStyle}"
                       Click="ResetMenuItem_Click" />
             <Separator Style="{StaticResource PinSeparatorStyle}" />
-            <MenuItem Header="关闭此贴图"
+            <MenuItem Header="关闭"
                       InputGestureText="Esc"
                       Style="{StaticResource PinMenuItemStyle}"
                       Click="CloseMenuItem_Click" />
-            <MenuItem Header="关闭全部贴图"
+            <MenuItem Header="全部关闭"
                       Style="{StaticResource PinMenuItemStyle}"
                       Click="CloseAllMenuItem_Click" />
         </ContextMenu>
@@ -361,7 +361,7 @@
                             Tag="Done"
                             Foreground="#FFFFFFFF"
                             Background="#FF2F7CF6"
-                            ToolTip="完成，退出标注 (Space)"
+                            ToolTip="完成并退出标注 (Space)"
                             Click="AnnotationAction_Click">
                         <Viewbox Width="20" Height="20">
                             <Path Style="{StaticResource ToolbarIconStyle}" Data="{StaticResource ToolbarDoneGeometry}" />

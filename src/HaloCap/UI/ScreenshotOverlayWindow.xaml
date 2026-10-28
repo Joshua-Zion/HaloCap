@@ -555,7 +555,7 @@
                             Style="{StaticResource AnnotationToolButtonStyle}"
                             Tag="Ocr"
                             ToolTip="识别文字"
-                            AutomationProperties.Name="OCR 识别"
+                            AutomationProperties.Name="文字识别"
                             Click="ActionButton_Click">
                         <Viewbox Width="20" Height="20">
                             <Path Style="{StaticResource ToolbarIconStyle}" Data="{StaticResource ToolbarOcrGeometry}" />

@@ -19,7 +19,7 @@ public partial class RadialMenuWindow : Window
 
     /// <summary>
     /// 窗口在缩放后的设计画布之外额外保留的透明边距（DIP），
-    /// 用于容纳投影，避免小尺寸时圆盘与阴影被窗口边缘裁切。
+    /// 用于容纳投影，避免小尺寸时光圈与阴影被窗口边缘裁切。
     /// </summary>
     public const double MenuPadding = 20;
 
@@ -228,7 +228,7 @@ public partial class RadialMenuWindow : Window
         {
             CenterTitle.Text = "选择操作";
             CenterTitle.Foreground = (Brush)FindResource("TextPrimaryBrush");
-            CenterSubtitle.Text = "拖动移动 · 1–4 · Esc";
+            CenterSubtitle.Text = "拖动移动 · 1–4 选择 · Esc";
             CenterDot.Fill = UiColors.Brush("#FF4E596B");
             return;
         }
@@ -237,7 +237,7 @@ public partial class RadialMenuWindow : Window
         var accent = UiColors.Parse(info.AccentHex);
         CenterTitle.Text = info.Title;
         CenterTitle.Foreground = new SolidColorBrush(accent);
-        CenterSubtitle.Text = "点击 · 1–4";
+        CenterSubtitle.Text = "单击选择 · 1–4";
         CenterDot.Fill = new SolidColorBrush(accent);
     }
 

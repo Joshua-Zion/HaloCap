@@ -14,13 +14,14 @@ namespace HaloCap;
 
 public partial class App : Application
 {
-    private const string DisplayName = "HaloCap 光圈";
+    private const string DisplayName = AppInfo.DisplayName;
 
     private readonly AutoStartService _autoStart = new();
     private readonly ClipboardPinService _clipboardPin = new();
     private SingleInstanceService? _singleInstance;
     private HotkeyService? _hotkeyService;
     private TrayIconService? _tray;
+    private TrayMenu? _trayMenu;
     private RadialMenuController? _radial;
     private RecordingService? _recording;
     private ScreenshotSession? _screenshotSession;
@@ -71,14 +72,9 @@ public partial class App : Application
         };
         _radial.ActionSelected += OnActionSelected;
 
-        _tray = new TrayIconService
-        {
-            AutoStartStateProvider = _autoStart.IsEnabled
-        };
+        _tray = new TrayIconService();
+        _tray.MenuRequested += (_, _) => Defer(ShowTrayMenu);
         _tray.OpenRequested += (_, _) => Defer(ShowRadialFromTray);
-        _tray.SettingsRequested += (_, _) => Defer(OpenSettings);
-        _tray.ExitRequested += (_, _) => Defer(ExitApplication);
-        _tray.AutoStartToggleRequested += enabled => Defer(() => ToggleAutoStartFromTray(enabled));
         _tray.StopRecordingRequested += (_, _) => Defer(StopRecordingFromTray);
 
         _recording = new RecordingService();
@@ -101,8 +97,8 @@ public partial class App : Application
         if (!registered)
         {
             _tray.ShowNotification(
-                "快捷键未注册",
-                hotkeyError ?? "无法注册默认快捷键，请在托盘菜单中打开设置更换组合键。",
+                "快捷键未生效",
+                hotkeyError ?? "无法注册默认快捷键，请在设置中更换。",
                 System.Windows.Forms.ToolTipIcon.Warning);
         }
 
@@ -146,6 +142,39 @@ public partial class App : Application
         _radial?.ShowFromTray();
     }
 
+    private void ShowTrayMenu()
+    {
+        if (_isExiting || _isDialogOpen || _settingsWindow is { IsVisible: true })
+        {
+            return;
+        }
+
+        _trayMenu?.Dismiss();
+
+        var hotkey = _hotkeyService?.Current?.DisplayText ?? _settings.Hotkey.DisplayText;
+        var menu = new TrayMenu(
+            AppInfo.VersionLabel,
+            hotkey,
+            _autoStart.IsEnabled(),
+            _recording?.IsRecording == true);
+
+        menu.OpenRequested += (_, _) => Defer(ShowRadialFromTray);
+        menu.SettingsRequested += (_, _) => Defer(OpenSettings);
+        menu.StopRecordingRequested += (_, _) => Defer(StopRecordingFromTray);
+        menu.AutoStartToggleRequested += enabled => Defer(() => ToggleAutoStartFromTray(enabled));
+        menu.ExitRequested += (_, _) => Defer(ExitApplication);
+        menu.Closed += (_, _) =>
+        {
+            if (ReferenceEquals(_trayMenu, menu))
+            {
+                _trayMenu = null;
+            }
+        };
+
+        _trayMenu = menu;
+        menu.ShowAtCursor();
+    }
+
     private void OpenSettings()
     {
         if (_isExiting || IsBusy)
@@ -153,6 +182,7 @@ public partial class App : Application
             return;
         }
 
+        _trayMenu?.Dismiss();
         _radial?.HideMenu();
 
         if (_settingsWindow is { IsVisible: true })
@@ -191,7 +221,7 @@ public partial class App : Application
     {
         if (_hotkeyService is null)
         {
-            return "热键服务尚未就绪，请重新启动 HaloCap。";
+            return "热键服务尚未就绪，请重启 HaloCap。";
         }
 
         if (!_hotkeyService.TryChange(hotkey, out var error))
@@ -199,7 +229,7 @@ public partial class App : Application
             var registeredHotkey = _hotkeyService.Current;
             _radial?.UpdateHotkey(registeredHotkey ?? _settings.Hotkey, registeredHotkey is not null);
             UpdateHotkeyUi();
-            return error ?? "无法注册该快捷键。";
+            return error ?? "无法注册该快捷键，请换一个组合键。";
         }
 
         var previous = _settings.Hotkey;
@@ -235,7 +265,6 @@ public partial class App : Application
         try
         {
             _autoStart.SetEnabled(enabled);
-            _tray?.RefreshState();
             return null;
         }
         catch (Exception ex)
@@ -289,8 +318,8 @@ public partial class App : Application
         {
             _settings.MenuSize = previous;
             _radial?.UpdateMenuSize(previous);
-            Log.Error("保存圆盘尺寸失败", ex);
-            return "无法保存圆盘尺寸：" + ex.Message;
+            Log.Error("保存光圈尺寸失败", ex);
+            return "无法保存光圈尺寸：" + ex.Message;
         }
     }
 
@@ -306,7 +335,7 @@ public partial class App : Application
 
             if (expanded.Length > 0 && !Path.IsPathFullyQualified(expanded))
             {
-                return "请输入绝对路径，例如 D:\\Recordings。";
+                return "请输入完整路径，例如 D:\\Recordings。";
             }
 
             normalized = expanded.Length == 0
@@ -409,7 +438,7 @@ public partial class App : Application
 
         try
         {
-            // 等待圆盘淡出，避免遮罩把圆盘本身截进去。
+            // 等待光圈淡出，避免遮罩把光圈本身截进去。
             await Task.Delay(170);
 
             if (_isExiting)
@@ -441,7 +470,7 @@ public partial class App : Application
             var contents = _clipboardPin.CreatePins(_settings.ConvertFilePathsToImages, monitor.Scale);
             if (contents.Count == 0)
             {
-                _tray?.ShowNotification("无法贴图", "剪贴板中没有可贴出的图像、颜色、文字或文件路径。");
+                _tray?.ShowNotification("剪贴板为空", "没有可贴出的图像、颜色或文字。");
                 return;
             }
 
@@ -465,7 +494,7 @@ public partial class App : Application
         catch (Exception ex)
         {
             Log.Error("剪贴板贴图失败", ex);
-            _tray?.ShowNotification("贴图未完成", "无法读取或显示剪贴板内容，请重新复制后重试。", Forms.ToolTipIcon.Warning);
+            _tray?.ShowNotification("贴图失败", "无法读取剪贴板，请复制内容后重试。", Forms.ToolTipIcon.Warning);
         }
     }
 
@@ -490,7 +519,7 @@ public partial class App : Application
         {
             _tray?.ShowNotification(
                 "截图失败",
-                "未能获取屏幕画面。请确认没有启用受保护内容后重试。",
+                "无法获取屏幕画面，请关闭受保护内容后重试。",
                 Forms.ToolTipIcon.Error);
             return;
         }
@@ -504,7 +533,7 @@ public partial class App : Application
                     ImageClipboard.SetImage(image);
                     _tray?.ShowNotification(
                         "已复制截图",
-                        $"{image.PixelWidth} × {image.PixelHeight} 像素已复制到剪贴板。");
+                        $"{image.PixelWidth} × {image.PixelHeight} · 已复制到剪贴板");
                     break;
                 }
 
@@ -612,7 +641,7 @@ public partial class App : Application
         catch (Exception ex)
         {
             Log.Error("停止录屏失败", ex);
-            _tray?.ShowNotification("停止录屏失败", ex.Message, Forms.ToolTipIcon.Error);
+            _tray?.ShowNotification("无法停止录屏", ex.Message, Forms.ToolTipIcon.Error);
         }
     }
 
@@ -627,7 +656,7 @@ public partial class App : Application
         {
             _tray?.ShowNotificationWithAction(
                 "录屏已保存",
-                Path.GetFileName(path) + " · 点击打开所在文件夹",
+                Path.GetFileName(path) + " · 单击定位文件",
                 path,
                 Forms.ToolTipIcon.Info);
             Log.Info("录屏已保存：" + path);
@@ -711,6 +740,8 @@ public partial class App : Application
 
         _recording = null;
 
+        _trayMenu?.Dismiss();
+        _trayMenu = null;
         _radial?.Dispose();
         _radial = null;
         _tray?.Dispose();
@@ -737,7 +768,7 @@ public partial class App : Application
         }
 
         MessageBox.Show(
-            $"HaloCap 遇到错误，但仍在运行。\n\n{e.Exception.Message}\n\n详细日志：{Log.LogDirectory}",
+            $"HaloCap 遇到问题，但仍在运行。\n\n{e.Exception.Message}\n\n日志目录：{Log.LogDirectory}",
             DisplayName,
             MessageBoxButton.OK,
             MessageBoxImage.Error);

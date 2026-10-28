@@ -55,7 +55,7 @@ internal sealed class RadialMenuController : IDisposable
         _messageSource = HwndSource.FromHwnd(_window.Handle);
         if (_messageSource is null)
         {
-            Log.Error("无法获取圆盘窗口消息源，剪贴板变化监听未注册");
+            Log.Error("无法获取光圈窗口消息源，剪贴板变化监听未注册");
         }
         else
         {
@@ -65,12 +65,12 @@ internal sealed class RadialMenuController : IDisposable
                 _clipboardListenerRegistered = NativeMethods.AddClipboardFormatListener(_window.Handle);
                 if (!_clipboardListenerRegistered)
                 {
-                    Log.Error($"注册圆盘剪贴板变化监听失败，Win32 错误 {Marshal.GetLastWin32Error()}");
+                    Log.Error($"注册光圈剪贴板变化监听失败，Win32 错误 {Marshal.GetLastWin32Error()}");
                 }
             }
             catch (Exception ex)
             {
-                Log.Error("注册圆盘剪贴板变化监听时发生异常", ex);
+                Log.Error("注册光圈剪贴板变化监听时发生异常", ex);
             }
         }
 
@@ -108,7 +108,7 @@ internal sealed class RadialMenuController : IDisposable
         catch (Exception ex)
         {
             _pinEnabled = false;
-            Log.Error("刷新圆盘贴图可用状态时发生异常", ex);
+            Log.Error("刷新光圈贴图可用状态时发生异常", ex);
         }
 
         _window.SetActionEnabled(RadialAction.Pin, _pinEnabled);
@@ -158,7 +158,7 @@ internal sealed class RadialMenuController : IDisposable
             return;
         }
 
-        // 光标已经离开圆盘：把圆盘移到光标的新位置重新展开。
+        // 光标已经离开光圈：把光圈移到光标的新位置重新展开。
         ShowMenu();
     }
 
@@ -285,7 +285,7 @@ internal sealed class RadialMenuController : IDisposable
     }
 
     /// <summary>
-    /// 圆盘设计画布只占窗口内部的矩形，四周还有 MenuPadding 的透明边距；
+    /// 光圈设计画布只占窗口内部的矩形，四周还有 MenuPadding 的透明边距；
     /// 命中半径必须按内容区域换算，不能直接用窗口宽度。
     /// </summary>
     private double ComputePixelScale(double windowWidthPx, double dpiScale)
@@ -552,7 +552,7 @@ internal sealed class RadialMenuController : IDisposable
 
         if (distance > RadialMenuWindow.DiskRadius * _pixelScale)
         {
-            // 光标移出圆盘后取消选中，避免松手误触上一块扇区。
+            // 光标移出光圈后取消选中，避免松手误触上一块扇区。
             SetHover(null);
             return;
         }
@@ -598,7 +598,7 @@ internal sealed class RadialMenuController : IDisposable
         }
         catch (Exception ex)
         {
-            Log.Error($"执行圆盘动作 {action} 时发生异常", ex);
+            Log.Error($"执行光圈动作 {action} 时发生异常", ex);
         }
     }
 
@@ -675,12 +675,12 @@ internal sealed class RadialMenuController : IDisposable
             {
                 if (!NativeMethods.RemoveClipboardFormatListener(_window.Handle))
                 {
-                    Log.Error($"移除圆盘剪贴板变化监听失败，Win32 错误 {Marshal.GetLastWin32Error()}");
+                    Log.Error($"移除光圈剪贴板变化监听失败，Win32 错误 {Marshal.GetLastWin32Error()}");
                 }
             }
             catch (Exception ex)
             {
-                Log.Error("移除圆盘剪贴板变化监听时发生异常", ex);
+                Log.Error("移除光圈剪贴板变化监听时发生异常", ex);
             }
 
             _clipboardListenerRegistered = false;

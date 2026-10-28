@@ -1340,7 +1340,7 @@ internal static class Program
             True(pinItem is not null, "radial.pin should be identifiable by automation ID");
             radialWindow.SetHover(RadialAction.Pin);
             Equal("选择操作", ((TextBlock)radialWindow.FindName("CenterTitle")).Text);
-            Equal("拖动移动 · 1–4 · Esc", ((TextBlock)radialWindow.FindName("CenterSubtitle")).Text);
+            Equal("拖动移动 · 1–4 选择 · Esc", ((TextBlock)radialWindow.FindName("CenterSubtitle")).Text);
             foreach (var action in new[] { RadialAction.Screenshot, RadialAction.Ocr, RadialAction.Record })
             {
                 radialWindow.SetHover(action);

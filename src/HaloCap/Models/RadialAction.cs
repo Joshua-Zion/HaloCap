@@ -27,7 +27,7 @@ public sealed record RadialActionInfo(
             "#6CA8FF"),
         new RadialActionInfo(
             RadialAction.Ocr,
-            "OCR",
+            "文字识别",
             "2",
             "M4 7V4h16v3 M9 20h6 M12 4v16",
             "#B08CFF"),

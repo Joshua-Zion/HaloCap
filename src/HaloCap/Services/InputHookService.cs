@@ -6,7 +6,7 @@ using HaloCap.Interop;
 namespace HaloCap.Services;
 
 /// <summary>
-/// 仅在圆盘显示期间安装的全局输入钩子，用于在不抢焦点的情况下接收 Esc、数字键与点击。
+/// 仅在光圈显示期间安装的全局输入钩子，用于在不抢焦点的情况下接收 Esc、数字键与点击。
 /// </summary>
 internal sealed class InputHookService : IDisposable
 {

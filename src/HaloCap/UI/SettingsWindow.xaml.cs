@@ -1,7 +1,7 @@
 using System;
 using System.IO;
-using System.Reflection;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using HaloCap.Models;
@@ -50,7 +50,7 @@ public partial class SettingsWindow : Window
         _format = screenshotFormat;
         _menuSize = menuSize;
 
-        VersionText.Text = $"v{ResolveVersion()} · 本地离线处理";
+        VersionText.Text = AppInfo.VersionLabel;
         HotkeyValueText.Text = _hotkey.DisplayText;
         UpdateHotkeyHint();
         AutoStartToggle.IsChecked = autoStartEnabled;
@@ -58,7 +58,7 @@ public partial class SettingsWindow : Window
         ConvertFilePathsToImagesToggle.IsChecked = convertFilePathsToImages;
 
         RecordingDirectoryBox.Text = recordingDirectory ?? string.Empty;
-        RecordingDirectoryHint.Text = "留空时保存到：" + AppPaths.DefaultRecordingDirectory;
+        RecordingDirectoryHint.Text = "留空时保存到 " + AppPaths.DefaultRecordingDirectory;
         PngRadio.IsChecked = screenshotFormat == ScreenshotImageFormat.Png;
         JpegRadio.IsChecked = screenshotFormat == ScreenshotImageFormat.Jpeg;
         SmallSizeRadio.IsChecked = menuSize == RadialMenuSize.Small;
@@ -69,6 +69,29 @@ public partial class SettingsWindow : Window
         AutoStartToggle.Unchecked += AutoStartToggle_Changed;
         PreviewKeyDown += OnPreviewKeyDown;
         Loaded += (_, _) => Activate();
+
+        NavGeneral.IsChecked = true;
+    }
+
+    private void NavItem_Checked(object sender, RoutedEventArgs e)
+    {
+        if (sender is not RadioButton { Uid: { } key })
+        {
+            return;
+        }
+
+        if (_capturingHotkey)
+        {
+            CancelHotkeyCapture();
+        }
+
+        GeneralPane.Visibility = key == "general" ? Visibility.Visible : Visibility.Collapsed;
+        CapturePane.Visibility = key == "capture" ? Visibility.Visible : Visibility.Collapsed;
+        RecordingPane.Visibility = key == "recording" ? Visibility.Visible : Visibility.Collapsed;
+        AboutPane.Visibility = key == "about" ? Visibility.Visible : Visibility.Collapsed;
+        SaveBar.Visibility = key == "about" ? Visibility.Collapsed : Visibility.Visible;
+        SaveButton.IsDefault = key != "about";
+        ClearError();
     }
 
     private void HotkeyButton_Click(object sender, RoutedEventArgs e)
@@ -87,7 +110,7 @@ public partial class SettingsWindow : Window
         _capturingHotkey = true;
         HotkeyValueText.Text = "请按下快捷键…";
         HotkeyValueText.Foreground = (Brush)FindResource("AccentBrush");
-        HotkeyHint.Text = "等待输入：单键或组合键均可，Esc 取消";
+        HotkeyHint.Text = "等待按键…  按 Esc 取消";
         SaveButton.IsEnabled = false;
         ClearError();
         HotkeyButton.Focus();
@@ -116,8 +139,8 @@ public partial class SettingsWindow : Window
     private void UpdateHotkeyHint()
     {
         HotkeyHint.Text = _hotkey.IsSingleKey
-            ? $"单键「{HotkeyDefinition.GetKeyName(_hotkey.Key)}」会被独占，其他应用将无法再输入该键。"
-            : "点击输入框后按下快捷键；支持单键与组合键，Esc 取消";
+            ? $"「{HotkeyDefinition.GetKeyName(_hotkey.Key)}」为单键快捷键，会独占该键；其他应用将无法输入。"
+            : "单击后按下新的组合键；单键会独占该键，Esc 取消";
     }
 
     private void OnPreviewKeyDown(object sender, KeyEventArgs e)
@@ -170,10 +193,7 @@ public partial class SettingsWindow : Window
 
     private void UpdateAutoStartUi()
     {
-        AutoStartStatusText.Text = _autoStartEnabled ? "已开启" : "已关闭";
-        AutoStartStatusText.Foreground = (Brush)FindResource(
-            _autoStartEnabled ? "AccentBrush" : "TextTertiaryBrush");
-        AutoStartToggle.ToolTip = _autoStartEnabled ? "关闭开机自启" : "开启开机自启";
+        AutoStartToggle.ToolTip = _autoStartEnabled ? "关闭登录时启动" : "开启登录时启动";
     }
 
     private void FormatRadio_Checked(object sender, RoutedEventArgs e)
@@ -194,7 +214,7 @@ public partial class SettingsWindow : Window
         ClearError();
     }
 
-    private void RecordingDirectoryBox_TextChanged(object sender, System.Windows.Controls.TextChangedEventArgs e)
+    private void RecordingDirectoryBox_TextChanged(object sender, TextChangedEventArgs e)
     {
         ClearError();
     }
@@ -229,7 +249,7 @@ public partial class SettingsWindow : Window
 
         using var dialog = new System.Windows.Forms.FolderBrowserDialog
         {
-            Description = "选择录屏文件保存文件夹",
+            Description = "选择录屏保存文件夹",
             ShowNewFolderButton = true,
             SelectedPath = initial
         };
@@ -309,34 +329,15 @@ public partial class SettingsWindow : Window
     private void ShowError(string message)
     {
         ErrorText.Text = message;
-        ErrorText.Visibility = Visibility.Visible;
-        ErrorText.BringIntoView();
+        ErrorBanner.Visibility = Visibility.Visible;
+        FooterHint.Visibility = Visibility.Collapsed;
     }
 
     private void ClearError()
     {
         ErrorText.Text = string.Empty;
-        ErrorText.Visibility = Visibility.Collapsed;
-    }
-
-    private static string ResolveVersion()
-    {
-        var assembly = typeof(SettingsWindow).Assembly;
-        var informational = assembly
-            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
-            .InformationalVersion;
-
-        if (!string.IsNullOrWhiteSpace(informational))
-        {
-            // SDK 会在信息版本后追加 +<commit>，界面上只显示版本号本身。
-            var plus = informational.IndexOf('+');
-            return plus > 0 ? informational[..plus] : informational;
-        }
-
-        var version = assembly.GetName().Version;
-        return version is null
-            ? "未知"
-            : $"{version.Major}.{version.Minor}.{version.Build}";
+        ErrorBanner.Visibility = Visibility.Collapsed;
+        FooterHint.Visibility = Visibility.Visible;
     }
 
     private void CancelButton_Click(object sender, RoutedEventArgs e) => Close();

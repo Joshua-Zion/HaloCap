@@ -13,16 +13,6 @@ namespace HaloCap.Services;
 internal sealed class TrayIconService : IDisposable
 {
     private readonly NotifyIcon _notifyIcon;
-    private readonly ContextMenuStrip _menu;
-    private readonly StopRecordingToolStripMenuItem _stopRecordingItem;
-    private readonly ToolStripSeparator _stopRecordingSeparator;
-    private readonly ToolStripMenuItem _openItem;
-    private readonly ToolStripMenuItem _settingsItem;
-    private readonly ToolStripMenuItem _autoStartItem;
-    private readonly ToolStripMenuItem _hotkeyItem;
-    private readonly ToolStripMenuItem _exitItem;
-    private readonly Font _menuFont;
-    private readonly Font _openItemFont;
     private readonly Icon _idleIcon;
     private readonly Icon _recordingIcon;
     private string _hotkeyDisplay = string.Empty;
@@ -32,88 +22,24 @@ internal sealed class TrayIconService : IDisposable
 
     public TrayIconService()
     {
-        _menuFont = new Font("Microsoft YaHei UI", 9.5f, FontStyle.Regular, GraphicsUnit.Point);
-        _openItemFont = new Font(_menuFont, FontStyle.Bold);
         _idleIcon = CreateTrayIcon(false);
         _recordingIcon = CreateTrayIcon(true);
-
-        _stopRecordingItem = new StopRecordingToolStripMenuItem("●  停止录制")
-        {
-            Font = _openItemFont,
-            Padding = new Padding(14, 7, 18, 7),
-            Visible = false
-        };
-        _stopRecordingItem.Click += (_, _) => Raise(StopRecordingRequested);
-
-        _stopRecordingSeparator = new ToolStripSeparator { Visible = false };
-
-        _openItem = new ToolStripMenuItem("打开圆盘")
-        {
-            Font = _openItemFont,
-            Padding = new Padding(14, 7, 18, 7)
-        };
-        _openItem.Click += (_, _) => Raise(OpenRequested);
-
-        _settingsItem = new ToolStripMenuItem("设置…")
-        {
-            Padding = new Padding(14, 7, 18, 7)
-        };
-        _settingsItem.Click += (_, _) => Raise(SettingsRequested);
-
-        _autoStartItem = new ToolStripMenuItem
-        {
-            Padding = new Padding(14, 7, 18, 7)
-        };
-        _autoStartItem.Click += (_, _) =>
-        {
-            var desired = !(AutoStartStateProvider?.Invoke() ?? false);
-            AutoStartToggleRequested?.Invoke(desired);
-        };
-
-        _hotkeyItem = new ToolStripMenuItem
-        {
-            Enabled = false,
-            Padding = new Padding(14, 5, 18, 7)
-        };
-
-        _exitItem = new ToolStripMenuItem("退出 HaloCap")
-        {
-            Padding = new Padding(14, 7, 18, 7)
-        };
-        _exitItem.Click += (_, _) => Raise(ExitRequested);
-
-        _menu = new ContextMenuStrip
-        {
-            ShowImageMargin = false,
-            Font = _menuFont,
-            Padding = new Padding(0, 5, 0, 5),
-            Renderer = new DarkMenuRenderer(),
-            DropShadowEnabled = true,
-            BackColor = DrawingColor.FromArgb(24, 28, 37),
-            ForeColor = DrawingColor.FromArgb(232, 237, 245)
-        };
-
-        _menu.Items.Add(_stopRecordingItem);
-        _menu.Items.Add(_stopRecordingSeparator);
-        _menu.Items.Add(_openItem);
-        _menu.Items.Add(_settingsItem);
-        _menu.Items.Add(new ToolStripSeparator());
-        _menu.Items.Add(_autoStartItem);
-        _menu.Items.Add(new ToolStripSeparator());
-        _menu.Items.Add(_hotkeyItem);
-        _menu.Items.Add(new ToolStripSeparator());
-        _menu.Items.Add(_exitItem);
-        _menu.Opening += (_, _) => RefreshState();
 
         _notifyIcon = new NotifyIcon
         {
             Icon = _idleIcon,
             Text = "HaloCap 光圈",
-            ContextMenuStrip = _menu,
             Visible = true
         };
+
         _notifyIcon.MouseUp += (_, e) =>
         {
+            if (e.Button == MouseButtons.Right)
+            {
+                Raise(MenuRequested);
+                return;
+            }
+
             if (e.Button != MouseButtons.Left)
             {
                 return;
@@ -130,25 +56,18 @@ internal sealed class TrayIconService : IDisposable
         };
         _notifyIcon.BalloonTipClicked += (_, _) => HandleBalloonAction();
 
-        RefreshState();
+        UpdateTooltip();
     }
+
+    public event EventHandler? MenuRequested;
 
     public event EventHandler? OpenRequested;
 
-    public event EventHandler? SettingsRequested;
-
-    public event EventHandler? ExitRequested;
-
     public event EventHandler? StopRecordingRequested;
-
-    public event Action<bool>? AutoStartToggleRequested;
-
-    public Func<bool>? AutoStartStateProvider { get; set; }
 
     public void SetHotkeyText(string displayText)
     {
         _hotkeyDisplay = displayText;
-        _hotkeyItem.Text = $"当前快捷键  {displayText}";
         UpdateTooltip();
     }
 
@@ -162,19 +81,6 @@ internal sealed class TrayIconService : IDisposable
         _isRecording = recording;
         _notifyIcon.Icon = recording ? _recordingIcon : _idleIcon;
         UpdateTooltip();
-        ApplyRecordingMenuState();
-    }
-
-    public void RefreshState()
-    {
-        if (_disposed)
-        {
-            return;
-        }
-
-        var enabled = AutoStartStateProvider?.Invoke() ?? false;
-        _autoStartItem.Text = enabled ? "开机自动启动   ✓" : "开机自动启动";
-        ApplyRecordingMenuState();
     }
 
     public void ShowNotification(string title, string message, ToolTipIcon icon = ToolTipIcon.Info)
@@ -206,22 +112,12 @@ internal sealed class TrayIconService : IDisposable
     private void UpdateTooltip()
     {
         var tooltip = _isRecording
-            ? "HaloCap 光圈 · 正在录制"
+            ? "HaloCap · 正在录制"
             : _hotkeyDisplay.Length > 0
-                ? $"HaloCap 光圈 · {_hotkeyDisplay}"
+                ? $"HaloCap · {_hotkeyDisplay}"
                 : "HaloCap 光圈";
 
         _notifyIcon.Text = tooltip.Length <= 63 ? tooltip : tooltip[..63];
-    }
-
-    private void ApplyRecordingMenuState()
-    {
-        _stopRecordingItem.Visible = _isRecording;
-        _stopRecordingSeparator.Visible = _isRecording;
-        _openItem.Enabled = !_isRecording;
-        _settingsItem.Enabled = !_isRecording;
-        _autoStartItem.Enabled = !_isRecording;
-        _exitItem.Enabled = true;
     }
 
     private void HandleBalloonAction()
@@ -261,9 +157,6 @@ internal sealed class TrayIconService : IDisposable
         _disposed = true;
         _notifyIcon.Visible = false;
         _notifyIcon.Dispose();
-        _menu.Dispose();
-        _openItemFont.Dispose();
-        _menuFont.Dispose();
         _idleIcon.Dispose();
         _recordingIcon.Dispose();
     }
@@ -339,64 +232,5 @@ internal sealed class TrayIconService : IDisposable
         {
             NativeMethods.DestroyIcon(iconHandle);
         }
-    }
-
-    private sealed class StopRecordingToolStripMenuItem : ToolStripMenuItem
-    {
-        public StopRecordingToolStripMenuItem(string text)
-            : base(text)
-        {
-        }
-    }
-
-    private sealed class DarkMenuRenderer : ToolStripProfessionalRenderer
-    {
-        private static readonly DrawingColor TextNormal = DrawingColor.FromArgb(232, 237, 245);
-        private static readonly DrawingColor TextDisabled = DrawingColor.FromArgb(110, 122, 138);
-        private static readonly DrawingColor RecordingRed = DrawingColor.FromArgb(255, 124, 124);
-
-        public DarkMenuRenderer()
-            : base(new DarkColorTable())
-        {
-            RoundedEdges = false;
-        }
-
-        protected override void OnRenderItemText(ToolStripItemTextRenderEventArgs e)
-        {
-            if (!e.Item.Enabled)
-            {
-                e.TextColor = TextDisabled;
-            }
-            else if (e.Item is StopRecordingToolStripMenuItem)
-            {
-                e.TextColor = RecordingRed;
-            }
-            else
-            {
-                e.TextColor = TextNormal;
-            }
-
-            base.OnRenderItemText(e);
-        }
-    }
-
-    private sealed class DarkColorTable : ProfessionalColorTable
-    {
-        private static readonly DrawingColor MenuBackground = DrawingColor.FromArgb(24, 28, 37);
-        private static readonly DrawingColor Selection = DrawingColor.FromArgb(38, 46, 61);
-        private static readonly DrawingColor Border = DrawingColor.FromArgb(58, 67, 82);
-        private static readonly DrawingColor Separator = DrawingColor.FromArgb(45, 53, 67);
-
-        public override DrawingColor ToolStripDropDownBackground => MenuBackground;
-        public override DrawingColor ImageMarginGradientBegin => MenuBackground;
-        public override DrawingColor ImageMarginGradientMiddle => MenuBackground;
-        public override DrawingColor ImageMarginGradientEnd => MenuBackground;
-        public override DrawingColor MenuBorder => Border;
-        public override DrawingColor MenuItemBorder => MenuBackground;
-        public override DrawingColor MenuItemSelected => Selection;
-        public override DrawingColor MenuItemSelectedGradientBegin => Selection;
-        public override DrawingColor MenuItemSelectedGradientEnd => Selection;
-        public override DrawingColor SeparatorDark => Separator;
-        public override DrawingColor SeparatorLight => Separator;
     }
 }

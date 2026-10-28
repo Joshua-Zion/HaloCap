@@ -113,9 +113,12 @@ public partial class OcrResultWindow : Window
 
     private void ApplyOutcome(OcrOutcome outcome)
     {
-        LanguageText.Text = outcome.Status is OcrStatus.NoLanguage or OcrStatus.Failed
-            ? "OCR 不可用"
-            : DescribeLanguage(outcome.LanguageTag);
+        var unavailable = outcome.Status is OcrStatus.NoLanguage or OcrStatus.Failed;
+        LanguageChip.Visibility = Visibility.Visible;
+        LanguageText.Text = unavailable ? "识别不可用" : DescribeLanguage(outcome.LanguageTag);
+        LanguageChip.Background = (Brush)FindResource(unavailable ? "OcrWarningFillBrush" : "OcrChipFillBrush");
+        LanguageChip.BorderBrush = (Brush)FindResource(unavailable ? "OcrWarningBorderBrush" : "OcrChipBorderBrush");
+        LanguageText.Foreground = (Brush)FindResource(unavailable ? "OcrWarningTextBrush" : "OcrChipTextBrush");
         var chineseAvailable = outcome.ChineseAvailable;
 
         var showBanner =
@@ -139,25 +142,25 @@ public partial class OcrResultWindow : Window
             BuildLineViews(_lines);
             CountText.Text = $"共 {_lines.Count} 行 · 可逐行复制";
             CopyAllButton.IsEnabled = true;
-            LinesScroll.Visibility = Visibility.Visible;
+            LinesCard.Visibility = Visibility.Visible;
             EmptyText.Visibility = Visibility.Collapsed;
             ResetStatus();
             return;
         }
 
         _lines = Array.Empty<string>();
-        CountText.Text = chineseAvailable ? "未识别到文字" : "OCR 语言组件不可用";
+        CountText.Text = chineseAvailable ? "未识别到文字" : "识别语言组件不可用";
         CopyAllButton.IsEnabled = false;
-        LinesScroll.Visibility = Visibility.Collapsed;
+        LinesCard.Visibility = Visibility.Collapsed;
 
         EmptyText.Text = outcome.Status switch
         {
-            OcrStatus.Empty => "这张图片中没有识别到文字。请尝试选择更清晰、对比度更高的区域。",
-            OcrStatus.NoLanguage => "无法启动离线 OCR。\n\n" +
+            OcrStatus.Empty => "没有识别到文字。试试选择更清晰、对比度更高的区域。",
+            OcrStatus.NoLanguage => "离线文字识别不可用。\n\n" +
                                     (string.IsNullOrWhiteSpace(outcome.Message)
                                         ? OcrService.ChineseLanguageGuidance
                                         : outcome.Message),
-            _ => "识别失败。\n\n" +
+            _ => "这次没有识别成功。\n\n" +
                  (string.IsNullOrWhiteSpace(outcome.Message)
                      ? OcrService.ChineseLanguageGuidance
                      : outcome.Message)
@@ -170,9 +173,9 @@ public partial class OcrResultWindow : Window
     {
         LinesPanel.Children.Clear();
 
-        var textBrush = new SolidColorBrush(Color.FromRgb(0xDD, 0xE5, 0xF0));
-        var numberBrush = new SolidColorBrush(Color.FromRgb(0x6D, 0x78, 0x89));
-        var iconBrush = new SolidColorBrush(Color.FromRgb(0x8E, 0x99, 0xAB));
+        var textBrush = new SolidColorBrush(Color.FromRgb(0x1D, 0x1D, 0x1F));
+        var numberBrush = new SolidColorBrush(Color.FromRgb(0xA8, 0xA8, 0xAD));
+        var iconBrush = new SolidColorBrush(Color.FromRgb(0xB0, 0xB0, 0xB5));
         textBrush.Freeze();
         numberBrush.Freeze();
         iconBrush.Freeze();
@@ -290,7 +293,7 @@ public partial class OcrResultWindow : Window
     private void ShowStatus(string message, bool isError = false)
     {
         StatusText.Text = message;
-        StatusText.Foreground = (Brush)FindResource(isError ? "DangerBrush" : "AccentBrush");
+        StatusText.Foreground = (Brush)FindResource(isError ? "OcrDangerBrush" : "OcrAccentBrush");
         _statusTimer.Stop();
         _statusTimer.Start();
     }
@@ -298,9 +301,9 @@ public partial class OcrResultWindow : Window
     private void ResetStatus()
     {
         StatusText.Text = _lines.Count > 0
-            ? "Esc 关闭 · 点击任意一行可复制"
+            ? "Esc 关闭 · 单击任意一行复制"
             : "Esc 关闭";
-        StatusText.Foreground = (Brush)FindResource("TextTertiaryBrush");
+        StatusText.Foreground = (Brush)FindResource("OcrTextTertiaryBrush");
     }
 
     private void PlaceNearSelection()

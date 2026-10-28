@@ -42,7 +42,7 @@ internal sealed class HotkeyService : IDisposable
         {
             error = hotkey.IsSingleKey
                 ? "单键快捷键只支持 F1–F24、字母、数字、小键盘数字与翻页键，请换一个键或加上 Ctrl / Alt / Shift。"
-                : "快捷键组合无效，请按下一个普通按键作为主键。";
+                : "这个组合用不了，请换一个普通按键作为主键。";
             return false;
         }
 
@@ -92,7 +92,7 @@ internal sealed class HotkeyService : IDisposable
         {
             var errorCode = Marshal.GetLastWin32Error();
             error = errorCode == NativeMethods.ErrorHotkeyAlreadyRegistered
-                ? $"「{hotkey.DisplayText}」已被其他程序占用，请换一个组合键。"
+                ? $"「{hotkey.DisplayText}」已被其他程序占用，换一个组合键试试。"
                 : $"无法注册快捷键「{hotkey.DisplayText}」（错误码 {errorCode}）。";
             Log.Error(error);
             return false;

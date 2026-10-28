@@ -107,6 +107,8 @@ public partial class ScreenshotOverlayWindow : Window
         else
         {
             FrozenImage.Visibility = Visibility.Collapsed;
+            // 分层窗口的全透明像素会穿透鼠标，导致悬停挖洞与 MouseLeave 恢复遮罩反复交替。
+            Root.Background = UiColors.Brush("#01000000");
         }
 
         ConfigureMode();

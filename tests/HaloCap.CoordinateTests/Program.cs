@@ -79,7 +79,7 @@ internal static class Program
             ("Clipboard file batches enforce count and predecode byte budgets", ClipboardFileBatchesEnforceBudgets),
             ("Clipboard rendering bounds pixels and DPI stay consistent", ClipboardRenderingPreservesBoundsPixelsAndDpi),
             ("Clipboard file conversion settings default true and round trip false", ClipboardFileConversionSettingsRoundTrip),
-            ("Toolbar vector icons preserve bounds and state colors", ToolbarVectorIconsPreserveBoundsAndColors)
+            ("WPF toolbars, clipboard actions and capture hover render correctly", ToolbarVectorIconsPreserveBoundsAndColors)
         };
 
         var failures = 0;
@@ -1191,6 +1191,7 @@ internal static class Program
         {
             var app = new HaloCap.App();
             app.InitializeComponent();
+            CaptureOverlayPreviewKeepsMouseSurface();
             var names = new[]
             {
                 "Select", "Shape", "Arrow", "Pen", "Highlighter", "Eraser", "Text", "Mosaic", "Step",
@@ -1375,6 +1376,119 @@ internal static class Program
                     "digit 4 and numpad 4 should map to Pin without installing input hooks");
             }
         });
+    }
+
+    private static void CaptureOverlayPreviewKeepsMouseSurface()
+    {
+        const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
+        var type = typeof(ScreenshotOverlayWindow);
+        var showHover = type.GetMethod("ShowElementHover", flags)!;
+        var clearHover = type.GetMethod("ClearElementHover", flags)!;
+        var updateSelection = type.GetMethod("UpdateSelectionVisual", flags)!;
+        var selectionField = type.GetField("_selectionPx", flags)!;
+        var hasSelectionField = type.GetField("_hasSelection", flags)!;
+        var scenarios = new[]
+        {
+            (CaptureSessionMode.Record, false),
+            (CaptureSessionMode.Screenshot, false),
+            (CaptureSessionMode.Ocr, false),
+            (CaptureSessionMode.Screenshot, true)
+        };
+
+        foreach (var scale in new[] { 1.0, 1.5, 2.0 })
+        {
+            var pixelWidth = (int)(600 * scale);
+            var pixelHeight = (int)(400 * scale);
+            var monitor = new ScreenMonitor
+            {
+                Bounds = new PhysicalRect(-pixelWidth, -pixelHeight, pixelWidth, pixelHeight),
+                WorkArea = new PhysicalRect(-pixelWidth, -pixelHeight, pixelWidth, pixelHeight),
+                Scale = scale
+            };
+
+            foreach (var (mode, frozen) in scenarios)
+            {
+                using var session = (ScreenshotSession)Activator.CreateInstance(typeof(ScreenshotSession), flags, null,
+                    new object[] { mode, (Action<CaptureResult>)(_ => { }) }, CultureInfo.InvariantCulture)!;
+                System.Drawing.Bitmap? bitmap = null;
+                if (frozen)
+                {
+                    bitmap = new System.Drawing.Bitmap(pixelWidth, pixelHeight);
+                    using var graphics = System.Drawing.Graphics.FromImage(bitmap);
+                    graphics.Clear(System.Drawing.Color.Red);
+                }
+
+                var overlay = new ScreenshotOverlayWindow(session, monitor, mode, bitmap);
+                try
+                {
+                    var root = (Grid)overlay.FindName("Root");
+                    root.Measure(new Size(600, 400));
+                    root.Arrange(new Rect(0, 0, 600, 400));
+                    type.GetMethod("RefreshMapping", flags)!.Invoke(overlay, null);
+                    var hint = (FrameworkElement)overlay.FindName("HintChip");
+                    hint.Visibility = Visibility.Collapsed;
+                    True(!overlay.IsVisible && new System.Windows.Interop.WindowInteropHelper(overlay).Handle == IntPtr.Zero,
+                        "overlay regression must not show a window or create a native overlay");
+
+                    RenderSurface();
+                    var candidate = new PhysicalRect((int)(80 * scale), (int)(80 * scale), (int)(380 * scale), (int)(260 * scale));
+                    showHover.Invoke(overlay, new object[] { candidate });
+                    var reference = RenderSurface();
+                    var sampleOffset = (((int)(250 * scale) * pixelWidth) + (int)(300 * scale)) * 4;
+                    Equal(frozen ? 255 : 1, reference[sampleOffset + 3]);
+                    if (frozen)
+                    {
+                        Equal(255, reference[sampleOffset + 2]);
+                        Equal(0, reference[sampleOffset]);
+                    }
+
+                    for (var iteration = 0; iteration < 8; iteration++)
+                    {
+                        showHover.Invoke(overlay, new object[] { candidate });
+                        True(reference.AsSpan().SequenceEqual(RenderSurface()), "unchanged hover must render an identical frame");
+                    }
+
+                    showHover.Invoke(overlay, new object[] { candidate.Offset((int)(24 * scale), (int)(12 * scale)) });
+                    RenderSurface();
+                    clearHover.Invoke(overlay, null);
+                    RenderSurface();
+                    showHover.Invoke(overlay, new object[] { new PhysicalRect(0, 0, pixelWidth, pixelHeight) });
+                    RenderSurface();
+                    type.GetMethod("Root_MouseLeave", flags)!.Invoke(overlay, new object[] { root, new MouseEventArgs(Mouse.PrimaryDevice, 0) });
+                    True(((FrameworkElement)overlay.FindName("DimFull")).Visibility == Visibility.Visible,
+                        "a genuine leave should still restore the idle mask");
+                    RenderSurface();
+                    hasSelectionField.SetValue(overlay, true);
+                    selectionField.SetValue(overlay, candidate);
+                    updateSelection.Invoke(overlay, new object[] { false });
+                    RenderSurface();
+                    Equal(ScreenGeometry.ToVirtual(candidate, monitor.Bounds), overlay.VirtualSelection);
+                    True(!overlay.IsVisible && new System.Windows.Interop.WindowInteropHelper(overlay).Handle == IntPtr.Zero,
+                        "offscreen state transitions must not activate the desktop");
+
+                    byte[] RenderSurface()
+                    {
+                        root.UpdateLayout();
+                        var render = new RenderTargetBitmap(pixelWidth, pixelHeight, 96 * scale, 96 * scale, PixelFormats.Pbgra32);
+                        render.Render(root);
+                        var pixels = new byte[pixelWidth * pixelHeight * 4];
+                        render.CopyPixels(pixels, pixelWidth * 4, 0);
+                        for (var offset = 3; offset < pixels.Length; offset += 4)
+                        {
+                            if (pixels[offset] == 0)
+                            {
+                                throw new InvalidOperationException($"{mode} @{scale}x preview contains an alpha-zero mouse-through pixel");
+                            }
+                        }
+                        return pixels;
+                    }
+                }
+                finally
+                {
+                    overlay.Close();
+                }
+            }
+        }
     }
 
     private static void RunSta(Action action)

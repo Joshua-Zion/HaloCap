@@ -4,6 +4,7 @@ using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Threading;
 using HaloCap.Diagnostics;
+using HaloCap.Interop;
 using HaloCap.Models;
 using HaloCap.Services;
 using HaloCap.UI;
@@ -16,6 +17,7 @@ public partial class App : Application
     private const string DisplayName = "HaloCap 光圈";
 
     private readonly AutoStartService _autoStart = new();
+    private readonly ClipboardPinService _clipboardPin = new();
     private SingleInstanceService? _singleInstance;
     private HotkeyService? _hotkeyService;
     private TrayIconService? _tray;
@@ -63,7 +65,10 @@ public partial class App : Application
     {
         _settings = SettingsStore.Load();
 
-        _radial = new RadialMenuController(_settings.Hotkey, _settings.MenuSize);
+        _radial = new RadialMenuController(_settings.Hotkey, _settings.MenuSize)
+        {
+            PinAvailabilityProvider = () => _clipboardPin.CanPin
+        };
         _radial.ActionSelected += OnActionSelected;
 
         _tray = new TrayIconService
@@ -162,11 +167,13 @@ public partial class App : Application
             _settings.ScreenshotFormat,
             _settings.MenuSize,
             _settings.RecordingDirectory,
+            _settings.ConvertFilePathsToImages,
             ApplyHotkey,
             ApplyAutoStart,
             ApplyScreenshotFormat,
             ApplyMenuSize,
-            ApplyRecordingDirectory);
+            ApplyRecordingDirectory,
+            ApplyConvertFilePathsToImages);
 
         _settingsWindow = window;
         window.Closed += (_, _) =>
@@ -333,6 +340,30 @@ public partial class App : Application
         }
     }
 
+    private string? ApplyConvertFilePathsToImages(bool enabled)
+    {
+        if (_settings.ConvertFilePathsToImages == enabled)
+        {
+            return null;
+        }
+
+        var previous = _settings.ConvertFilePathsToImages;
+        _settings.ConvertFilePathsToImages = enabled;
+
+        try
+        {
+            SettingsStore.Save(_settings);
+            _radial?.RefreshActionAvailability();
+            return null;
+        }
+        catch (Exception ex)
+        {
+            _settings.ConvertFilePathsToImages = previous;
+            Log.Error("保存剪贴板贴图设置失败", ex);
+            return "无法保存剪贴板贴图设置：" + ex.Message;
+        }
+    }
+
     private void ToggleAutoStartFromTray(bool enabled)
     {
         var error = ApplyAutoStart(enabled);
@@ -361,11 +392,16 @@ public partial class App : Application
             return;
         }
 
+        if (action == RadialAction.Pin)
+        {
+            PinFromClipboard();
+            return;
+        }
+
         var mode = action switch
         {
             RadialAction.Ocr => CaptureSessionMode.Ocr,
             RadialAction.Record => CaptureSessionMode.Record,
-            RadialAction.Pin => CaptureSessionMode.Pin,
             _ => CaptureSessionMode.Screenshot
         };
 
@@ -394,6 +430,42 @@ public partial class App : Application
         finally
         {
             _captureStarting = false;
+        }
+    }
+
+    private void PinFromClipboard()
+    {
+        try
+        {
+            var monitor = MonitorService.GetMonitorAtCursor();
+            var contents = _clipboardPin.CreatePins(_settings.ConvertFilePathsToImages, monitor.Scale);
+            if (contents.Count == 0)
+            {
+                _tray?.ShowNotification("无法贴图", "剪贴板中没有可贴出的图像、颜色、文字或文件路径。");
+                return;
+            }
+
+            NativeMethods.GetCursorPos(out var cursor);
+            for (var index = 0; index < contents.Count; index++)
+            {
+                var content = contents[index];
+                var work = monitor.WorkArea;
+                var fit = Math.Min(1, Math.Min((work.Width - 32 * monitor.Scale) / content.Image.PixelWidth,
+                    (work.Height - 32 * monitor.Scale) / content.Image.PixelHeight));
+                var width = Math.Max(24, (int)Math.Round(content.Image.PixelWidth * fit));
+                var height = Math.Max(24, (int)Math.Round(content.Image.PixelHeight * fit));
+                var offset = (int)Math.Round(index * 18 * monitor.Scale);
+                var left = Math.Clamp(cursor.X - width / 2 + offset, work.Left, work.Right - width);
+                var top = Math.Clamp(cursor.Y - height / 2 + offset, work.Top, work.Bottom - height);
+                var pin = new PinWindow(content.Image, new PhysicalRect(left, top, width, height), monitor.Scale, _settings.ScreenshotFormat);
+                pin.ShowPin();
+                _clipboardPin.MarkPasted(content);
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Error("剪贴板贴图失败", ex);
+            _tray?.ShowNotification("贴图未完成", "无法读取或显示剪贴板内容，请重新复制后重试。", Forms.ToolTipIcon.Warning);
         }
     }
 

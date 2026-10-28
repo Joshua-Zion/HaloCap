@@ -16,6 +16,7 @@ public partial class SettingsWindow : Window
     private readonly Func<ScreenshotImageFormat, string?> _applyScreenshotFormat;
     private readonly Func<RadialMenuSize, string?> _applyMenuSize;
     private readonly Func<string, string?> _applyRecordingDirectory;
+    private readonly Func<bool, string?> _applyConvertFilePathsToImages;
     private HotkeyDefinition _hotkey;
     private ScreenshotImageFormat _format;
     private RadialMenuSize _menuSize;
@@ -28,11 +29,13 @@ public partial class SettingsWindow : Window
         ScreenshotImageFormat screenshotFormat,
         RadialMenuSize menuSize,
         string recordingDirectory,
+        bool convertFilePathsToImages,
         Func<HotkeyDefinition, string?> applyHotkey,
         Func<bool, string?> applyAutoStart,
         Func<ScreenshotImageFormat, string?> applyScreenshotFormat,
         Func<RadialMenuSize, string?> applyMenuSize,
-        Func<string, string?> applyRecordingDirectory)
+        Func<string, string?> applyRecordingDirectory,
+        Func<bool, string?> applyConvertFilePathsToImages)
     {
         InitializeComponent();
 
@@ -42,6 +45,7 @@ public partial class SettingsWindow : Window
         _applyScreenshotFormat = applyScreenshotFormat;
         _applyMenuSize = applyMenuSize;
         _applyRecordingDirectory = applyRecordingDirectory;
+        _applyConvertFilePathsToImages = applyConvertFilePathsToImages;
         _autoStartEnabled = autoStartEnabled;
         _format = screenshotFormat;
         _menuSize = menuSize;
@@ -51,6 +55,7 @@ public partial class SettingsWindow : Window
         UpdateHotkeyHint();
         AutoStartToggle.IsChecked = autoStartEnabled;
         UpdateAutoStartUi();
+        ConvertFilePathsToImagesToggle.IsChecked = convertFilePathsToImages;
 
         RecordingDirectoryBox.Text = recordingDirectory ?? string.Empty;
         RecordingDirectoryHint.Text = "留空时保存到：" + AppPaths.DefaultRecordingDirectory;
@@ -279,6 +284,13 @@ public partial class SettingsWindow : Window
             if (!string.IsNullOrEmpty(directoryError))
             {
                 ShowError("其他设置已更新；" + directoryError + " 请修正后重试。");
+                return;
+            }
+
+            var convertFilePathsToImagesError = _applyConvertFilePathsToImages(ConvertFilePathsToImagesToggle.IsChecked == true);
+            if (!string.IsNullOrEmpty(convertFilePathsToImagesError))
+            {
+                ShowError("其他设置已更新；" + convertFilePathsToImagesError + " 请修正后重试。");
                 return;
             }
 

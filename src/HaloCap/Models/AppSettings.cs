@@ -22,4 +22,6 @@ public sealed class AppSettings
     public RadialMenuSize MenuSize { get; set; } = RadialMenuSize.Medium;
 
     public string RecordingDirectory { get; set; } = string.Empty;
+
+    public bool ConvertFilePathsToImages { get; set; } = true;
 }

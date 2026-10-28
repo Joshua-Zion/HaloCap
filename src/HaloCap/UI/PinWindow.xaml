@@ -4,12 +4,13 @@
         xmlns:local="clr-namespace:HaloCap.UI"
         Title="HaloCap 贴图"
         WindowStyle="None"
+        AllowsTransparency="True"
         ResizeMode="NoResize"
         WindowStartupLocation="Manual"
         ShowInTaskbar="False"
         Topmost="True"
         ShowActivated="True"
-        Background="#FF0B0E14"
+        Background="Transparent"
         SnapsToDevicePixels="True"
         FontFamily="{StaticResource AppFont}"
         Cursor="SizeAll"
@@ -199,7 +200,7 @@
     </Window.ContextMenu>
 
     <Grid x:Name="Root"
-          Background="#FF0B0E14"
+          Background="Transparent"
           Focusable="True"
           MouseLeftButtonDown="Root_MouseLeftButtonDown"
           PreviewMouseLeftButtonDown="Root_PreviewMouseLeftButtonDown"

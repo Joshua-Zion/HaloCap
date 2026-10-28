@@ -324,6 +324,44 @@
                                 Padding="18"
                                 Margin="0,12,0,0">
                             <StackPanel>
+                                <TextBlock Text="剪贴板贴图"
+                                           FontSize="13"
+                                           FontWeight="SemiBold"
+                                           Foreground="{StaticResource TextPrimaryBrush}" />
+                                <TextBlock Text="复制图片文件后，首次贴出图像，再贴显示文件路径；关闭后始终显示路径。"
+                                           FontSize="11"
+                                           Foreground="{StaticResource TextSecondaryBrush}"
+                                           TextWrapping="Wrap"
+                                           Margin="0,5,0,0" />
+
+                                <Grid Margin="0,12,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+
+                                    <TextBlock Text="将图片文件转换为图像"
+                                               FontSize="11"
+                                               Foreground="{StaticResource TextPrimaryBrush}"
+                                               VerticalAlignment="Center"
+                                               Margin="0,0,12,0" />
+                                    <ToggleButton x:Name="ConvertFilePathsToImagesToggle"
+                                                  Grid.Column="1"
+                                                  Style="{StaticResource ToggleSwitchStyle}"
+                                                  ToolTip="将图片文件转换为图像"
+                                                  AutomationProperties.AutomationId="settings.convertFilePathsToImages"
+                                                  AutomationProperties.Name="将文件路径转为图片" />
+                                </Grid>
+                            </StackPanel>
+                        </Border>
+
+                        <Border Background="{StaticResource CardBackgroundBrush}"
+                                BorderBrush="#14FFFFFF"
+                                BorderThickness="1"
+                                CornerRadius="14"
+                                Padding="18"
+                                Margin="0,12,0,0">
+                            <StackPanel>
                                 <TextBlock Text="录屏保存位置"
                                            FontSize="13"
                                            FontWeight="SemiBold"

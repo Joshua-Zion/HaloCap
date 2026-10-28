@@ -36,6 +36,14 @@ internal sealed class RadialItemView : Grid
         Width = ViewWidth;
         Height = ViewHeight;
         AutomationProperties.SetName(this, info.Title);
+        AutomationProperties.SetAutomationId(this, info.Action switch
+        {
+            RadialAction.Screenshot => "radial.screenshot",
+            RadialAction.Ocr => "radial.ocr",
+            RadialAction.Record => "radial.record",
+            RadialAction.Pin => "radial.pin",
+            _ => $"radial.{info.Action.ToString().ToLowerInvariant()}"
+        });
 
         var accent = UiColors.Parse(info.AccentHex);
         _hoverIconBackground = UiColors.WithAlpha(accent, 0x30);
@@ -139,8 +147,19 @@ internal sealed class RadialItemView : Grid
         Children.Add(stack);
     }
 
+    public void SetEnabled(bool enabled)
+    {
+        IsEnabled = enabled;
+        Opacity = enabled ? 1.0 : 0.35;
+        if (!enabled)
+        {
+            SetHover(false, animate: false);
+        }
+    }
+
     public void SetHover(bool hovered, bool animate = true)
     {
+        hovered = hovered && IsEnabled;
         _iconBorder.Background = hovered ? _hoverIconBackground : _neutralIconBackground;
         _iconBorder.BorderBrush = hovered ? _hoverBorder : _neutralIconBorder;
         _label.Foreground = hovered ? Brushes.White : _neutralLabel;
@@ -149,6 +168,10 @@ internal sealed class RadialItemView : Grid
 
         if (!animate)
         {
+            _translate.BeginAnimation(TranslateTransform.XProperty, null);
+            _translate.BeginAnimation(TranslateTransform.YProperty, null);
+            _iconScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
+            _iconScale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
             _translate.X = hovered ? _outward.X * 4 : 0;
             _translate.Y = hovered ? _outward.Y * 4 : 0;
             _iconScale.ScaleX = hovered ? 1.06 : 1.0;

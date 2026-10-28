@@ -162,8 +162,28 @@ public partial class RadialMenuWindow : Window
             });
     }
 
+    public void SetActionEnabled(RadialAction action, bool enabled)
+    {
+        if (!_items.TryGetValue(action, out var item))
+        {
+            return;
+        }
+
+        item.SetEnabled(enabled);
+        if (!enabled && _hoveredIndex == (int)action)
+        {
+            SetHover(null);
+        }
+    }
+
     public void SetHover(RadialAction? action)
     {
+        if (action.HasValue &&
+            (!_items.TryGetValue(action.Value, out var item) || !item.IsEnabled))
+        {
+            action = null;
+        }
+
         var index = action.HasValue ? (int)action.Value : -1;
         if (index == _hoveredIndex)
         {

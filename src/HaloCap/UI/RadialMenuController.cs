@@ -1,6 +1,7 @@
 using System;
 using System.Runtime.InteropServices;
 using System.Windows.Input;
+using System.Windows.Interop;
 using System.Windows.Threading;
 using HaloCap.Diagnostics;
 using HaloCap.Interop;
@@ -27,6 +28,9 @@ internal sealed class RadialMenuController : IDisposable
     private readonly RadialMenuWindow _window;
     private readonly InputHookService _hooks = new();
     private readonly Dispatcher _dispatcher;
+    private readonly HwndSource? _messageSource;
+    private bool _clipboardListenerRegistered;
+    private bool _pinEnabled = true;
     private HotkeyDefinition _hotkey;
     private bool _hotkeyRegistered;
     private bool _isOpen;
@@ -48,6 +52,28 @@ internal sealed class RadialMenuController : IDisposable
         _hotkey = hotkey;
         _dispatcher = Dispatcher.CurrentDispatcher;
         _window = new RadialMenuWindow();
+        _messageSource = HwndSource.FromHwnd(_window.Handle);
+        if (_messageSource is null)
+        {
+            Log.Error("无法获取圆盘窗口消息源，剪贴板变化监听未注册");
+        }
+        else
+        {
+            _messageSource.AddHook(WndProc);
+            try
+            {
+                _clipboardListenerRegistered = NativeMethods.AddClipboardFormatListener(_window.Handle);
+                if (!_clipboardListenerRegistered)
+                {
+                    Log.Error($"注册圆盘剪贴板变化监听失败，Win32 错误 {Marshal.GetLastWin32Error()}");
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Error("注册圆盘剪贴板变化监听时发生异常", ex);
+            }
+        }
+
         UpdateMenuSize(menuSize);
 
         _hooks.KeyDown = HandleKeyDown;
@@ -59,6 +85,50 @@ internal sealed class RadialMenuController : IDisposable
     public event Action<RadialAction>? ActionSelected;
 
     public bool IsOpen => _isOpen;
+
+    public Func<bool>? PinAvailabilityProvider { get; set; }
+
+    public void RefreshActionAvailability()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        if (!_dispatcher.CheckAccess())
+        {
+            _dispatcher.BeginInvoke(DispatcherPriority.Input, new Action(RefreshActionAvailability));
+            return;
+        }
+
+        try
+        {
+            _pinEnabled = PinAvailabilityProvider?.Invoke() ?? true;
+        }
+        catch (Exception ex)
+        {
+            _pinEnabled = false;
+            Log.Error("刷新圆盘贴图可用状态时发生异常", ex);
+        }
+
+        _window.SetActionEnabled(RadialAction.Pin, _pinEnabled);
+        if (!_pinEnabled && _hovered == RadialAction.Pin)
+        {
+            SetHover(null);
+        }
+    }
+
+    private IntPtr WndProc(IntPtr hwnd, int message, IntPtr wParam, IntPtr lParam, ref bool handled)
+    {
+        if (message == NativeMethods.WM_CLIPBOARDUPDATE && _isOpen && !_disposed)
+        {
+            RefreshActionAvailability();
+        }
+
+        return IntPtr.Zero;
+    }
+
+    private bool IsActionEnabled(RadialAction action) => action != RadialAction.Pin || _pinEnabled;
 
     public void UpdateHotkey(HotkeyDefinition hotkey, bool isRegistered)
     {
@@ -122,6 +192,7 @@ internal sealed class RadialMenuController : IDisposable
             return;
         }
 
+        RefreshActionAvailability();
         var cursor = GetCursorPoint();
         _isOpen = true;
         _draggingCenter = false;
@@ -486,11 +557,17 @@ internal sealed class RadialMenuController : IDisposable
             return;
         }
 
-        SetHover(RadialActionInfo.All[GetSectorIndex(dx, dy)].Action);
+        var action = RadialActionInfo.All[GetSectorIndex(dx, dy)].Action;
+        SetHover(IsActionEnabled(action) ? action : null);
     }
 
     private void SetHover(RadialAction? action)
     {
+        if (action.HasValue && !IsActionEnabled(action.Value))
+        {
+            action = null;
+        }
+
         if (_hovered == action)
         {
             return;
@@ -503,6 +580,12 @@ internal sealed class RadialMenuController : IDisposable
     private void SelectAction(RadialAction action)
     {
         if (!_isOpen)
+        {
+            return;
+        }
+
+        RefreshActionAvailability();
+        if (!IsActionEnabled(action))
         {
             return;
         }
@@ -586,6 +669,24 @@ internal sealed class RadialMenuController : IDisposable
         _isOpen = false;
         _showGeneration++;
         _hooks.Dispose();
+        if (_clipboardListenerRegistered)
+        {
+            try
+            {
+                if (!NativeMethods.RemoveClipboardFormatListener(_window.Handle))
+                {
+                    Log.Error($"移除圆盘剪贴板变化监听失败，Win32 错误 {Marshal.GetLastWin32Error()}");
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Error("移除圆盘剪贴板变化监听时发生异常", ex);
+            }
+
+            _clipboardListenerRegistered = false;
+        }
+
+        _messageSource?.RemoveHook(WndProc);
         _window.Close();
     }
 

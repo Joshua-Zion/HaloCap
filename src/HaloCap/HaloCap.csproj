@@ -16,9 +16,9 @@
     <Product>HaloCap 光圈</Product>
     <AssemblyTitle>HaloCap 光圈</AssemblyTitle>
     <Description>在光标处呼出圆盘菜单的 Windows 效率工具</Description>
-    <Version>1.1.5</Version>
-    <FileVersion>1.1.5</FileVersion>
-    <InformationalVersion>1.1.5</InformationalVersion>
+    <Version>1.1.6</Version>
+    <FileVersion>1.1.6</FileVersion>
+    <InformationalVersion>1.1.6</InformationalVersion>
     <NeutralLanguage>zh-CN</NeutralLanguage>
   </PropertyGroup>
 

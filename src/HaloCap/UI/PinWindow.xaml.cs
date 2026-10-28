@@ -1165,6 +1165,9 @@ public partial class PinWindow : Window
 
         var showColors = _annotationTool is not (AnnotationTool.Mosaic or AnnotationTool.Eraser);
         PinColorGroup.Visibility = showColors ? Visibility.Visible : Visibility.Collapsed;
+        PinColorSeparator.Visibility = showColors && _annotationTool != AnnotationTool.Step
+            ? Visibility.Visible
+            : Visibility.Collapsed;
         PinShapeKindGroup.Visibility = isShape ? Visibility.Visible : Visibility.Collapsed;
         PinShapeGroup.Visibility = isShape ? Visibility.Visible : Visibility.Collapsed;
         PinBrushGroup.Visibility = _annotationTool is AnnotationTool.Pen or AnnotationTool.Arrow

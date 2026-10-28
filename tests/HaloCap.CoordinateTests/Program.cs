@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -55,7 +56,8 @@ internal static class Program
             ("Eraser hit test respects shape fill", EraserHitTestRespectsShapeFill),
             ("Eraser hit test covers step and mosaic", EraserHitTestCoversStepAndMosaic),
             ("Eraser hit test measures text bounds", EraserHitTestMeasuresTextBounds),
-            ("Arrow both mode paints start head", ArrowBothModePaintsStartHead)
+            ("Arrow both mode paints start head", ArrowBothModePaintsStartHead),
+            ("Toolbar vector icons preserve bounds and state colors", ToolbarVectorIconsPreserveBoundsAndColors)
         };
 
         var failures = 0;
@@ -684,6 +686,80 @@ internal static class Program
         }
 
         return count;
+    }
+
+    private static void ToolbarVectorIconsPreserveBoundsAndColors()
+    {
+        RunSta(() =>
+        {
+            var app = new HaloCap.App();
+            app.InitializeComponent();
+            var names = new[]
+            {
+                "Select", "Shape", "Arrow", "Pen", "Highlighter", "Eraser", "Text", "Mosaic", "Step",
+                "Undo", "Redo", "Clear", "Save", "Copy", "Pin", "Ocr", "Close",
+                "Rectangle", "Ellipse", "Outline", "Fill", "ArrowEnd", "ArrowBoth", "ArrowLine",
+                "Bold", "Italic", "Decrease", "Increase", "Record", "Done"
+            };
+
+            foreach (var name in names)
+            {
+                var geometry = (Geometry)app.Resources[$"Toolbar{name}Geometry"];
+                var bounds = geometry.Bounds;
+                True(!bounds.IsEmpty && geometry.GetArea() > 0, $"{name} should have visible geometry");
+                True(bounds.Left >= 0 && bounds.Top >= 0 && bounds.Right <= 200 && bounds.Bottom <= 200,
+                    $"{name} should stay inside the source canvas");
+                True(!geometry.FillContains(new Point(0, 0)), $"{name} should keep transparent padding");
+            }
+
+            var outline = (Geometry)app.Resources["ToolbarOutlineGeometry"];
+            var fill = (Geometry)app.Resources["ToolbarFillGeometry"];
+            True(!outline.FillContains(new Point(100, 100)), "outline should keep its center hollow");
+            True(fill.FillContains(new Point(100, 100)), "fill should paint its center");
+
+            var path = new System.Windows.Shapes.Path
+            {
+                Style = (Style)app.Resources["ToolbarIconStyle"],
+                Data = (Geometry)app.Resources["ToolbarPenGeometry"]
+            };
+            var button = new Button
+            {
+                Foreground = Brushes.Red,
+                Content = new Viewbox { Width = 20, Height = 20, Child = path }
+            };
+            button.Measure(new Size(40, 40));
+            button.Arrange(new Rect(0, 0, 40, 40));
+            button.UpdateLayout();
+            True(((SolidColorBrush)path.Fill).Color == Colors.Red, "icon should use the button foreground");
+            button.Foreground = Brushes.White;
+            True(((SolidColorBrush)path.Fill).Color == Colors.White, "icon should update with the selected foreground");
+
+            var pin = new PinWindow(CreateSolidBitmap(1200, 800, Colors.White), new PhysicalRect(0, 0, 1200, 800), 1, ScreenshotImageFormat.Png);
+            var root = (FrameworkElement)pin.FindName("Root");
+            root.Measure(new Size(1100, 600));
+            root.Arrange(new Rect(0, 0, 1100, 600));
+            typeof(PinWindow).GetMethod("SetAnnotationMode", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.Invoke(pin, new object[] { true });
+            ((Button)pin.FindName("ToolShapeButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            root.UpdateLayout();
+            var mainBar = (Border)pin.FindName("AnnotationBar");
+            var optionBar = (Border)pin.FindName("PinOptionBar");
+            var host = (FrameworkElement)pin.FindName("AnnotationBarHost");
+            var mainOrigin = mainBar.TransformToAncestor(host).Transform(new Point());
+            var optionOrigin = optionBar.TransformToAncestor(host).Transform(new Point());
+            True(optionOrigin.Y >= mainOrigin.Y + mainBar.ActualHeight + 5, "pin options should expand on a separate row");
+            var tools = (StackPanel)mainBar.Child;
+            var done = (Button)tools.Children[tools.Children.Count - 1];
+            True(done.Content is Viewbox, "pin completion should contain only the checkmark icon");
+            foreach (var name in new[] { "ToolShapeButton", "ToolArrowButton", "ToolPenButton", "ToolHighlighterButton", "ToolEraserButton", "ToolTextButton", "ToolMosaicButton", "ToolStepButton" })
+            {
+                ((Button)pin.FindName(name)).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                root.UpdateLayout();
+                True(optionBar.ActualWidth <= mainBar.ActualWidth + 0.1, $"{name} options should not exceed the main toolbar width");
+            }
+            ((Button)pin.FindName("ToolMosaicButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            True(((FrameworkElement)pin.FindName("PinColorGroup")).Visibility == Visibility.Collapsed, "mosaic should hide color options");
+            True(((FrameworkElement)pin.FindName("PinColorSeparator")).Visibility == Visibility.Collapsed, "mosaic should hide the color separator");
+        });
     }
 
     private static void RunSta(Action action)

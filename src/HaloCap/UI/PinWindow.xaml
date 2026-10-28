@@ -110,20 +110,14 @@
             </Setter>
         </Style>
 
-        <Style x:Key="PinToolIconStyle" TargetType="Path">
-            <Setter Property="Stroke" Value="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" />
-            <Setter Property="StrokeThickness" Value="1.5" />
-            <Setter Property="StrokeStartLineCap" Value="Round" />
-            <Setter Property="StrokeEndLineCap" Value="Round" />
-            <Setter Property="StrokeLineJoin" Value="Round" />
-            <Setter Property="Fill" Value="Transparent" />
-            <Setter Property="Width" Value="15" />
-            <Setter Property="Height" Value="15" />
+        <Style x:Key="PinOptionButtonStyle" TargetType="Button" BasedOn="{StaticResource PinToolButtonStyle}">
+            <Setter Property="Width" Value="26" />
+            <Setter Property="Height" Value="26" />
         </Style>
 
         <Style x:Key="PinColorSwatchStyle" TargetType="Button">
-            <Setter Property="Width" Value="24" />
-            <Setter Property="Height" Value="24" />
+            <Setter Property="Width" Value="22" />
+            <Setter Property="Height" Value="22" />
             <Setter Property="Margin" Value="1,0" />
             <Setter Property="Cursor" Value="Hand" />
             <Setter Property="BorderBrush" Value="Transparent" />
@@ -234,7 +228,9 @@
                  StretchDirection="DownOnly"
                  Visibility="Collapsed"
                  Panel.ZIndex="10">
+            <StackPanel>
             <Border x:Name="AnnotationBar"
+                    HorizontalAlignment="Center"
                     Padding="4"
                     CornerRadius="10"
                     Background="#FAF8F9FB"
@@ -251,9 +247,8 @@
                             Tag="Shape"
                             ToolTip="形状 (R/E) · 在选项栏切换矩形 / 椭圆"
                             Click="AnnotationTool_Click">
-                        <Viewbox Width="15" Height="15">
-                            <Path Style="{StaticResource PinToolIconStyle}"
-                                  Data="M3.5 5.5h9v9h-9Z M15.5 8.5a4.5 4.5 0 1 1 0 9 4.5 4.5 0 0 1 0-9Z" />
+                        <Viewbox Width="20" Height="20">
+                            <Path Style="{StaticResource ToolbarIconStyle}" Data="{StaticResource ToolbarShapeGeometry}" />
                         </Viewbox>
                     </Button>
                     <Button x:Name="ToolArrowButton"
@@ -262,9 +257,8 @@
                             Tag="Arrow"
                             ToolTip="箭头 (A) · Shift 锁定角度"
                             Click="AnnotationTool_Click">
-                        <Viewbox Width="15" Height="15">
-                            <Path Style="{StaticResource PinToolIconStyle}"
-                                  Data="M4.5 19.5 19 5 M11.5 5H19v7.5" />
+                        <Viewbox Width="20" Height="20">
+                            <Path Style="{StaticResource ToolbarIconStyle}" Data="{StaticResource ToolbarArrowGeometry}" />
                         </Viewbox>
                     </Button>
                     <Button x:Name="ToolPenButton"
@@ -273,9 +267,8 @@
                             Tag="Pen"
                             ToolTip="画笔 (P) · 滚轮调粗细"
                             Click="AnnotationTool_Click">
-                        <Viewbox Width="15" Height="15">
-                            <Path Style="{StaticResource PinToolIconStyle}"
-                                  Data="M4 20l3.4-.9L19.2 7.3a2.1 2.1 0 0 0-2.9-2.9L4.5 16.2 4 20Z M14.5 6.5l3 3" />
+                        <Viewbox Width="20" Height="20">
+                            <Path Style="{StaticResource ToolbarIconStyle}" Data="{StaticResource ToolbarPenGeometry}" />
                         </Viewbox>
                     </Button>
                     <Button x:Name="ToolHighlighterButton"
@@ -284,9 +277,8 @@
                             Tag="Highlighter"
                             ToolTip="荧光笔 (H) · 滚轮调粗细"
                             Click="AnnotationTool_Click">
-                        <Viewbox Width="15" Height="15">
-                            <Path Style="{StaticResource PinToolIconStyle}"
-                                  Data="M5 20h14 M8.5 16.5l-2 3.5 M8.5 16.5l7.5-9 3.2 2.7-7.5 9H8.5Z M12.5 10.8l3.2 2.7" />
+                        <Viewbox Width="20" Height="20">
+                            <Path Style="{StaticResource ToolbarIconStyle}" Data="{StaticResource ToolbarHighlighterGeometry}" />
                         </Viewbox>
                     </Button>
                     <Button x:Name="ToolEraserButton"
@@ -295,9 +287,8 @@
                             Tag="Eraser"
                             ToolTip="橡皮擦 (X) · 滚轮调大小 · 划过删除整条标注"
                             Click="AnnotationTool_Click">
-                        <Viewbox Width="15" Height="15">
-                            <Path Style="{StaticResource PinToolIconStyle}"
-                                  Data="M4 20h16 M7.5 17L16 6l3.8 3.8-8.5 11H7.5v-3.8Z M12 10.5l3.8 3.8" />
+                        <Viewbox Width="20" Height="20">
+                            <Path Style="{StaticResource ToolbarIconStyle}" Data="{StaticResource ToolbarEraserGeometry}" />
                         </Viewbox>
                     </Button>
                     <Button x:Name="ToolTextButton"
@@ -306,9 +297,8 @@
                             Tag="Text"
                             ToolTip="文字 (T) · 滚轮调字号"
                             Click="AnnotationTool_Click">
-                        <Viewbox Width="15" Height="15">
-                            <Path Style="{StaticResource PinToolIconStyle}"
-                                  Data="M4 6V4h16v2 M12 4v16 M8 20h8" />
+                        <Viewbox Width="20" Height="20">
+                            <Path Style="{StaticResource ToolbarIconStyle}" Data="{StaticResource ToolbarTextGeometry}" />
                         </Viewbox>
                     </Button>
                     <Button x:Name="ToolMosaicButton"
@@ -317,9 +307,8 @@
                             Tag="Mosaic"
                             ToolTip="马赛克 (M) · 滚轮调密度"
                             Click="AnnotationTool_Click">
-                        <Viewbox Width="15" Height="15">
-                            <Path Style="{StaticResource PinToolIconStyle}"
-                                  Data="M4 4h5v5H4Z M13 4h7v5h-7Z M4 13h7v7H4Z M15 13h5v7h-5Z" />
+                        <Viewbox Width="20" Height="20">
+                            <Path Style="{StaticResource ToolbarIconStyle}" Data="{StaticResource ToolbarMosaicGeometry}" />
                         </Viewbox>
                     </Button>
                     <Button x:Name="ToolStepButton"
@@ -328,14 +317,72 @@
                             Tag="Step"
                             ToolTip="序号 (N)"
                             Click="AnnotationTool_Click">
-                        <Viewbox Width="15" Height="15">
-                            <Path Style="{StaticResource PinToolIconStyle}"
-                                  Data="M12 3.5a8.5 8.5 0 1 1 0 17 8.5 8.5 0 0 1 0-17Z M10.2 9.2l1.9-1.4V16 M9.6 16h5" />
+                        <Viewbox Width="20" Height="20">
+                            <Path Style="{StaticResource ToolbarIconStyle}" Data="{StaticResource ToolbarStepGeometry}" />
                         </Viewbox>
                     </Button>
 
-                    <Border Width="1" Margin="4,6" Background="#26FFFFFF" />
+                    <Border Width="1" Margin="4,6" Background="#1A000000" />
 
+                    <Button x:Name="UndoButton"
+                            AutomationProperties.AutomationId="history.undo"
+                            Style="{StaticResource PinToolButtonStyle}"
+                            Tag="Undo"
+                            ToolTip="撤销 (Ctrl+Z)"
+                            Click="AnnotationAction_Click">
+                        <Viewbox Width="20" Height="20">
+                            <Path Style="{StaticResource ToolbarIconStyle}" Data="{StaticResource ToolbarUndoGeometry}" />
+                        </Viewbox>
+                    </Button>
+                    <Button x:Name="RedoButton"
+                            AutomationProperties.AutomationId="history.redo"
+                            Style="{StaticResource PinToolButtonStyle}"
+                            Tag="Redo"
+                            ToolTip="重做 (Ctrl+Y)"
+                            Click="AnnotationAction_Click">
+                        <Viewbox Width="20" Height="20">
+                            <Path Style="{StaticResource ToolbarIconStyle}" Data="{StaticResource ToolbarRedoGeometry}" />
+                        </Viewbox>
+                    </Button>
+                    <Button x:Name="ClearButton"
+                            AutomationProperties.AutomationId="history.clear"
+                            Style="{StaticResource PinToolButtonStyle}"
+                            Tag="Clear"
+                            ToolTip="清空标注"
+                            Click="AnnotationAction_Click">
+                        <Viewbox Width="20" Height="20">
+                            <Path Style="{StaticResource ToolbarIconStyle}" Data="{StaticResource ToolbarClearGeometry}" />
+                        </Viewbox>
+                    </Button>
+                    <Button Style="{StaticResource PinToolButtonStyle}"
+                            AutomationProperties.AutomationId="action.done"
+                            AutomationProperties.Name="完成"
+                            Tag="Done"
+                            Foreground="#FFFFFFFF"
+                            Background="#FF2F7CF6"
+                            ToolTip="完成，退出标注 (Space)"
+                            Click="AnnotationAction_Click">
+                        <Viewbox Width="20" Height="20">
+                            <Path Style="{StaticResource ToolbarIconStyle}" Data="{StaticResource ToolbarDoneGeometry}" />
+                        </Viewbox>
+                    </Button>
+                </StackPanel>
+            </Border>
+
+            <Border x:Name="PinOptionBar"
+                    HorizontalAlignment="Center"
+                    Margin="0,6,0,0"
+                    Height="40"
+                    Padding="4"
+                    CornerRadius="10"
+                    Background="#FAF8F9FB"
+                    BorderBrush="#22000000"
+                    BorderThickness="1"
+                    Cursor="Arrow">
+                <Border.Effect>
+                    <DropShadowEffect Color="#FF000000" BlurRadius="20" ShadowDepth="4" Opacity="0.24" />
+                </Border.Effect>
+                <StackPanel Orientation="Horizontal">
                     <StackPanel x:Name="PinColorGroup" Orientation="Horizontal">
                     <Button x:Name="ColorRedButton"
                             AutomationProperties.AutomationId="color.red"
@@ -411,190 +458,169 @@
                     </Button>
                     </StackPanel>
 
+                    <Border x:Name="PinColorSeparator" Width="1" Margin="4,6" Background="#1A000000" />
+
                     <StackPanel x:Name="PinShapeKindGroup" Orientation="Horizontal">
-                        <TextBlock Text="形状" FontSize="11" Foreground="#5A6270" Margin="6,0,4,0" VerticalAlignment="Center" />
                         <Button x:Name="ShapeRectangleButton"
                                 AutomationProperties.AutomationId="option.shapeRectangle"
-                                Style="{StaticResource PinToolButtonStyle}"
+                                Style="{StaticResource PinOptionButtonStyle}"
                                 Tag="Rectangle"
                                 ToolTip="矩形 (R) · Shift 正方形"
                                 Click="ShapeKind_Click">
-                            <Viewbox Width="15" Height="15">
-                                <Path Style="{StaticResource PinToolIconStyle}" Data="M4 5h16v14H4Z" />
+                            <Viewbox Width="20" Height="20">
+                                <Path Style="{StaticResource ToolbarIconStyle}" Data="{StaticResource ToolbarRectangleGeometry}" />
                             </Viewbox>
                         </Button>
                         <Button x:Name="ShapeEllipseButton"
                                 AutomationProperties.AutomationId="option.shapeEllipse"
-                                Style="{StaticResource PinToolButtonStyle}"
+                                Style="{StaticResource PinOptionButtonStyle}"
                                 Tag="Ellipse"
                                 ToolTip="椭圆 (E) · Shift 正圆"
                                 Click="ShapeKind_Click">
-                            <Viewbox Width="15" Height="15">
-                                <Path Style="{StaticResource PinToolIconStyle}"
-                                      Data="M12 5c4.4 0 8 3.1 8 7s-3.6 7-8 7-8-3.1-8-7 3.6-7 8-7Z" />
+                            <Viewbox Width="20" Height="20">
+                                <Path Style="{StaticResource ToolbarIconStyle}" Data="{StaticResource ToolbarEllipseGeometry}" />
                             </Viewbox>
                         </Button>
                     </StackPanel>
 
                     <StackPanel x:Name="PinShapeGroup" Orientation="Horizontal">
-                        <TextBlock Text="样式" FontSize="11" Foreground="#5A6270" Margin="6,0,4,0" VerticalAlignment="Center" />
                         <Button x:Name="ShapeOutlineButton"
                                 AutomationProperties.AutomationId="option.outline"
-                                Style="{StaticResource PinToolButtonStyle}"
+                                Style="{StaticResource PinOptionButtonStyle}"
                                 Tag="Outline"
                                 ToolTip="空心形状 (F 切换)"
                                 Click="ShapeStyle_Click">
-                            <Viewbox Width="15" Height="15">
-                                <Path Style="{StaticResource PinToolIconStyle}" Data="M4 5h16v14H4Z" />
+                            <Viewbox Width="20" Height="20">
+                                <Path Style="{StaticResource ToolbarIconStyle}" Data="{StaticResource ToolbarOutlineGeometry}" />
                             </Viewbox>
                         </Button>
                         <Button x:Name="ShapeFillButton"
                                 AutomationProperties.AutomationId="option.fill"
-                                Style="{StaticResource PinToolButtonStyle}"
+                                Style="{StaticResource PinOptionButtonStyle}"
                                 Tag="Fill"
                                 ToolTip="实心填充 (F 切换)"
                                 Click="ShapeStyle_Click">
-                            <Viewbox Width="15" Height="15">
-                                <Path Style="{StaticResource PinToolIconStyle}"
-                                      Data="M4 5h16v14H4Z"
-                                      Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" />
+                            <Viewbox Width="20" Height="20">
+                                <Path Style="{StaticResource ToolbarIconStyle}" Data="{StaticResource ToolbarFillGeometry}" />
                             </Viewbox>
                         </Button>
                     </StackPanel>
 
                     <StackPanel x:Name="PinBrushGroup" Orientation="Horizontal">
-                        <TextBlock Text="粗细" FontSize="11" Foreground="#5A6270" Margin="4,0,5,0" VerticalAlignment="Center" />
-                        <Button Style="{StaticResource PinBarButtonStyle}" Padding="6,3" Tag="Down" ToolTip="变细 (滚轮)" Content="−" Click="OptionStep_Click" />
+                        <Button Style="{StaticResource PinOptionButtonStyle}" Tag="Down" ToolTip="变细 (滚轮)" Click="OptionStep_Click">
+                            <Viewbox Width="20" Height="20">
+                                <Path Style="{StaticResource ToolbarIconStyle}" Data="{StaticResource ToolbarDecreaseGeometry}" />
+                            </Viewbox>
+                        </Button>
                         <TextBlock x:Name="BrushValueText" Width="24" FontSize="11.5" Foreground="#2A303B" TextAlignment="Center" VerticalAlignment="Center" />
-                        <Button Style="{StaticResource PinBarButtonStyle}" Padding="6,3" Tag="Up" ToolTip="变粗 (滚轮)" Content="+" Click="OptionStep_Click" />
+                        <Button Style="{StaticResource PinOptionButtonStyle}" Tag="Up" ToolTip="变粗 (滚轮)" Click="OptionStep_Click">
+                            <Viewbox Width="20" Height="20">
+                                <Path Style="{StaticResource ToolbarIconStyle}" Data="{StaticResource ToolbarIncreaseGeometry}" />
+                            </Viewbox>
+                        </Button>
                     </StackPanel>
 
                     <StackPanel x:Name="PinArrowGroup" Orientation="Horizontal">
-                        <TextBlock Text="箭头" FontSize="11" Foreground="#5A6270" Margin="6,0,4,0" VerticalAlignment="Center" />
                         <Button x:Name="ArrowEndButton"
                                 AutomationProperties.AutomationId="option.arrowEnd"
-                                Style="{StaticResource PinToolButtonStyle}"
+                                Style="{StaticResource PinOptionButtonStyle}"
                                 Tag="End"
                                 ToolTip="末端箭头"
                                 Click="ArrowStyle_Click">
-                            <Viewbox Width="15" Height="15">
-                                <Path Style="{StaticResource PinToolIconStyle}" Data="M4 12h14 M12 6l6 6-6 6" />
+                            <Viewbox Width="20" Height="20">
+                                <Path Style="{StaticResource ToolbarIconStyle}" Data="{StaticResource ToolbarArrowEndGeometry}" />
                             </Viewbox>
                         </Button>
                         <Button x:Name="ArrowBothButton"
                                 AutomationProperties.AutomationId="option.arrowBoth"
-                                Style="{StaticResource PinToolButtonStyle}"
+                                Style="{StaticResource PinOptionButtonStyle}"
                                 Tag="Both"
                                 ToolTip="双向箭头"
                                 Click="ArrowStyle_Click">
-                            <Viewbox Width="15" Height="15">
-                                <Path Style="{StaticResource PinToolIconStyle}"
-                                      Data="M4 12h16 M4 12l5-5 M4 12l5 5 M20 12l-5-5 M20 12l-5 5" />
+                            <Viewbox Width="20" Height="20">
+                                <Path Style="{StaticResource ToolbarIconStyle}" Data="{StaticResource ToolbarArrowBothGeometry}" />
                             </Viewbox>
                         </Button>
                         <Button x:Name="ArrowLineButton"
                                 AutomationProperties.AutomationId="option.arrowLine"
-                                Style="{StaticResource PinToolButtonStyle}"
+                                Style="{StaticResource PinOptionButtonStyle}"
                                 Tag="None"
                                 ToolTip="直线（无箭头）"
                                 Click="ArrowStyle_Click">
-                            <Viewbox Width="15" Height="15">
-                                <Path Style="{StaticResource PinToolIconStyle}" Data="M4 12h16" />
+                            <Viewbox Width="20" Height="20">
+                                <Path Style="{StaticResource ToolbarIconStyle}" Data="{StaticResource ToolbarArrowLineGeometry}" />
                             </Viewbox>
                         </Button>
                     </StackPanel>
 
                     <StackPanel x:Name="PinTextGroup" Orientation="Horizontal">
-                        <TextBlock Text="字号" FontSize="11" Foreground="#5A6270" Margin="4,0,5,0" VerticalAlignment="Center" />
-                        <Button Style="{StaticResource PinBarButtonStyle}" Padding="6,3" Tag="Down" ToolTip="变小 (滚轮)" Content="−" Click="OptionStep_Click" />
+                        <Button Style="{StaticResource PinOptionButtonStyle}" Tag="Down" ToolTip="变小 (滚轮)" Click="OptionStep_Click">
+                            <Viewbox Width="20" Height="20">
+                                <Path Style="{StaticResource ToolbarIconStyle}" Data="{StaticResource ToolbarDecreaseGeometry}" />
+                            </Viewbox>
+                        </Button>
                         <TextBlock x:Name="TextValueText" Width="24" FontSize="11.5" Foreground="#2A303B" TextAlignment="Center" VerticalAlignment="Center" />
-                        <Button Style="{StaticResource PinBarButtonStyle}" Padding="6,3" Tag="Up" ToolTip="变大 (滚轮)" Content="+" Click="OptionStep_Click" />
+                        <Button Style="{StaticResource PinOptionButtonStyle}" Tag="Up" ToolTip="变大 (滚轮)" Click="OptionStep_Click">
+                            <Viewbox Width="20" Height="20">
+                                <Path Style="{StaticResource ToolbarIconStyle}" Data="{StaticResource ToolbarIncreaseGeometry}" />
+                            </Viewbox>
+                        </Button>
                     </StackPanel>
 
                     <StackPanel x:Name="PinTextStyleGroup" Orientation="Horizontal">
                         <Button x:Name="BoldToggleButton"
                                 AutomationProperties.AutomationId="option.bold"
-                                Style="{StaticResource PinToolButtonStyle}"
+                                Style="{StaticResource PinOptionButtonStyle}"
                                 Tag="Bold"
                                 ToolTip="加粗 (Ctrl+B)"
                                 Click="TextStyle_Click">
-                            <TextBlock Text="B"
-                                       FontSize="13"
-                                       FontWeight="Bold"
-                                       Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" />
+                            <Viewbox Width="20" Height="20">
+                                <Path Style="{StaticResource ToolbarIconStyle}" Data="{StaticResource ToolbarBoldGeometry}" />
+                            </Viewbox>
                         </Button>
                         <Button x:Name="ItalicToggleButton"
                                 AutomationProperties.AutomationId="option.italic"
-                                Style="{StaticResource PinToolButtonStyle}"
+                                Style="{StaticResource PinOptionButtonStyle}"
                                 Tag="Italic"
                                 ToolTip="斜体 (Ctrl+I)"
                                 Click="TextStyle_Click">
-                            <TextBlock Text="I"
-                                       FontSize="13"
-                                       FontWeight="SemiBold"
-                                       FontStyle="Italic"
-                                       Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" />
+                            <Viewbox Width="20" Height="20">
+                                <Path Style="{StaticResource ToolbarIconStyle}" Data="{StaticResource ToolbarItalicGeometry}" />
+                            </Viewbox>
                         </Button>
                     </StackPanel>
 
                     <StackPanel x:Name="PinMosaicGroup" Orientation="Horizontal">
-                        <TextBlock Text="密度" FontSize="11" Foreground="#5A6270" Margin="4,0,5,0" VerticalAlignment="Center" />
-                        <Button Style="{StaticResource PinBarButtonStyle}" Padding="6,3" Tag="Down" ToolTip="更密 (滚轮)" Content="−" Click="OptionStep_Click" />
+                        <Button Style="{StaticResource PinOptionButtonStyle}" Tag="Down" ToolTip="更密 (滚轮)" Click="OptionStep_Click">
+                            <Viewbox Width="20" Height="20">
+                                <Path Style="{StaticResource ToolbarIconStyle}" Data="{StaticResource ToolbarDecreaseGeometry}" />
+                            </Viewbox>
+                        </Button>
                         <TextBlock x:Name="MosaicValueText" Width="24" FontSize="11.5" Foreground="#2A303B" TextAlignment="Center" VerticalAlignment="Center" />
-                        <Button Style="{StaticResource PinBarButtonStyle}" Padding="6,3" Tag="Up" ToolTip="更疏 (滚轮)" Content="+" Click="OptionStep_Click" />
+                        <Button Style="{StaticResource PinOptionButtonStyle}" Tag="Up" ToolTip="更疏 (滚轮)" Click="OptionStep_Click">
+                            <Viewbox Width="20" Height="20">
+                                <Path Style="{StaticResource ToolbarIconStyle}" Data="{StaticResource ToolbarIncreaseGeometry}" />
+                            </Viewbox>
+                        </Button>
                     </StackPanel>
 
                     <StackPanel x:Name="PinEraserGroup" Orientation="Horizontal">
-                        <TextBlock Text="大小" FontSize="11" Foreground="#5A6270" Margin="4,0,5,0" VerticalAlignment="Center" />
-                        <Button Style="{StaticResource PinBarButtonStyle}" Padding="6,3" Tag="Down" ToolTip="变小 (滚轮)" Content="−" Click="OptionStep_Click" />
+                        <Button Style="{StaticResource PinOptionButtonStyle}" Tag="Down" ToolTip="变小 (滚轮)" Click="OptionStep_Click">
+                            <Viewbox Width="20" Height="20">
+                                <Path Style="{StaticResource ToolbarIconStyle}" Data="{StaticResource ToolbarDecreaseGeometry}" />
+                            </Viewbox>
+                        </Button>
                         <TextBlock x:Name="EraserValueText" Width="24" FontSize="11.5" Foreground="#2A303B" TextAlignment="Center" VerticalAlignment="Center" />
-                        <Button Style="{StaticResource PinBarButtonStyle}" Padding="6,3" Tag="Up" ToolTip="变大 (滚轮)" Content="+" Click="OptionStep_Click" />
+                        <Button Style="{StaticResource PinOptionButtonStyle}" Tag="Up" ToolTip="变大 (滚轮)" Click="OptionStep_Click">
+                            <Viewbox Width="20" Height="20">
+                                <Path Style="{StaticResource ToolbarIconStyle}" Data="{StaticResource ToolbarIncreaseGeometry}" />
+                            </Viewbox>
+                        </Button>
                     </StackPanel>
 
-                    <Border Width="1" Margin="4,6" Background="#26FFFFFF" />
-
-                    <Button x:Name="UndoButton"
-                            AutomationProperties.AutomationId="history.undo"
-                            Style="{StaticResource PinToolButtonStyle}"
-                            Tag="Undo"
-                            ToolTip="撤销 (Ctrl+Z)"
-                            Click="AnnotationAction_Click">
-                        <Viewbox Width="15" Height="15">
-                            <Path Style="{StaticResource PinToolIconStyle}"
-                                  Data="M9 6L4 11l5 5 M4 11h9a5 5 0 0 1 5 5v2" />
-                        </Viewbox>
-                    </Button>
-                    <Button x:Name="RedoButton"
-                            AutomationProperties.AutomationId="history.redo"
-                            Style="{StaticResource PinToolButtonStyle}"
-                            Tag="Redo"
-                            ToolTip="重做 (Ctrl+Y)"
-                            Click="AnnotationAction_Click">
-                        <Viewbox Width="15" Height="15">
-                            <Path Style="{StaticResource PinToolIconStyle}"
-                                  Data="M15 6l5 5-5 5 M20 11h-9a5 5 0 0 0-5 5v2" />
-                        </Viewbox>
-                    </Button>
-                    <Button x:Name="ClearButton"
-                            AutomationProperties.AutomationId="history.clear"
-                            Style="{StaticResource PinToolButtonStyle}"
-                            Tag="Clear"
-                            ToolTip="清空标注"
-                            Click="AnnotationAction_Click">
-                        <Viewbox Width="15" Height="15">
-                            <Path Style="{StaticResource PinToolIconStyle}"
-                                  Data="M5 7h14 M9 7V4h6v3 M7 7l1 13h8l1-13 M10 11v6 M14 11v6" />
-                        </Viewbox>
-                    </Button>
-                    <Button Style="{StaticResource PinBarButtonStyle}"
-                            Tag="Done"
-                            Foreground="#FFFFFFFF"
-                            Background="#FF2F7CF6"
-                            ToolTip="退出标注 (Space)"
-                            Click="AnnotationAction_Click"
-                            Content="完成" />
                 </StackPanel>
             </Border>
+            </StackPanel>
         </Viewbox>
 
         <Border x:Name="Hud"

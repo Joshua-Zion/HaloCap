@@ -188,6 +188,7 @@
           PreviewMouseMove="Root_PreviewMouseMove"
           PreviewMouseLeftButtonUp="Root_PreviewMouseLeftButtonUp"
           PreviewMouseRightButtonDown="Root_PreviewMouseRightButtonDown"
+          LostMouseCapture="Root_LostMouseCapture"
           MouseLeave="Root_MouseLeave">
         <Image x:Name="FrozenImage"
                Stretch="Fill"

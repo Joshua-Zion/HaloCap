@@ -23,6 +23,8 @@ public partial class ScreenshotOverlayWindow : Window
     private const int MaxHistory = 40;
     private const int MagnifierPixels = 17;
     private const int ElementProbeIntervalMs = 24;
+    private const long PhysicalPressWindowMs = 600;
+    private const int VkLeftButton = 0x01;
 
     private enum DragKind
     {
@@ -65,6 +67,9 @@ public partial class ScreenshotOverlayWindow : Window
     private double _mapScaleX = 1.0;
     private double _mapScaleY = 1.0;
     private TranslateTransform? _toolbarOffset;
+    private HwndSource? _source;
+    private long _lastPhysicalPressTick = -1_000_000;
+    private bool _syntheticPressLogged;
 
     private bool _annotating;
     private AnnotationTool _annotationTool = AnnotationTool.Pen;
@@ -119,10 +124,6 @@ public partial class ScreenshotOverlayWindow : Window
 
         ConfigureMode();
         ConfigureWindowBounds();
-        if (!UsesIdleMask)
-        {
-            DimFull.Visibility = Visibility.Collapsed;
-        }
         RefreshMapping();
         UpdateAnnotationToolVisuals();
         UpdateAnnotationColorVisuals();
@@ -134,7 +135,12 @@ public partial class ScreenshotOverlayWindow : Window
             FadeToolHudOut();
         };
 
-        SourceInitialized += (_, _) => ApplyOverlayWindowStyle();
+        SourceInitialized += (_, _) =>
+        {
+            ApplyOverlayWindowStyle();
+            _source = HwndSource.FromHwnd(new WindowInteropHelper(this).Handle);
+            _source?.AddHook(OverlayWndProc);
+        };
         ContentRendered += (_, _) => RevealOverlay();
         DpiChanged += (_, _) =>
         {
@@ -169,6 +175,8 @@ public partial class ScreenshotOverlayWindow : Window
                 Mouse.Capture(null);
             }
 
+            _source?.RemoveHook(OverlayWndProc);
+            _source = null;
             _frozenBitmap?.Dispose();
             FrozenImage.Source = null;
             _session.UnregisterOverlay(this);
@@ -178,8 +186,6 @@ public partial class ScreenshotOverlayWindow : Window
     }
 
     internal CaptureSessionMode Mode => _mode;
-
-    private bool UsesIdleMask => _mode != CaptureSessionMode.Record;
 
     internal ScreenMonitor Monitor => _monitor;
 
@@ -227,11 +233,7 @@ public partial class ScreenshotOverlayWindow : Window
 
         if (local.IsEmpty)
         {
-            if (UsesIdleMask)
-            {
-                DimFull.Visibility = Visibility.Visible;
-            }
-
+            DimFull.Visibility = Visibility.Visible;
             DimTop.Visibility = Visibility.Collapsed;
             DimBottom.Visibility = Visibility.Collapsed;
             DimLeft.Visibility = Visibility.Collapsed;
@@ -385,12 +387,6 @@ public partial class ScreenshotOverlayWindow : Window
         RefreshMapping();
         _revealed = true;
 
-        if (!UsesIdleMask)
-        {
-            Opacity = 1;
-            return;
-        }
-
         // 遮罩若在一帧内整屏压暗，观感上就是一次闪屏；淡入让桌面平滑过渡到选区状态。
         Opacity = 1;
         BeginAnimation(
@@ -536,6 +532,19 @@ public partial class ScreenshotOverlayWindow : Window
             NativeMethods.SWP_FRAMECHANGED);
     }
 
+    private IntPtr OverlayWndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+    {
+        if (msg == NativeMethods.WM_LBUTTONDOWN)
+        {
+            _lastPhysicalPressTick = Environment.TickCount64;
+        }
+
+        return IntPtr.Zero;
+    }
+
+    private static bool IsLeftButtonPressed() =>
+        (NativeMethods.GetAsyncKeyState(VkLeftButton) & 0x8000) != 0;
+
     private void ApplyPhysicalBounds()
     {
         if (_handle == IntPtr.Zero)
@@ -652,6 +661,22 @@ public partial class ScreenshotOverlayWindow : Window
             return;
         }
 
+        // 从托盘或光圈启动时，系统可能在遮罩刚出现时补发一次按下（没有对应的窗口鼠标消息），
+        // 放行会立刻在原地完成一个点选区；只接受本窗口真实收到的 WM_LBUTTONDOWN。
+        var pressAge = Environment.TickCount64 - _lastPhysicalPressTick;
+        if (e.StylusDevice is null && pressAge > PhysicalPressWindowMs)
+        {
+            e.Handled = true;
+
+            if (!_syntheticPressLogged)
+            {
+                _syntheticPressLogged = true;
+                Log.Info($"忽略启动时补发的鼠标按下（{pressAge}ms）");
+            }
+
+            return;
+        }
+
         if (IsPointerOverToolbars())
         {
             return;
@@ -754,6 +779,13 @@ public partial class ScreenshotOverlayWindow : Window
 
         if (_dragging)
         {
+            if (!IsLeftButtonPressed())
+            {
+                // 松开消息丢失时按松开结算，否则选区会永远停在按下时的那个点。
+                EndDrag();
+                return;
+            }
+
             var cursor = ToVirtualPoint(point);
 
             switch (_dragKind)
@@ -843,8 +875,44 @@ public partial class ScreenshotOverlayWindow : Window
         }
 
         e.Handled = true;
+        EndDrag();
+    }
+
+    private void Root_LostMouseCapture(object sender, MouseEventArgs e)
+    {
+        if (_closed || _drawingAnnotation || !_dragging)
+        {
+            return;
+        }
+
+        if (IsLeftButtonPressed())
+        {
+            // 拖拽中途被其它窗口抢走捕获，之后就收不到松开消息，放弃这次选区以免停在按下时的点。
+            _dragging = false;
+            _dragKind = DragKind.None;
+            _clickElementPx = default;
+            _session.ClearSelection();
+            return;
+        }
+
+        EndDrag();
+    }
+
+    private void EndDrag()
+    {
         _dragging = false;
-        Mouse.Capture(null);
+
+        try
+        {
+            if (Mouse.Captured == Root)
+            {
+                Mouse.Capture(null);
+            }
+        }
+        catch
+        {
+            // 忽略释放捕获异常。
+        }
 
         var kind = _dragKind;
         _dragKind = DragKind.None;
@@ -857,20 +925,16 @@ public partial class ScreenshotOverlayWindow : Window
             return;
         }
 
-        if (!ScreenGeometry.IsUsableSelection(_session.SelectionVirtual, MinSelectionSizePx) &&
-            ScreenGeometry.IsUsableSelection(_clickElementPx, MinSelectionSizePx))
+        if (!ScreenGeometry.IsUsableSelection(_session.SelectionVirtual, MinSelectionSizePx))
         {
-            _session.UpdateSelection(ScreenGeometry.ToVirtual(_clickElementPx, _monitor.Bounds));
+            // 单击或轻微抖动都按单击处理：选中光标下的窗口，没有窗口就整屏，绝不留下几像素的点选区。
+            var element = ScreenGeometry.IsUsableSelection(_clickElementPx, MinSelectionSizePx)
+                ? _clickElementPx
+                : MonitorLocalBounds;
+            _session.UpdateSelection(ScreenGeometry.ToVirtual(element, _monitor.Bounds));
         }
 
         _clickElementPx = default;
-
-        if (!ScreenGeometry.IsUsableSelection(_session.SelectionVirtual))
-        {
-            _session.ClearSelection();
-            return;
-        }
-
         CompleteNewSelection();
     }
 
@@ -1244,7 +1308,7 @@ public partial class ScreenshotOverlayWindow : Window
         SetCornersVisible(false);
         AnnotationLayer.Visibility = Visibility.Collapsed;
         EditorLayer.Children.Clear();
-        DimFull.Visibility = UsesIdleMask ? Visibility.Visible : Visibility.Collapsed;
+        DimFull.Visibility = Visibility.Visible;
         DimTop.Visibility = Visibility.Collapsed;
         DimBottom.Visibility = Visibility.Collapsed;
         DimLeft.Visibility = Visibility.Collapsed;
@@ -1288,14 +1352,10 @@ public partial class ScreenshotOverlayWindow : Window
         var bottom = top + selectionHeight;
         var hasLocal = !localPx.IsEmpty;
 
-        DimFull.Visibility = Visibility.Collapsed;
+        // 选区还没面积时保留整屏遮罩：否则按下的瞬间桌面会整体变亮，屏幕上只剩下一个点。
+        DimFull.Visibility = hasLocal ? Visibility.Collapsed : Visibility.Visible;
 
-        // 录屏模式没有初始遮罩：按下鼠标但还没拉出可用选区时保持实时画面，
-        // 选区可用后再压暗四周，与截图模式的选区观感一致。
-        var showOutsideDim = hasLocal &&
-                             (UsesIdleMask ||
-                              (_dragKind != DragKind.Create && _session.HasSelection) ||
-                              ScreenGeometry.IsUsableSelection(virtualPx));
+        var showOutsideDim = hasLocal;
 
         if (showOutsideDim)
         {
@@ -1853,14 +1913,11 @@ public partial class ScreenshotOverlayWindow : Window
         var width = Math.Max(0, right - left);
         var height = Math.Max(0, bottom - top);
 
-        if (UsesIdleMask)
-        {
-            DimFull.Visibility = Visibility.Collapsed;
-            UpdateDimRect(DimTop, 0, 0, Root.ActualWidth, top);
-            UpdateDimRect(DimBottom, 0, bottom, Root.ActualWidth, Math.Max(0, Root.ActualHeight - bottom));
-            UpdateDimRect(DimLeft, 0, top, left, height);
-            UpdateDimRect(DimRight, right, top, Math.Max(0, Root.ActualWidth - right), height);
-        }
+        DimFull.Visibility = Visibility.Collapsed;
+        UpdateDimRect(DimTop, 0, 0, Root.ActualWidth, top);
+        UpdateDimRect(DimBottom, 0, bottom, Root.ActualWidth, Math.Max(0, Root.ActualHeight - bottom));
+        UpdateDimRect(DimLeft, 0, top, left, height);
+        UpdateDimRect(DimRight, right, top, Math.Max(0, Root.ActualWidth - right), height);
 
         ElementBorder.Visibility = Visibility.Visible;
         ElementBorder.Width = width;
@@ -1884,7 +1941,7 @@ public partial class ScreenshotOverlayWindow : Window
 
         if (!_hasSelection && !_dragging && !_annotating)
         {
-            DimFull.Visibility = UsesIdleMask ? Visibility.Visible : Visibility.Collapsed;
+            DimFull.Visibility = Visibility.Visible;
             DimTop.Visibility = Visibility.Collapsed;
             DimBottom.Visibility = Visibility.Collapsed;
             DimLeft.Visibility = Visibility.Collapsed;

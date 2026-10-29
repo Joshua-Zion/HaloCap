@@ -14,6 +14,7 @@ internal sealed class RecordingService : IDisposable
     private readonly object _stopLock = new();
     private RecordingSession? _session;
     private RecordingHudWindow? _hud;
+    private RecordingFrameWindow? _frame;
     private Task? _stopTask;
     private volatile bool _isRecording;
     private bool _disposed;
@@ -78,12 +79,14 @@ internal sealed class RecordingService : IDisposable
         var path = AppPaths.CreateRecordingPath(configuredDirectory, DateTime.Now);
         var session = new RecordingSession(monitor, crop, path);
         var hud = new RecordingHudWindow(monitor, selection);
+        var frame = new RecordingFrameWindow(ScreenGeometry.ToVirtual(crop, monitor.Bounds));
         session.Faulted += OnSessionFaulted;
         hud.StopRequested += OnHudStopRequested;
 
         try
         {
             hud.PrepareForCapture();
+            frame.PrepareForCapture();
             await session.StartAsync();
 
             if (_disposed)
@@ -92,9 +95,11 @@ internal sealed class RecordingService : IDisposable
             }
 
             hud.ShowHud();
+            frame.ShowFrame();
 
             _session = session;
             _hud = hud;
+            _frame = frame;
             _isRecording = true;
 
             try
@@ -112,6 +117,7 @@ internal sealed class RecordingService : IDisposable
         {
             _session = null;
             _hud = null;
+            _frame = null;
             _isRecording = false;
 
             session.Faulted -= OnSessionFaulted;
@@ -125,6 +131,15 @@ internal sealed class RecordingService : IDisposable
             catch
             {
                 // 浮层尚未显示时关闭可能失败，忽略。
+            }
+
+            try
+            {
+                frame.CloseFrame();
+            }
+            catch
+            {
+                // 边框尚未显示时关闭可能失败，忽略。
             }
 
             TryDelete(path);
@@ -190,7 +205,9 @@ internal sealed class RecordingService : IDisposable
         {
             var session = _session;
             var hud = _hud;
+            var frame = _frame;
             _hud = null;
+            _frame = null;
 
             if (session is null)
             {
@@ -205,6 +222,15 @@ internal sealed class RecordingService : IDisposable
             catch
             {
                 // 浮层可能已经关闭。
+            }
+
+            try
+            {
+                frame?.CloseFrame();
+            }
+            catch
+            {
+                // 边框可能已经关闭。
             }
 
             if (hud is not null)
@@ -353,7 +379,17 @@ internal sealed class RecordingService : IDisposable
             // 忽略浮层关闭异常。
         }
 
+        try
+        {
+            _frame?.CloseFrame();
+        }
+        catch
+        {
+            // 忽略边框关闭异常。
+        }
+
         _hud = null;
+        _frame = null;
         _session?.Dispose();
         _session = null;
         _isRecording = false;

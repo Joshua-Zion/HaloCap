@@ -395,16 +395,13 @@ internal sealed class ScreenshotSession : IDisposable
             {
                 DrawingBitmap? frozen = null;
 
-                if (_mode != CaptureSessionMode.Record)
+                try
                 {
-                    try
-                    {
-                        frozen = ScreenCaptureService.Capture(monitor.Bounds);
-                    }
-                    catch (Exception ex)
-                    {
-                        Log.Error($"预捕获显示器 {monitor} 失败，将使用实时捕获", ex);
-                    }
+                    frozen = ScreenCaptureService.Capture(monitor.Bounds);
+                }
+                catch (Exception ex)
+                {
+                    Log.Error($"预捕获显示器 {monitor} 失败，将使用实时捕获", ex);
                 }
 
                 ScreenshotOverlayWindow overlay;

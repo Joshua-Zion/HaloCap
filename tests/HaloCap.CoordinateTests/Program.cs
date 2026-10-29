@@ -1195,7 +1195,7 @@ internal static class Program
             CaptureOverlayPreviewKeepsMouseSurface();
             CaptureSelectionHintsStayLightAndConcise();
             CaptureSelectionFallsBackToFullScreen();
-            RecordSelectionDimsAfterUsableDrag();
+            RecordSelectionDimsLikeOtherModes();
             CrossScreenSelectionSharesStateAndComposesCapture();
             SettingsAndTrayChromeUseCleanLayout(app);
             var names = new[]
@@ -1517,10 +1517,8 @@ internal static class Program
                 try
                 {
                     var dimFull = (FrameworkElement)overlay.FindName("DimFull");
-                    True(mode == CaptureSessionMode.Record
-                            ? dimFull.Visibility == Visibility.Collapsed
-                            : dimFull.Visibility == Visibility.Visible,
-                        "only record mode should start without the full-screen dim");
+                    True(dimFull.Visibility == Visibility.Visible,
+                        "every capture mode should start with the full-screen dim");
                     True(!(bool)type.GetField("_textBold", flags)!.GetValue(overlay)!,
                         "capture text tool should default to regular weight");
                     var doneButton = (Button)overlay.FindName("DoneButton");
@@ -1572,25 +1570,15 @@ internal static class Program
                     RenderSurface();
                     type.GetMethod("Root_MouseLeave", flags)!.Invoke(overlay, new object[] { root, new MouseEventArgs(Mouse.PrimaryDevice, 0) });
                     var idleMask = ((FrameworkElement)overlay.FindName("DimFull")).Visibility;
-                    True(mode == CaptureSessionMode.Record
-                            ? idleMask == Visibility.Collapsed
-                            : idleMask == Visibility.Visible,
-                        "a genuine leave should restore the idle mask only outside record mode");
+                    True(idleMask == Visibility.Visible,
+                        "a genuine leave should restore the idle mask");
                     True(((FrameworkElement)overlay.FindName("ElementBorder")).Visibility == Visibility.Collapsed,
                         "leaving the overlay should clear the hovered-window border");
                     var idle = RenderSurface();
                     var cornerOffset = (((int)(8 * scale) * pixelWidth) + (int)(8 * scale)) * 4;
                     Equal(
-                        frozen ? 255 : mode == CaptureSessionMode.Record ? 1 : 166,
+                        frozen ? 255 : 166,
                         idle[cornerOffset + 3]);
-                    if (mode == CaptureSessionMode.Record)
-                    {
-                        True(((FrameworkElement)overlay.FindName("DimTop")).Visibility == Visibility.Collapsed &&
-                             ((FrameworkElement)overlay.FindName("DimBottom")).Visibility == Visibility.Collapsed &&
-                             ((FrameworkElement)overlay.FindName("DimLeft")).Visibility == Visibility.Collapsed &&
-                             ((FrameworkElement)overlay.FindName("DimRight")).Visibility == Visibility.Collapsed,
-                            "record mode must keep the live screen undimmed before a selection");
-                    }
                     hasSelectionField.SetValue(overlay, true);
                     selectionField.SetValue(overlay, candidate);
                     updateSelection.Invoke(overlay, new object[] { false });
@@ -1688,6 +1676,15 @@ internal static class Program
             Equal(
                 new PhysicalRect(0, 0, 600, 400),
                 (PhysicalRect)typeof(ScreenshotOverlayWindow).GetField("_hoverElementPx", flags)!.GetValue(overlay)!);
+
+            var type = typeof(ScreenshotOverlayWindow);
+            var dragKindType = type.GetNestedType("DragKind", BindingFlags.NonPublic)!;
+            type.GetField("_clickElementPx", flags)!.SetValue(overlay, default(PhysicalRect));
+            type.GetField("_dragging", flags)!.SetValue(overlay, true);
+            type.GetField("_dragKind", flags)!.SetValue(overlay, Enum.Parse(dragKindType, "Create"));
+            session.BeginSelection(overlay, new PhysicalRect(100, 100, 5, 5));
+            type.GetMethod("EndDrag", flags)!.Invoke(overlay, null);
+            Equal(new PhysicalRect(0, 0, 600, 400), session.SelectionVirtual);
         }
         finally
         {
@@ -1695,7 +1692,7 @@ internal static class Program
         }
     }
 
-    private static void RecordSelectionDimsAfterUsableDrag()
+    private static void RecordSelectionDimsLikeOtherModes()
     {
         const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
         var type = typeof(ScreenshotOverlayWindow);
@@ -1722,15 +1719,21 @@ internal static class Program
             var dragKindType = type.GetNestedType("DragKind", BindingFlags.NonPublic)!;
             type.GetField("_dragKind", flags)!.SetValue(overlay, Enum.Parse(dragKindType, "Create"));
 
+            selectionField.SetValue(overlay, new PhysicalRect(80, 80, 0, 0));
+            updateSelection.Invoke(overlay, new object[] { true });
+            True(((FrameworkElement)overlay.FindName("DimFull")).Visibility == Visibility.Visible,
+                "a zero-size press should keep the full-screen mask instead of leaving a lone dot");
+
             selectionField.SetValue(overlay, new PhysicalRect(80, 80, 2, 2));
             updateSelection.Invoke(overlay, new object[] { true });
-            True(((FrameworkElement)overlay.FindName("DimTop")).Visibility == Visibility.Collapsed,
-                "record mode should keep the live screen undimmed until the drag is usable");
+            True(((FrameworkElement)overlay.FindName("DimTop")).Visibility == Visibility.Visible,
+                "record mode should dim outside the selection like screenshot and OCR");
 
             selectionField.SetValue(overlay, new PhysicalRect(80, 80, 300, 200));
             updateSelection.Invoke(overlay, new object[] { true });
-            True(((FrameworkElement)overlay.FindName("DimTop")).Visibility == Visibility.Visible,
-                "record mode should dim outside a usable selection like screenshot");
+            var dimTop = (FrameworkElement)overlay.FindName("DimTop");
+            True(dimTop.Visibility == Visibility.Visible && Math.Abs(dimTop.Height - 80) < 0.01,
+                "the outside dim should follow the selection edges in record mode");
         }
         finally
         {

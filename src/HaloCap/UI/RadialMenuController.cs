@@ -45,7 +45,6 @@ internal sealed class RadialMenuController : IDisposable
     private int _dragOffsetX;
     private int _dragOffsetY;
     private int _dragWindowSizePx;
-    private NativeMethods.RECT _dragWorkArea;
 
     public RadialMenuController(HotkeyDefinition hotkey, RadialMenuSize menuSize)
     {
@@ -438,7 +437,6 @@ internal sealed class RadialMenuController : IDisposable
         _dragOffsetX = _centerPx.X - point.X;
         _dragOffsetY = _centerPx.Y - point.Y;
         _dragWindowSizePx = Math.Max(1, _windowSizePx);
-        _dragWorkArea = GetWorkArea(point);
         SetHover(null);
     }
 
@@ -446,20 +444,10 @@ internal sealed class RadialMenuController : IDisposable
     {
         var size = _dragWindowSizePx;
         var half = size / 2;
-        var desiredLeft = point.X + _dragOffsetX - half;
-        var desiredTop = point.Y + _dragOffsetY - half;
 
-        var minLeft = _dragWorkArea.Left;
-        var maxLeft = _dragWorkArea.Right - size;
-        var minTop = _dragWorkArea.Top;
-        var maxTop = _dragWorkArea.Bottom - size;
-
-        var left = maxLeft >= minLeft
-            ? Math.Clamp(desiredLeft, minLeft, maxLeft)
-            : _dragWorkArea.Left;
-        var top = maxTop >= minTop
-            ? Math.Clamp(desiredTop, minTop, maxTop)
-            : _dragWorkArea.Top;
+        // 呼出时才限制在可视范围内；拖动后允许任意移动，不再钳制到工作区。
+        var left = point.X + _dragOffsetX - half;
+        var top = point.Y + _dragOffsetY - half;
 
         NativeMethods.SetWindowPos(
             _window.Handle,
@@ -489,28 +477,6 @@ internal sealed class RadialMenuController : IDisposable
         var dy = point.Y - _centerPx.Y;
         var radius = RadialMenuWindow.DeadZoneRadius * _pixelScale;
         return ((dx * dx) + (dy * dy)) <= radius * radius;
-    }
-
-    private static NativeMethods.RECT GetWorkArea(POINT point)
-    {
-        var monitor = NativeMethods.MonitorFromPoint(point, NativeMethods.MONITOR_DEFAULTTONEAREST);
-        var info = new NativeMethods.MONITORINFO
-        {
-            cbSize = Marshal.SizeOf<NativeMethods.MONITORINFO>()
-        };
-
-        if (NativeMethods.GetMonitorInfo(monitor, ref info))
-        {
-            return info.rcWork;
-        }
-
-        return new NativeMethods.RECT
-        {
-            Left = -100_000,
-            Top = -100_000,
-            Right = 100_000,
-            Bottom = 100_000
-        };
     }
 
     private void HandleClick(POINT point)

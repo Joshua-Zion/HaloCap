@@ -384,7 +384,22 @@ public partial class ScreenshotOverlayWindow : Window
         ApplyPhysicalBounds();
         RefreshMapping();
         _revealed = true;
+
+        if (!UsesIdleMask)
+        {
+            Opacity = 1;
+            return;
+        }
+
+        // 遮罩若在一帧内整屏压暗，观感上就是一次闪屏；淡入让桌面平滑过渡到选区状态。
         Opacity = 1;
+        BeginAnimation(
+            OpacityProperty,
+            new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(150))
+            {
+                EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut },
+                FillBehavior = FillBehavior.Stop
+            });
     }
 
     internal void ActivateForSelection()
@@ -762,7 +777,7 @@ public partial class ScreenshotOverlayWindow : Window
                     break;
             }
 
-            if (_dragKind == DragKind.Create)
+            if (_dragKind is DragKind.Create or DragKind.Resize)
             {
                 UpdateMagnifier(point);
             }
@@ -836,6 +851,7 @@ public partial class ScreenshotOverlayWindow : Window
 
         if (kind != DragKind.Create)
         {
+            HideMagnifier();
             RefreshMosaicTiles();
             _session.CompleteSelection();
             return;
@@ -1594,7 +1610,7 @@ public partial class ScreenshotOverlayWindow : Window
     {
         if (_closed ||
             _annotating ||
-            _hasSelection ||
+            (_hasSelection && _dragKind != DragKind.Resize) ||
             _frozenBitmap is null ||
             _frozenSource is null)
         {

@@ -21,6 +21,9 @@ public partial class TrayMenu : ContextMenu
         Tag = versionLabel;
         BuildMenu(hotkeyDisplay, autoStart, recording);
 
+        // 点击菜单外部或托盘区域收起时自动关闭，避免菜单长期停留。
+        StaysOpen = false;
+
         Opened += (_, _) => Dispatcher.BeginInvoke(
             DispatcherPriority.Input,
             new Action(() => Keyboard.Focus(this)));

@@ -78,7 +78,6 @@
                             </Trigger>
                             <Trigger Property="IsChecked" Value="True">
                                 <Setter TargetName="CheckGlyph" Property="Visibility" Value="Visible" />
-                                <Setter TargetName="IconPresenter" Property="Visibility" Value="Collapsed" />
                             </Trigger>
                             <Trigger Property="IsEnabled" Value="False">
                                 <Setter Property="Opacity" Value="0.36" />

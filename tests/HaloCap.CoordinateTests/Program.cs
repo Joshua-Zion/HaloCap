@@ -1455,6 +1455,16 @@ internal static class Program
                         "only record mode should start without the full-screen dim");
                     True(!(bool)type.GetField("_textBold", flags)!.GetValue(overlay)!,
                         "capture text tool should default to regular weight");
+                    var doneButton = (Button)overlay.FindName("DoneButton");
+                    var cancelButton = (Button)overlay.FindName("CancelButton");
+                    var toolbarPanel = (StackPanel)((Border)overlay.FindName("Toolbar")).Child;
+                    True(doneButton.Visibility == (mode == CaptureSessionMode.Screenshot
+                            ? Visibility.Visible
+                            : Visibility.Collapsed),
+                        "only screenshot mode should show the completion check");
+                    True(toolbarPanel.Children.IndexOf(doneButton) == toolbarPanel.Children.IndexOf(cancelButton) + 1,
+                        "the completion check should sit immediately to the right of close");
+                    Equal("Done", doneButton.Tag as string ?? string.Empty);
                     True(overlay.Opacity == 0,
                         "the overlay must stay transparent until its first frame has rendered");
                     type.GetMethod("RevealOverlay", flags)!.Invoke(overlay, null);
@@ -1765,6 +1775,93 @@ internal static class Program
                 dpiA.Close();
                 dpiB.Close();
             }
+
+            var offsetMonitor = new ScreenMonitor
+            {
+                Bounds = new PhysicalRect(600, -150, 900, 600),
+                WorkArea = new PhysicalRect(600, -150, 900, 600),
+                Scale = 1.5
+            };
+            using var offsetSession = (ScreenshotSession)Activator.CreateInstance(typeof(ScreenshotSession), flags, null,
+                new object[] { CaptureSessionMode.Screenshot, (Action<CaptureResult>)(_ => { }) }, CultureInfo.InvariantCulture)!;
+            var offsetOverlay = new ScreenshotOverlayWindow(offsetSession, offsetMonitor, CaptureSessionMode.Screenshot,
+                CreateDrawingBitmap(900, 600, System.Drawing.Color.Green));
+            try
+            {
+                Arrange(offsetOverlay, 600, 400);
+                var virtualPoint = (PhysicalRect)typeof(ScreenshotOverlayWindow)
+                    .GetMethod("ToVirtualPoint", flags)!
+                    .Invoke(offsetOverlay, new object[] { new Point(100, 100) })!;
+                Equal(750, virtualPoint.Left);
+                Equal(0, virtualPoint.Top);
+
+                offsetSession.BeginSelection(offsetOverlay, new PhysicalRect(700, -50, 300, 150));
+                offsetSession.CompleteSelection();
+                var root = (FrameworkElement)offsetOverlay.Content;
+                root.UpdateLayout();
+                var border = (FrameworkElement)offsetOverlay.FindName("SelectionBorder");
+                Equal(66.6667, Canvas.GetLeft(border), 0.01);
+                Equal(66.6667, Canvas.GetTop(border), 0.01);
+                Equal(200.0, border.Width, 0.01);
+                Equal(100.0, border.Height, 0.01);
+
+                var annotation = (FrameworkElement)offsetOverlay.FindName("AnnotationView");
+                Equal(66.6667,
+                    (double)typeof(AnnotationCanvas).GetField("_originX", flags)!.GetValue(annotation)!,
+                    0.01);
+                Equal(66.6667,
+                    (double)typeof(AnnotationCanvas).GetField("_originY", flags)!.GetValue(annotation)!,
+                    0.01);
+
+                var toolbar = (FrameworkElement)offsetOverlay.FindName("Toolbar");
+                True(toolbar.Visibility == Visibility.Visible, "the host should show the toolbar");
+                Equal(178.6667, toolbar.Margin.Top, 0.6);
+
+                var strokes = (List<AnnotationStroke>)typeof(ScreenshotOverlayWindow)
+                    .GetField("_strokes", flags)!.GetValue(offsetOverlay)!;
+                var stroke = new AnnotationStroke
+                {
+                    Tool = AnnotationTool.Rectangle,
+                    Color = Colors.Red,
+                    Thickness = 4
+                };
+                stroke.Points.Add(new Point(20, 20));
+                stroke.Points.Add(new Point(80, 60));
+                strokes.Add(stroke);
+                typeof(ScreenshotOverlayWindow).GetMethod("UpdateAnnotationFrame", flags)!
+                    .Invoke(offsetOverlay, null);
+                root.UpdateLayout();
+
+                var screen = new RenderTargetBitmap(900, 600, 144, 144, PixelFormats.Pbgra32);
+                screen.Render(root);
+                var hasRedOnScreen = false;
+                for (var y = 120; y <= 140; y++)
+                {
+                    for (var x = 120; x <= 140; x++)
+                    {
+                        var pixel = ReadPixel(screen, x, y);
+                        hasRedOnScreen |= pixel.R > 200 && pixel.G < 90 && pixel.B < 90;
+                    }
+                }
+                True(hasRedOnScreen, "annotations should render at the selection coordinate on scaled monitors");
+
+                var annotatedCapture = offsetSession.CreateSelectionBitmap(true);
+                True(annotatedCapture is not null, "annotated scaled capture should compose");
+                var hasRedInCapture = false;
+                for (var y = 20; y <= 40; y++)
+                {
+                    for (var x = 20; x <= 40; x++)
+                    {
+                        var pixel = ReadPixel(annotatedCapture!, x, y);
+                        hasRedInCapture |= pixel.R > 200 && pixel.G < 90 && pixel.B < 90;
+                    }
+                }
+                True(hasRedInCapture, "annotations should export at the selection coordinate on scaled monitors");
+            }
+            finally
+            {
+                offsetOverlay.Close();
+            }
         }
         finally
         {
@@ -1876,6 +1973,7 @@ internal static class Program
         }
 
         var menu = new TrayMenu("v1.1.10", "Ctrl + Alt + D", autoStart: true, recording: false);
+        True(!menu.StaysOpen, "the tray menu should close automatically when clicking outside");
         menu.ApplyTemplate();
         var autoStart = menu.Items.OfType<MenuItem>()
             .First(item => AutomationProperties.GetAutomationId(item) == "tray.item.autoStart");
@@ -1889,6 +1987,9 @@ internal static class Program
         True(check.Visibility == Visibility.Visible, "a checked auto-start item should show the tick");
         var checkPoint = check.TransformToAncestor(autoStart).Transform(new Point());
         True(checkPoint.X > autoStart.ActualWidth / 2, "the tick should be placed on the right side");
+        var iconPresenter = autoStart.Template.FindName("IconPresenter", autoStart) as ContentPresenter;
+        True(iconPresenter is { Visibility: Visibility.Visible },
+            "the auto-start icon should remain visible when checked");
         True(!HasText(menu, "本地处理 · 无网络请求"), "tray menu should no longer show the bottom-left description");
         True(HasText(menu, "Esc 关闭"), "tray menu should keep the escape hint");
     }

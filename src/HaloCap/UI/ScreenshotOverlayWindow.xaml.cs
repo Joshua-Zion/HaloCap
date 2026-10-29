@@ -8,6 +8,7 @@ using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
+using HaloCap.Diagnostics;
 using HaloCap.Interop;
 using HaloCap.Models;
 using HaloCap.Services;
@@ -135,6 +136,11 @@ public partial class ScreenshotOverlayWindow : Window
 
         SourceInitialized += (_, _) => ApplyOverlayWindowStyle();
         ContentRendered += (_, _) => RevealOverlay();
+        DpiChanged += (_, _) =>
+        {
+            ApplyPhysicalBounds();
+            RefreshMapping();
+        };
 
         Loaded += (_, _) =>
         {
@@ -280,12 +286,11 @@ public partial class ScreenshotOverlayWindow : Window
         }
     }
 
-    private static PhysicalRect CursorVirtual()
-    {
-        return NativeMethods.GetCursorPos(out var cursor)
-            ? new PhysicalRect(cursor.X, cursor.Y, 0, 0)
-            : default;
-    }
+    private PhysicalRect ToVirtualPoint(Point dipPoint) => new(
+        _monitor.Bounds.Left + (int)Math.Round(dipPoint.X * _mapScaleX),
+        _monitor.Bounds.Top + (int)Math.Round(dipPoint.Y * _mapScaleY),
+        0,
+        0);
 
     private PhysicalRect NormalizeVirtualSelection(PhysicalRect start, PhysicalRect current)
     {
@@ -375,6 +380,9 @@ public partial class ScreenshotOverlayWindow : Window
             return;
         }
 
+        // DPI/窗口位置可能在首帧后仍有一次调整，显示前再对齐一次显示器边界。
+        ApplyPhysicalBounds();
+        RefreshMapping();
         _revealed = true;
         Opacity = 1;
     }
@@ -548,20 +556,22 @@ public partial class ScreenshotOverlayWindow : Window
                 HistorySeparator.Visibility = Visibility.Collapsed;
                 HistoryGroup.Visibility = Visibility.Collapsed;
                 PinButton.Visibility = Visibility.Collapsed;
-                CopyButton.Visibility = Visibility.Collapsed;
                 SaveButton.Visibility = Visibility.Collapsed;
                 OcrButton.Visibility = Visibility.Collapsed;
                 StartRecordButton.Visibility = Visibility.Visible;
+                DoneButton.Visibility = Visibility.Collapsed;
                 break;
 
             case CaptureSessionMode.Ocr:
                 accent = Color.FromRgb(0xB0, 0x8C, 0xFF);
                 HintText.Text = "拖动框选或单击窗口 · 松开即识别 · Esc 取消";
+                DoneButton.Visibility = Visibility.Collapsed;
                 break;
 
             case CaptureSessionMode.Pin:
                 accent = Color.FromRgb(0xF5, 0xB9, 0x63);
                 HintText.Text = "拖动框选或单击窗口 · 松开即贴图 · Esc 取消";
+                DoneButton.Visibility = Visibility.Collapsed;
                 break;
 
             default:
@@ -571,10 +581,10 @@ public partial class ScreenshotOverlayWindow : Window
                 HistorySeparator.Visibility = Visibility.Visible;
                 HistoryGroup.Visibility = Visibility.Visible;
                 PinButton.Visibility = Visibility.Visible;
-                CopyButton.Visibility = Visibility.Visible;
                 SaveButton.Visibility = Visibility.Visible;
                 OcrButton.Visibility = Visibility.Visible;
                 StartRecordButton.Visibility = Visibility.Collapsed;
+                DoneButton.Visibility = Visibility.Visible;
                 break;
         }
 
@@ -673,7 +683,7 @@ public partial class ScreenshotOverlayWindow : Window
                 _dragKind = DragKind.Resize;
                 _resizeMask = mask;
                 _dragOriginVirtual = _session.SelectionVirtual;
-                _dragStartVirtual = CursorVirtual();
+                _dragStartVirtual = ToVirtualPoint(point);
                 _dragging = true;
                 Mouse.Capture(Root);
                 return;
@@ -683,7 +693,7 @@ public partial class ScreenshotOverlayWindow : Window
             {
                 _dragKind = DragKind.Move;
                 _dragOriginVirtual = _session.SelectionVirtual;
-                _dragStartVirtual = CursorVirtual();
+                _dragStartVirtual = ToVirtualPoint(point);
                 _dragging = true;
                 Mouse.Capture(Root);
                 return;
@@ -699,7 +709,7 @@ public partial class ScreenshotOverlayWindow : Window
 
         _dragKind = DragKind.Create;
         _dragging = true;
-        _startVirtual = CursorVirtual();
+        _startVirtual = ToVirtualPoint(point);
 
         HideToolbar();
         SizeBadge.Visibility = Visibility.Collapsed;
@@ -729,7 +739,7 @@ public partial class ScreenshotOverlayWindow : Window
 
         if (_dragging)
         {
-            var cursor = CursorVirtual();
+            var cursor = ToVirtualPoint(point);
 
             switch (_dragKind)
             {
@@ -854,6 +864,12 @@ public partial class ScreenshotOverlayWindow : Window
         ClearElementHover();
         HintChip.Visibility = Visibility.Collapsed;
         _session.CompleteSelection();
+
+        if (_handle != IntPtr.Zero && NativeMethods.GetWindowRect(_handle, out var windowRect))
+        {
+            Log.Info(
+                $"选区完成：monitor={_monitor.Bounds} window={windowRect.Left},{windowRect.Top} {windowRect.Right - windowRect.Left}x{windowRect.Bottom - windowRect.Top} root={Root.ActualWidth:F1}x{Root.ActualHeight:F1} selection={_session.SelectionVirtual}");
+        }
 
         if (_mode == CaptureSessionMode.Ocr)
         {
@@ -1129,11 +1145,11 @@ public partial class ScreenshotOverlayWindow : Window
         e.Handled = true;
         var command = tag switch
         {
-            "Copy" => CaptureCommand.Copy,
             "Save" => CaptureCommand.Save,
             "Pin" => CaptureCommand.Pin,
             "Ocr" => CaptureCommand.Ocr,
             "StartRecording" => CaptureCommand.StartRecording,
+            "Done" => CaptureCommand.Copy,
             _ => CaptureCommand.Cancel
         };
 

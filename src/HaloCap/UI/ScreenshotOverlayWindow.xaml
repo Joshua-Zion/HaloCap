@@ -528,17 +528,6 @@
                             <Path Style="{StaticResource ToolbarIconStyle}" Data="{StaticResource ToolbarSaveGeometry}" />
                         </Viewbox>
                     </Button>
-                    <Button x:Name="CopyButton"
-                            AutomationProperties.AutomationId="action.copy"
-                            Style="{StaticResource AnnotationToolButtonStyle}"
-                            Tag="Copy"
-                            ToolTip="复制到剪贴板 (Enter)"
-                            AutomationProperties.Name="复制"
-                            Click="ActionButton_Click">
-                        <Viewbox Width="20" Height="20">
-                            <Path Style="{StaticResource ToolbarIconStyle}" Data="{StaticResource ToolbarCopyGeometry}" />
-                        </Viewbox>
-                    </Button>
                     <Button x:Name="PinButton"
                             AutomationProperties.AutomationId="action.pin"
                             Style="{StaticResource AnnotationToolButtonStyle}"
@@ -587,6 +576,20 @@
                         Click="ActionButton_Click">
                     <Viewbox Width="20" Height="20">
                         <Path Style="{StaticResource ToolbarIconStyle}" Data="{StaticResource ToolbarCloseGeometry}" />
+                    </Viewbox>
+                </Button>
+
+                <Button x:Name="DoneButton"
+                        AutomationProperties.AutomationId="action.done"
+                        Style="{StaticResource AnnotationToolButtonStyle}"
+                        Margin="2,0,0,0"
+                        Tag="Done"
+                        ToolTip="完成并复制到剪贴板 (Enter)"
+                        AutomationProperties.Name="完成并复制"
+                        Foreground="#FF2F7CF6"
+                        Click="ActionButton_Click">
+                    <Viewbox Width="20" Height="20">
+                        <Path Style="{StaticResource ToolbarIconStyle}" Data="{StaticResource ToolbarDoneGeometry}" />
                     </Viewbox>
                 </Button>
             </StackPanel>

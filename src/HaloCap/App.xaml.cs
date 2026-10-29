@@ -686,9 +686,6 @@ public partial class App : Application
                 case CaptureCommand.Copy:
                 {
                     ImageClipboard.SetImage(image);
-                    _tray?.ShowNotification(
-                        "已复制截图",
-                        $"{image.PixelWidth} × {image.PixelHeight} · 已复制到剪贴板");
                     break;
                 }
 

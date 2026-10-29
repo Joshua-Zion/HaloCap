@@ -26,28 +26,29 @@
             <ScaleTransform x:Name="RootScale" ScaleX="1" ScaleY="1" />
         </Grid.RenderTransform>
 
-        <Ellipse Width="340"
+        <Ellipse x:Name="OuterDisk"
+                 Width="340"
                  Height="340"
                  HorizontalAlignment="Center"
                  VerticalAlignment="Center">
             <Ellipse.Fill>
-                <RadialGradientBrush Center="0.5,0.38"
-                                     GradientOrigin="0.5,0.38"
-                                     RadiusX="0.72"
-                                     RadiusY="0.72">
-                    <GradientStop Color="#FF242B37" Offset="0" />
-                    <GradientStop Color="#FF171C25" Offset="0.64" />
-                    <GradientStop Color="#FF11141B" Offset="1" />
+                <RadialGradientBrush Center="0.5,0.36"
+                                     GradientOrigin="0.5,0.36"
+                                     RadiusX="0.74"
+                                     RadiusY="0.74">
+                    <GradientStop Color="#FFFFFFFF" Offset="0" />
+                    <GradientStop Color="#FFF8F9FB" Offset="0.62" />
+                    <GradientStop Color="#FFEFF1F5" Offset="1" />
                 </RadialGradientBrush>
             </Ellipse.Fill>
             <Ellipse.Stroke>
-                <SolidColorBrush Color="#2BFFFFFF" />
+                <SolidColorBrush Color="#1A000000" />
             </Ellipse.Stroke>
             <Ellipse.Effect>
                 <DropShadowEffect Color="#FF000000"
-                                  BlurRadius="28"
-                                  ShadowDepth="0"
-                                  Opacity="0.6" />
+                                  BlurRadius="30"
+                                  ShadowDepth="2"
+                                  Opacity="0.22" />
             </Ellipse.Effect>
         </Ellipse>
 
@@ -69,39 +70,33 @@
               HorizontalAlignment="Center"
               VerticalAlignment="Center"
               IsHitTestVisible="False">
-            <Ellipse Width="104"
+            <Ellipse x:Name="CenterDisk"
+                     Width="104"
                      Height="104"
-                     Fill="#FF10131A"
-                     Stroke="#26FFFFFF"
+                     Fill="#FFFFFFFF"
+                     Stroke="#14000000"
                      StrokeThickness="1">
                 <Ellipse.Effect>
                     <DropShadowEffect Color="#FF000000"
                                       BlurRadius="16"
                                       ShadowDepth="2"
-                                      Opacity="0.35" />
+                                      Opacity="0.12" />
                 </Ellipse.Effect>
             </Ellipse>
             <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center">
                 <Ellipse x:Name="CenterDot"
                          Width="6"
                          Height="6"
-                         Fill="#FF4E596B"
+                         Fill="#FFF5B963"
                          HorizontalAlignment="Center"
-                         Margin="0,0,0,9" />
+                         Margin="0,0,0,8" />
                 <TextBlock x:Name="CenterTitle"
-                           Text="选择操作"
-                           FontSize="13"
+                           Text="光圈"
+                           FontSize="13.5"
                            FontWeight="SemiBold"
-                           Foreground="{StaticResource TextPrimaryBrush}"
+                           Foreground="#FF1D1D1F"
                            HorizontalAlignment="Center"
                            TextAlignment="Center" />
-                <TextBlock x:Name="CenterSubtitle"
-                           Text="拖动移动 · 1–4 选择 · Esc"
-                           FontSize="10.5"
-                           Foreground="{StaticResource TextTertiaryBrush}"
-                           HorizontalAlignment="Center"
-                           TextAlignment="Center"
-                           Margin="0,4,0,0" />
             </StackPanel>
         </Grid>
     </Grid>

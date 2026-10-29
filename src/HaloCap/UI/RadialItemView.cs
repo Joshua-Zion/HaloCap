@@ -15,6 +15,7 @@ internal sealed class RadialItemView : Grid
     public const double ViewHeight = 66;
 
     private readonly Border _iconBorder;
+    private readonly Path _iconPath;
     private readonly TextBlock _badgeText;
     private readonly Border _badge;
     private readonly TextBlock _label;
@@ -22,14 +23,16 @@ internal sealed class RadialItemView : Grid
     private readonly TranslateTransform _translate;
     private readonly Vector _outward;
 
-    private readonly SolidColorBrush _neutralIconBackground = UiColors.Brush("#12FFFFFF");
-    private readonly SolidColorBrush _neutralIconBorder = UiColors.Brush("#1CFFFFFF");
-    private readonly SolidColorBrush _neutralLabel = UiColors.Brush("#B9C2CF");
-    private readonly SolidColorBrush _neutralBadgeBackground = UiColors.Brush("#1AFFFFFF");
-    private readonly SolidColorBrush _neutralBadgeText = UiColors.Brush("#AFBAC8");
+    private readonly SolidColorBrush _neutralIconBackground = UiColors.Brush("#FFFFFFFF");
+    private readonly SolidColorBrush _neutralIconBorder = UiColors.Brush("#1A000000");
+    private readonly SolidColorBrush _neutralIconStroke = UiColors.Brush("#FF3C3C43");
+    private readonly SolidColorBrush _neutralLabel = UiColors.Brush("#FF515156");
+    private readonly SolidColorBrush _neutralBadgeBackground = UiColors.Brush("#FFEDEEF2");
+    private readonly SolidColorBrush _neutralBadgeText = UiColors.Brush("#FF85858B");
     private readonly SolidColorBrush _hoverIconBackground;
     private readonly SolidColorBrush _hoverBorder;
-    private readonly SolidColorBrush _hoverBadgeText = UiColors.Brush("#FF10141C");
+    private readonly SolidColorBrush _hoverLabel = UiColors.Brush("#FF1D1D1F");
+    private readonly SolidColorBrush _hoverBadgeText = UiColors.Brush("#FF1D1D1F");
 
     public RadialItemView(RadialActionInfo info, double angleDegrees)
     {
@@ -46,7 +49,7 @@ internal sealed class RadialItemView : Grid
         });
 
         var accent = UiColors.Parse(info.AccentHex);
-        _hoverIconBackground = UiColors.WithAlpha(accent, 0x30);
+        _hoverIconBackground = UiColors.WithAlpha(accent, 0x26);
         _hoverBorder = new SolidColorBrush(accent);
         _hoverBorder.Freeze();
 
@@ -83,10 +86,10 @@ internal sealed class RadialItemView : Grid
         _iconScale = new ScaleTransform(1, 1);
         _iconBorder.RenderTransform = _iconScale;
 
-        var iconPath = new Path
+        _iconPath = new Path
         {
             Data = Geometry.Parse(info.IconGeometry),
-            Stroke = UiColors.Brush("#F2FFFFFF"),
+            Stroke = _neutralIconStroke,
             StrokeThickness = 1.55,
             StrokeStartLineCap = PenLineCap.Round,
             StrokeEndLineCap = PenLineCap.Round,
@@ -98,7 +101,7 @@ internal sealed class RadialItemView : Grid
         {
             Width = 21,
             Height = 21,
-            Child = iconPath,
+            Child = _iconPath,
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center
         };
@@ -162,7 +165,8 @@ internal sealed class RadialItemView : Grid
         hovered = hovered && IsEnabled;
         _iconBorder.Background = hovered ? _hoverIconBackground : _neutralIconBackground;
         _iconBorder.BorderBrush = hovered ? _hoverBorder : _neutralIconBorder;
-        _label.Foreground = hovered ? Brushes.White : _neutralLabel;
+        _iconPath.Stroke = hovered ? _hoverBorder : _neutralIconStroke;
+        _label.Foreground = hovered ? _hoverLabel : _neutralLabel;
         _badge.Background = hovered ? _hoverBorder : _neutralBadgeBackground;
         _badgeText.Foreground = hovered ? _hoverBadgeText : _neutralBadgeText;
 

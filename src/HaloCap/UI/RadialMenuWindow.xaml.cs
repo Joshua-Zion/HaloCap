@@ -226,19 +226,15 @@ public partial class RadialMenuWindow : Window
     {
         if (action is null)
         {
-            CenterTitle.Text = "选择操作";
-            CenterTitle.Foreground = (Brush)FindResource("TextPrimaryBrush");
-            CenterSubtitle.Text = "拖动移动 · 1–4 选择 · Esc";
-            CenterDot.Fill = UiColors.Brush("#FF4E596B");
+            CenterTitle.Text = "光圈";
+            CenterTitle.Foreground = UiColors.Brush("#FF1D1D1F");
+            CenterDot.Fill = UiColors.Brush("#FFF5B963");
             return;
         }
 
         var info = RadialActionInfo.Get(action.Value);
-        var accent = UiColors.Parse(info.AccentHex);
         CenterTitle.Text = info.Title;
-        CenterTitle.Foreground = new SolidColorBrush(accent);
-        CenterSubtitle.Text = "单击选择 · 1–4";
-        CenterDot.Fill = new SolidColorBrush(accent);
+        CenterDot.Fill = new SolidColorBrush(UiColors.Parse(info.AccentHex));
     }
 
     private void ApplyWindowStyles()
@@ -280,14 +276,14 @@ public partial class RadialMenuWindow : Window
             var baseFill = new Path
             {
                 Data = geometry,
-                Fill = new SolidColorBrush(Color.FromArgb(0x08, 0xFF, 0xFF, 0xFF)),
+                Fill = new SolidColorBrush(Color.FromArgb(0x07, 0x00, 0x00, 0x00)),
                 IsHitTestVisible = false
             };
 
             var fill = new Path
             {
                 Data = geometry,
-                Fill = UiColors.WithAlpha(accent, 0x30),
+                Fill = UiColors.WithAlpha(accent, 0x26),
                 Opacity = 0,
                 IsHitTestVisible = false
             };

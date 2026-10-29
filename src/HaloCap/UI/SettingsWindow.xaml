@@ -430,37 +430,35 @@
                       Grid.ColumnSpan="2"
                       Background="Transparent"
                       MouseLeftButtonDown="TitleBar_MouseLeftButtonDown">
-                    <Border Width="218"
-                            HorizontalAlignment="Left"
+                    <Border x:Name="TitleBarBand"
                             Background="{StaticResource SidebarBrush}"
-                            BorderBrush="#0F000000"
-                            BorderThickness="0,0,1,0"
-                            CornerRadius="17,0,0,0">
-                        <StackPanel Orientation="Horizontal"
-                                    VerticalAlignment="Center"
-                                    Margin="20,0,12,0">
-                            <Grid Width="18" Height="18">
-                                <Ellipse Stroke="#22000000" StrokeThickness="1" />
-                                <Ellipse Margin="3" Stroke="{StaticResource AccentBrush}" StrokeThickness="1.3" />
-                                <Ellipse Width="3"
-                                         Height="3"
-                                         Fill="#FFF5B963"
-                                         HorizontalAlignment="Center"
-                                         VerticalAlignment="Center" />
-                            </Grid>
-                            <TextBlock Text="HaloCap"
-                                       FontSize="12.5"
-                                       FontWeight="SemiBold"
-                                       Foreground="{StaticResource TextPrimaryBrush}"
-                                       VerticalAlignment="Center"
-                                       Margin="9,0,0,0" />
-                            <TextBlock Text="设置"
-                                       FontSize="10.5"
-                                       Foreground="{StaticResource TextTertiaryBrush}"
-                                       VerticalAlignment="Center"
-                                       Margin="7,1,0,0" />
-                        </StackPanel>
-                    </Border>
+                            CornerRadius="17,17,0,0" />
+
+                    <StackPanel Orientation="Horizontal"
+                                HorizontalAlignment="Left"
+                                VerticalAlignment="Center"
+                                Margin="20,0,12,0">
+                        <Grid Width="18" Height="18">
+                            <Ellipse Stroke="#22000000" StrokeThickness="1" />
+                            <Ellipse Margin="3" Stroke="{StaticResource AccentBrush}" StrokeThickness="1.3" />
+                            <Ellipse Width="3"
+                                     Height="3"
+                                     Fill="#FFF5B963"
+                                     HorizontalAlignment="Center"
+                                     VerticalAlignment="Center" />
+                        </Grid>
+                        <TextBlock Text="HaloCap"
+                                   FontSize="12.5"
+                                   FontWeight="SemiBold"
+                                   Foreground="{StaticResource TextPrimaryBrush}"
+                                   VerticalAlignment="Center"
+                                   Margin="9,0,0,0" />
+                        <TextBlock Text="光圈"
+                                   FontSize="10.5"
+                                   Foreground="{StaticResource TextTertiaryBrush}"
+                                   VerticalAlignment="Center"
+                                   Margin="7,1,0,0" />
+                    </StackPanel>
 
                     <Button x:Name="WindowCloseButton"
                             Style="{StaticResource WindowCloseButtonStyle}"
@@ -471,6 +469,7 @@
 
                     <Rectangle Height="1"
                                VerticalAlignment="Bottom"
+                               Margin="218,0,0,0"
                                Fill="{StaticResource SettingsHairlineBrush}" />
                 </Grid>
 

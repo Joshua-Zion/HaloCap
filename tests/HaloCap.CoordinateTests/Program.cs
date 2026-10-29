@@ -1341,15 +1341,25 @@ internal static class Program
             }
             True(pinItem is not null, "radial.pin should be identifiable by automation ID");
             radialWindow.SetHover(RadialAction.Pin);
-            Equal("选择操作", ((TextBlock)radialWindow.FindName("CenterTitle")).Text);
-            Equal("拖动移动 · 1–4 选择 · Esc", ((TextBlock)radialWindow.FindName("CenterSubtitle")).Text);
+            var centerTitle = (TextBlock)radialWindow.FindName("CenterTitle");
+            Equal("光圈", centerTitle.Text);
+            True(radialWindow.FindName("CenterSubtitle") is null,
+                "the radial center should no longer show the multi-word hint");
+            var outerDisk = (System.Windows.Shapes.Ellipse)radialWindow.FindName("OuterDisk");
+            var diskGradient = (RadialGradientBrush)outerDisk.Fill;
+            True(diskGradient.GradientStops.All(stop => stop.Color.R >= 0xEF && stop.Color.G >= 0xEF && stop.Color.B >= 0xEF),
+                "the radial disk should use a light surface");
+            True(((SolidColorBrush)((System.Windows.Shapes.Ellipse)radialWindow.FindName("CenterDisk")).Fill).Color == Colors.White,
+                "the radial center disk should be white");
+            True(((SolidColorBrush)centerTitle.Foreground).Color == Color.FromRgb(0x1D, 0x1D, 0x1F),
+                "the radial center label should use dark text on the light surface");
             foreach (var action in new[] { RadialAction.Screenshot, RadialAction.Ocr, RadialAction.Record })
             {
                 radialWindow.SetHover(action);
-                Equal(RadialActionInfo.Get(action).Title, ((TextBlock)radialWindow.FindName("CenterTitle")).Text);
+                Equal(RadialActionInfo.Get(action).Title, centerTitle.Text);
             }
             radialWindow.SetHover(RadialAction.Pin);
-            Equal("选择操作", ((TextBlock)radialWindow.FindName("CenterTitle")).Text);
+            Equal("光圈", centerTitle.Text);
 
             var selected = new List<RadialAction>();
             controller.ActionSelected += selected.Add;
@@ -1507,8 +1517,17 @@ internal static class Program
 
             var titleBar = (Grid)settings.FindName("WindowTitleBar");
             var close = (Button)settings.FindName("WindowCloseButton");
+            var band = (Border)settings.FindName("TitleBarBand");
             True(titleBar.ActualWidth > 700, "settings title bar should span the full window width");
             Equal(50, titleBar.ActualHeight, 0.1);
+            True(band.ActualWidth >= titleBar.ActualWidth - 0.1,
+                "the title bar background should cover the full width without a left/right split");
+            True(((SolidColorBrush)band.Background).Color == Color.FromRgb(0xED, 0xED, 0xF1),
+                "the unified title bar should use the sidebar surface color");
+            True(band.CornerRadius == new CornerRadius(17, 17, 0, 0),
+                "the title bar should keep the rounded top corners");
+            True(HasText(root, "光圈"), "the title bar should label the app as 光圈");
+            True(!HasText(root, "设置"), "the title bar should no longer show the 设置 label");
             var closePoint = close.TransformToAncestor(titleBar).Transform(new Point());
             True(closePoint.X + close.ActualWidth >= titleBar.ActualWidth - 20,
                 "the close button should sit at the top-right edge");

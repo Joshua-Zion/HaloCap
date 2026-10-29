@@ -2,6 +2,13 @@
 
 本文件记录 HaloCap 的版本变化，按版本从新到旧排列。安装与使用说明见 [README](README.md)，发布包见 [Releases](https://github.com/Joshua-Zion/HaloCap/releases)。
 
+## 1.2.6
+
+### 改进
+
+- 发布包改为自包含单文件：解压后仅一个 `HaloCap.exe`，内置 .NET 8 运行时与 WPF 组件，不再需要安装 .NET 8 Desktop Runtime。
+- 单文件启用压缩，体积约 78 MB；首次启动解压约 8 MB 运行库到系统临时目录，启动约 1 秒。
+
 ## 1.2.5
 
 ### 改进

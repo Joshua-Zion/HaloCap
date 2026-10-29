@@ -24,16 +24,16 @@
 ### 运行要求
 
 - Windows 10 1903 或更高版本 / Windows 11，x64。
-- [.NET 8 Desktop Runtime（x64）](https://dotnet.microsoft.com/download/dotnet/8.0)。运行发布包只需安装运行时，不需要 SDK。
+- 免安装运行时：发布包已内置 .NET 8 与 WPF 组件，不需要另外安装 .NET 或其他依赖。
 - 文字识别需要对应语言的 Windows 识别组件；Windows N / KN 版本使用录屏前需安装 Media Feature Pack。
 
 ### 安装步骤
 
 1. 从 [Releases](https://github.com/Joshua-Zion/HaloCap/releases) 下载 `HaloCap-<版本>-win-x64.zip`。
-2. 将整个压缩包解压到固定目录，保留所有文件。
-3. 双击 `HaloCap.exe`。程序会驻留系统托盘，不显示主窗口。
+2. 解压到固定目录，双击 `HaloCap.exe`。程序会驻留系统托盘，不显示主窗口。
+3. 首次启动会把约 8 MB 运行库解压到系统临时目录，之后启动约 1 秒。
 
-若提示缺少 .NET，请确认安装的是 **Desktop Runtime、8.x、x64**，而不是仅安装普通 .NET Runtime。
+HaloCap 是便携应用：删除程序文件夹即可卸载，设置与日志可按下方「设置与本地数据」手动清理。
 
 ## 快速开始
 
@@ -185,10 +185,10 @@ dotnet run --project tests/HaloCap.CoordinateTests/HaloCap.CoordinateTests.cspro
 ### 发布
 
 ```powershell
-dotnet publish src/HaloCap/HaloCap.csproj -c Release -r win-x64 --self-contained false -o artifacts/publish
+dotnet publish src/HaloCap/HaloCap.csproj -p:PublishProfile=Standalone -o artifacts/publish
 ```
 
-使用框架依赖的目录发布，将输出目录完整打包为 ZIP 分发；运行机器需安装 .NET 8 Desktop Runtime。不要只分发 EXE，也不要对 WPF 使用不受支持的裁剪。
+使用自包含单文件发布（配置见 `Properties/PublishProfiles/Standalone.pubxml`）：产物是单个 `HaloCap.exe`，内置 .NET 8 运行时与 WPF 原生库并启用压缩，运行机器无需安装任何运行时。将 exe 与 `README.txt`、`CHANGELOG.md` 打包为 ZIP 分发。不要对 WPF 使用不受支持的裁剪或 NativeAOT。
 
 ### 项目结构
 

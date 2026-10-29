@@ -2,6 +2,8 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using System.Windows;
+using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using HaloCap.Diagnostics;
 using HaloCap.Interop;
@@ -18,6 +20,11 @@ internal sealed class ScreenshotSession : IDisposable
     private readonly IntPtr _previousForeground;
     private readonly List<ScreenshotOverlayWindow> _overlays = new();
     private ScreenshotOverlayWindow? _activeOverlay;
+    private PhysicalRect _desktopBounds;
+    private PhysicalRect _selectionVirtual;
+    private bool _hasSelection;
+    private bool _selectionComplete;
+    private ScreenshotOverlayWindow? _selectionHost;
     private bool _completing;
     private bool _disposed;
 
@@ -36,47 +43,259 @@ internal sealed class ScreenshotSession : IDisposable
         return session;
     }
 
-    internal void NotifySelectionStarted(ScreenshotOverlayWindow overlay)
+    internal PhysicalRect DesktopBounds => _desktopBounds;
+
+    internal PhysicalRect SelectionVirtual => _selectionVirtual;
+
+    internal bool HasSelection => _hasSelection;
+
+    internal bool IsSelectionComplete => _selectionComplete;
+
+    internal ScreenshotOverlayWindow? SelectionHost => _selectionHost;
+
+    internal void RegisterOverlay(ScreenshotOverlayWindow overlay)
+    {
+        if (_overlays.Contains(overlay))
+        {
+            return;
+        }
+
+        _overlays.Add(overlay);
+        RecalculateDesktopBounds();
+    }
+
+    internal void UnregisterOverlay(ScreenshotOverlayWindow overlay)
+    {
+        _overlays.Remove(overlay);
+        if (ReferenceEquals(_selectionHost, overlay))
+        {
+            _selectionHost = null;
+        }
+
+        RecalculateDesktopBounds();
+    }
+
+    private void RecalculateDesktopBounds()
+    {
+        if (_overlays.Count == 0)
+        {
+            return;
+        }
+
+        var left = int.MaxValue;
+        var top = int.MaxValue;
+        var right = int.MinValue;
+        var bottom = int.MinValue;
+
+        foreach (var overlay in _overlays)
+        {
+            var bounds = overlay.Monitor.Bounds;
+            left = Math.Min(left, bounds.Left);
+            top = Math.Min(top, bounds.Top);
+            right = Math.Max(right, bounds.Right);
+            bottom = Math.Max(bottom, bounds.Bottom);
+        }
+
+        _desktopBounds = PhysicalRect.FromEdges(left, top, right, bottom);
+    }
+
+    internal void BeginSelection(ScreenshotOverlayWindow host, PhysicalRect selectionVirtual)
     {
         if (_completing || _disposed)
         {
             return;
         }
 
-        if (ReferenceEquals(_activeOverlay, overlay))
+        foreach (var overlay in _overlays.ToArray())
+        {
+            if (!ReferenceEquals(overlay, host))
+            {
+                overlay.ClearSelectionFromSession();
+            }
+        }
+
+        _activeOverlay = host;
+        _selectionHost = host;
+        _selectionVirtual = selectionVirtual;
+        _hasSelection = true;
+        _selectionComplete = false;
+        NotifySelectionChanged();
+    }
+
+    internal void UpdateSelection(PhysicalRect selectionVirtual)
+    {
+        if (_completing || _disposed)
         {
             return;
         }
 
-        foreach (var other in _overlays)
+        _selectionVirtual = selectionVirtual;
+        _hasSelection = true;
+        EnsureSelectionHost();
+        NotifySelectionChanged();
+    }
+
+    internal void CompleteSelection()
+    {
+        if (_completing || _disposed)
         {
-            if (!ReferenceEquals(other, overlay))
+            return;
+        }
+
+        _selectionComplete = true;
+        EnsureSelectionHost();
+        NotifySelectionChanged();
+    }
+
+    internal void ClearSelection()
+    {
+        if (_completing || _disposed)
+        {
+            return;
+        }
+
+        _hasSelection = false;
+        _selectionComplete = false;
+        _selectionVirtual = default;
+        _selectionHost = null;
+        _activeOverlay = null;
+        NotifySelectionChanged();
+    }
+
+    private void EnsureSelectionHost()
+    {
+        if (!_hasSelection)
+        {
+            _selectionHost = null;
+            return;
+        }
+
+        if (_selectionHost is not null &&
+            !ScreenGeometry.Intersect(_selectionVirtual, _selectionHost.Monitor.Bounds).IsEmpty)
+        {
+            return;
+        }
+
+        ScreenshotOverlayWindow? best = null;
+        long bestArea = 0;
+
+        foreach (var overlay in _overlays)
+        {
+            var local = ScreenGeometry.Intersect(_selectionVirtual, overlay.Monitor.Bounds);
+            var area = (long)local.Width * local.Height;
+            if (area > bestArea)
             {
-                other.ClearSelectionFromSession();
+                bestArea = area;
+                best = overlay;
             }
         }
 
-        _activeOverlay = overlay;
+        _selectionHost = best;
+    }
+
+    private void NotifySelectionChanged()
+    {
+        foreach (var overlay in _overlays.ToArray())
+        {
+            overlay.ApplySharedSelection();
+        }
+    }
+
+    internal bool IsCrossMonitorSelection
+    {
+        get
+        {
+            if (!_hasSelection)
+            {
+                return false;
+            }
+
+            var count = 0;
+            foreach (var overlay in _overlays)
+            {
+                if (!ScreenGeometry.Intersect(_selectionVirtual, overlay.Monitor.Bounds).IsEmpty)
+                {
+                    count++;
+                }
+            }
+
+            return count > 1;
+        }
+    }
+
+    internal BitmapSource? CreateSelectionBitmap(bool includeAnnotations)
+    {
+        if (!_hasSelection || _selectionVirtual.Width <= 0 || _selectionVirtual.Height <= 0)
+        {
+            return null;
+        }
+
+        var scale = _selectionHost?.Monitor.Scale ?? 1.0;
+        if (scale <= 0.1)
+        {
+            scale = 1.0;
+        }
+
+        var visual = new DrawingVisual();
+        using (var context = visual.RenderOpen())
+        {
+            // 跨屏选区可能包含显示器之间的空隙，空隙按黑色输出。
+            context.DrawRectangle(Brushes.Black, null,
+                new Rect(0, 0, _selectionVirtual.Width, _selectionVirtual.Height));
+
+            foreach (var overlay in _overlays)
+            {
+                var local = ScreenGeometry.Intersect(_selectionVirtual, overlay.Monitor.Bounds);
+                if (local.Width <= 0 || local.Height <= 0)
+                {
+                    continue;
+                }
+
+                var image = overlay.CreateLocalSelectionBitmap(
+                    includeAnnotations && ReferenceEquals(_selectionHost, overlay));
+                if (image is null)
+                {
+                    continue;
+                }
+
+                context.DrawImage(image, new Rect(
+                    local.Left - _selectionVirtual.Left,
+                    local.Top - _selectionVirtual.Top,
+                    local.Width,
+                    local.Height));
+            }
+        }
+
+        var bitmap = new RenderTargetBitmap(
+            _selectionVirtual.Width,
+            _selectionVirtual.Height,
+            96.0 * scale,
+            96.0 * scale,
+            PixelFormats.Pbgra32);
+        bitmap.Render(visual);
+        bitmap.Freeze();
+        return bitmap;
     }
 
     internal async void RequestAction(ScreenshotOverlayWindow overlay, CaptureCommand command)
     {
-        if (_completing || _disposed)
+        if (_completing || _disposed || !_hasSelection)
         {
             return;
         }
 
         _completing = true;
 
-        var selection = overlay.VirtualSelection;
+        var selection = _selectionVirtual;
         var monitor = overlay.Monitor;
+        var crossMonitor = IsCrossMonitorSelection;
         BitmapSource? image = null;
 
         if (command != CaptureCommand.StartRecording)
         {
             try
             {
-                image = overlay.CreateSelectionBitmap(
+                image = CreateSelectionBitmap(
                     command is CaptureCommand.Copy or CaptureCommand.Save or CaptureCommand.Pin);
             }
             catch (Exception ex)
@@ -111,7 +330,8 @@ internal sealed class ScreenshotSession : IDisposable
                     96.0 * (monitor.Scale > 0.1 ? monitor.Scale : 1.0));
 
                 if (image is not null &&
-                    command is CaptureCommand.Copy or CaptureCommand.Save or CaptureCommand.Pin)
+                    command is CaptureCommand.Copy or CaptureCommand.Save or CaptureCommand.Pin &&
+                    !crossMonitor)
                 {
                     image = overlay.ComposeAnnotations(image);
                 }
@@ -177,11 +397,9 @@ internal sealed class ScreenshotSession : IDisposable
                     frozen?.Dispose();
                     throw;
                 }
-
-                _overlays.Add(overlay);
             }
 
-            foreach (var overlay in _overlays)
+            foreach (var overlay in _overlays.ToArray())
             {
                 overlay.PrepareAndShow();
             }
@@ -203,7 +421,7 @@ internal sealed class ScreenshotSession : IDisposable
 
     private void CloseAllOverlays()
     {
-        foreach (var overlay in _overlays)
+        foreach (var overlay in _overlays.ToArray())
         {
             try
             {
@@ -217,6 +435,9 @@ internal sealed class ScreenshotSession : IDisposable
 
         _overlays.Clear();
         _activeOverlay = null;
+        _selectionHost = null;
+        _hasSelection = false;
+        _selectionComplete = false;
     }
 
     private void Complete(CaptureResult result)

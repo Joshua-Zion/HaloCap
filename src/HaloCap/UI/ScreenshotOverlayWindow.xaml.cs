@@ -47,9 +47,9 @@ public partial class ScreenshotOverlayWindow : Window
     private bool _hasSelection;
     private DragKind _dragKind;
     private int _resizeMask;
-    private PhysicalRect _dragOrigin;
-    private PhysicalRect _dragStartPx;
-    private PhysicalRect _startPx;
+    private PhysicalRect _dragOriginVirtual;
+    private PhysicalRect _dragStartVirtual;
+    private PhysicalRect _startVirtual;
     private PhysicalRect _selectionPx;
     private PhysicalRect _hoverElementPx;
     private PhysicalRect _clickElementPx;
@@ -75,7 +75,7 @@ public partial class ScreenshotOverlayWindow : Window
     private int _mosaicBlockDip = AnnotationDefaults.MosaicBlockDip;
     private double _eraserSize = AnnotationDefaults.EraserSize;
     private bool _fillShapes;
-    private bool _textBold = true;
+    private bool _textBold = false;
     private bool _textItalic;
     private ArrowHeadMode _arrowHead = ArrowHeadMode.End;
     private bool _eraseHistoryPushed;
@@ -139,7 +139,14 @@ public partial class ScreenshotOverlayWindow : Window
         Loaded += (_, _) =>
         {
             RefreshMapping();
-            ResetToIdle();
+            if (_session.HasSelection)
+            {
+                ApplySharedSelection();
+            }
+            else
+            {
+                ResetToIdle();
+            }
         };
         SizeChanged += (_, _) =>
         {
@@ -158,7 +165,10 @@ public partial class ScreenshotOverlayWindow : Window
 
             _frozenBitmap?.Dispose();
             FrozenImage.Source = null;
+            _session.UnregisterOverlay(this);
         };
+
+        _session.RegisterOverlay(this);
     }
 
     internal CaptureSessionMode Mode => _mode;
@@ -169,9 +179,154 @@ public partial class ScreenshotOverlayWindow : Window
 
     internal bool HasSelection => _hasSelection;
 
-    internal PhysicalRect LocalSelection => _selectionPx;
+    internal bool IsSelectionHost => ReferenceEquals(_session.SelectionHost, this);
 
-    internal PhysicalRect VirtualSelection => ScreenGeometry.ToVirtual(_selectionPx, _monitor.Bounds);
+    internal PhysicalRect LocalSelection =>
+        ScreenGeometry.Intersect(_selectionPx, MonitorLocalBounds);
+
+    internal PhysicalRect VirtualSelection => _session.HasSelection
+        ? _session.SelectionVirtual
+        : ScreenGeometry.ToVirtual(_selectionPx, _monitor.Bounds);
+
+    private PhysicalRect MonitorLocalBounds => new(0, 0, _monitor.Bounds.Width, _monitor.Bounds.Height);
+
+    private PhysicalRect SelectionContainerVirtual =>
+        _mode == CaptureSessionMode.Record || _session.DesktopBounds.IsEmpty
+            ? _monitor.Bounds
+            : _session.DesktopBounds;
+
+    internal void ApplySharedSelection()
+    {
+        if (_closed)
+        {
+            return;
+        }
+
+        if (!_session.HasSelection)
+        {
+            if (_hasSelection || _dragging || Toolbar.Visibility == Visibility.Visible)
+            {
+                ResetToIdle();
+            }
+
+            return;
+        }
+
+        _selectionPx = ScreenGeometry.ToLocal(_session.SelectionVirtual, _monitor.Bounds);
+        var local = ScreenGeometry.Intersect(_selectionPx, MonitorLocalBounds);
+        _hasSelection = !local.IsEmpty || _dragging;
+
+        HintChip.Visibility = Visibility.Collapsed;
+        DimFull.Visibility = Visibility.Collapsed;
+
+        if (local.IsEmpty)
+        {
+            if (UsesIdleMask)
+            {
+                DimFull.Visibility = Visibility.Visible;
+            }
+
+            DimTop.Visibility = Visibility.Collapsed;
+            DimBottom.Visibility = Visibility.Collapsed;
+            DimLeft.Visibility = Visibility.Collapsed;
+            DimRight.Visibility = Visibility.Collapsed;
+            SelectionBorder.Visibility = Visibility.Collapsed;
+            SetCornersVisible(false);
+            SizeBadge.Visibility = Visibility.Collapsed;
+            HideToolbar();
+            HideMagnifier();
+            HideCrosshair();
+            AnnotationLayer.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        if (!_dragging)
+        {
+            SizeBadge.Visibility = Visibility.Collapsed;
+        }
+
+        UpdateSelectionVisual(_dragging);
+
+        var isHost = IsSelectionHost;
+        if (!isHost && _annotating)
+        {
+            SetDrawingTool(null);
+        }
+
+        if (isHost && _hasSelection)
+        {
+            UpdateAnnotationFrame();
+
+            if (_session.IsSelectionComplete)
+            {
+                if (Toolbar.Visibility != Visibility.Visible)
+                {
+                    ShowToolbar();
+                }
+                else
+                {
+                    PositionToolbar();
+                }
+            }
+            else
+            {
+                HideToolbar();
+            }
+        }
+        else
+        {
+            HideToolbar();
+            AnnotationLayer.Visibility = Visibility.Collapsed;
+        }
+    }
+
+    private static PhysicalRect CursorVirtual()
+    {
+        return NativeMethods.GetCursorPos(out var cursor)
+            ? new PhysicalRect(cursor.X, cursor.Y, 0, 0)
+            : default;
+    }
+
+    private PhysicalRect NormalizeVirtualSelection(PhysicalRect start, PhysicalRect current)
+    {
+        var container = SelectionContainerVirtual;
+        var startLocal = start.Offset(-container.Left, -container.Top);
+        var currentLocal = current.Offset(-container.Left, -container.Top);
+        return ScreenGeometry.NormalizeSelection(
+                startLocal.Left,
+                startLocal.Top,
+                currentLocal.Left,
+                currentLocal.Top,
+                container.Width,
+                container.Height)
+            .Offset(container.Left, container.Top);
+    }
+
+    private PhysicalRect MoveVirtualSelection(PhysicalRect origin, int dx, int dy)
+    {
+        var container = SelectionContainerVirtual;
+        return ScreenGeometry.MoveWithin(
+                origin.Offset(-container.Left, -container.Top),
+                dx,
+                dy,
+                container.Width,
+                container.Height)
+            .Offset(container.Left, container.Top);
+    }
+
+    private PhysicalRect ResizeVirtualSelection(PhysicalRect origin, int mask, PhysicalRect cursor)
+    {
+        var container = SelectionContainerVirtual;
+        return ScreenGeometry.ResizeEdges(
+                origin.Offset(-container.Left, -container.Top),
+                mask,
+                cursor.Left - container.Left,
+                cursor.Top - container.Top,
+                container.Width,
+                container.Height,
+                MinSelectionSizePx)
+            .Offset(container.Left, container.Top);
+    }
 
     internal void PrepareAndShow()
     {
@@ -201,7 +356,14 @@ public partial class ScreenshotOverlayWindow : Window
 
                 ApplyPhysicalBounds();
                 RefreshMapping();
-                ResetToIdle();
+                if (_session.HasSelection)
+                {
+                    ApplySharedSelection();
+                }
+                else
+                {
+                    ResetToIdle();
+                }
                 PositionCrosshairFromCursor();
             }));
     }
@@ -238,9 +400,11 @@ public partial class ScreenshotOverlayWindow : Window
         PositionCrosshairFromCursor();
     }
 
-    internal BitmapSource? CreateSelectionBitmap(bool includeAnnotations)
+    internal BitmapSource? CreateLocalSelectionBitmap(bool includeAnnotations)
     {
-        if (_frozenBitmap is null || !_hasSelection)
+        var local = LocalSelection;
+
+        if (_frozenBitmap is null || local.IsEmpty)
         {
             return null;
         }
@@ -248,13 +412,20 @@ public partial class ScreenshotOverlayWindow : Window
         var scale = _monitor.Scale > 0.1 ? _monitor.Scale : 1.0;
         var cropped = ScreenCaptureService.CropToBitmapSource(
             _frozenBitmap,
-            _selectionPx,
+            local,
             96.0 * scale);
 
-        return includeAnnotations && _strokes.Count > 0
-            ? AnnotationRenderer.Compose(cropped, _strokes)
-            : cropped;
+        if (!includeAnnotations || _strokes.Count == 0)
+        {
+            return cropped;
+        }
+
+        RefreshMosaicTiles();
+        return AnnotationRenderer.Compose(cropped, _strokes);
     }
+
+    internal BitmapSource? CreateSelectionBitmap(bool includeAnnotations) =>
+        _hasSelection ? CreateLocalSelectionBitmap(includeAnnotations) : null;
 
     internal BitmapSource ComposeAnnotations(BitmapSource image)
     {
@@ -372,7 +543,7 @@ public partial class ScreenshotOverlayWindow : Window
         {
             case CaptureSessionMode.Record:
                 accent = Color.FromRgb(0xFF, 0x7A, 0x7A);
-                HintText.Text = "拖动框选或单击窗口 · Enter 开始录制 · Esc 取消";
+                HintText.Text = "拖动框选（单屏） · Enter 开始录制 · Esc 取消";
                 ToolGroup.Visibility = Visibility.Collapsed;
                 HistorySeparator.Visibility = Visibility.Collapsed;
                 HistoryGroup.Visibility = Visibility.Collapsed;
@@ -478,14 +649,14 @@ public partial class ScreenshotOverlayWindow : Window
 
         var point = e.GetPosition(Root);
 
-        if (_annotating && _hasSelection)
+        if (_annotating && _hasSelection && IsSelectionHost)
         {
             BeginAnnotationStroke(point);
             return;
         }
 
         if (e.ClickCount == 2 &&
-            _hasSelection &&
+            _session.HasSelection &&
             _mode == CaptureSessionMode.Screenshot &&
             IsInsideSelection(point))
         {
@@ -501,8 +672,8 @@ public partial class ScreenshotOverlayWindow : Window
             {
                 _dragKind = DragKind.Resize;
                 _resizeMask = mask;
-                _dragOrigin = _selectionPx;
-                _dragStartPx = ToLocalPhysical(point);
+                _dragOriginVirtual = _session.SelectionVirtual;
+                _dragStartVirtual = CursorVirtual();
                 _dragging = true;
                 Mouse.Capture(Root);
                 return;
@@ -511,15 +682,13 @@ public partial class ScreenshotOverlayWindow : Window
             if (IsInsideSelection(point))
             {
                 _dragKind = DragKind.Move;
-                _dragOrigin = _selectionPx;
-                _dragStartPx = ToLocalPhysical(point);
+                _dragOriginVirtual = _session.SelectionVirtual;
+                _dragStartVirtual = CursorVirtual();
                 _dragging = true;
                 Mouse.Capture(Root);
                 return;
             }
         }
-
-        _session.NotifySelectionStarted(this);
 
         ClearAnnotations();
         SetDrawingTool(null);
@@ -530,22 +699,14 @@ public partial class ScreenshotOverlayWindow : Window
 
         _dragKind = DragKind.Create;
         _dragging = true;
-        _hasSelection = false;
-        _selectionPx = default;
-
-        var physical = ToLocalPhysical(point);
-        _startPx = new PhysicalRect(
-            Math.Clamp(physical.Left, 0, _monitor.Bounds.Width),
-            Math.Clamp(physical.Top, 0, _monitor.Bounds.Height),
-            0,
-            0);
+        _startVirtual = CursorVirtual();
 
         HideToolbar();
         SizeBadge.Visibility = Visibility.Collapsed;
         HintChip.Visibility = Visibility.Collapsed;
         HideCrosshair();
         DimFull.Visibility = Visibility.Collapsed;
-        ShowEmptySelectionChrome();
+        _session.BeginSelection(this, new PhysicalRect(_startVirtual.Left, _startVirtual.Top, 0, 0));
 
         Mouse.Capture(Root);
     }
@@ -568,32 +729,28 @@ public partial class ScreenshotOverlayWindow : Window
 
         if (_dragging)
         {
-            var current = ToLocalPhysical(point);
+            var cursor = CursorVirtual();
 
             switch (_dragKind)
             {
                 case DragKind.Create:
-                    _selectionPx = ScreenGeometry.NormalizeSelection(
-                        _startPx.Left,
-                        _startPx.Top,
-                        current.Left,
-                        current.Top,
-                        _monitor.Bounds.Width,
-                        _monitor.Bounds.Height);
+                    _session.UpdateSelection(NormalizeVirtualSelection(_startVirtual, cursor));
                     break;
 
                 case DragKind.Move:
-                    ApplyMove(current);
+                    _session.UpdateSelection(MoveVirtualSelection(
+                        _dragOriginVirtual,
+                        cursor.Left - _dragStartVirtual.Left,
+                        cursor.Top - _dragStartVirtual.Top));
                     break;
 
                 case DragKind.Resize:
-                    ApplyResize(current);
+                    _session.UpdateSelection(ResizeVirtualSelection(
+                        _dragOriginVirtual,
+                        _resizeMask,
+                        cursor));
                     break;
             }
-
-            UpdateSelectionVisual(showSize: true);
-            UpdateAnnotationFrame();
-            PositionToolbar();
 
             if (_dragKind == DragKind.Create)
             {
@@ -616,6 +773,13 @@ public partial class ScreenshotOverlayWindow : Window
                 UpdateSelectionCursor(point);
             }
 
+            HideCrosshair();
+            HideMagnifier();
+            return;
+        }
+
+        if (_session.HasSelection)
+        {
             HideCrosshair();
             HideMagnifier();
             return;
@@ -663,23 +827,21 @@ public partial class ScreenshotOverlayWindow : Window
         if (kind != DragKind.Create)
         {
             RefreshMosaicTiles();
-            UpdateAnnotationFrame();
-            UpdateSelectionVisual(showSize: true);
-            PositionToolbar();
+            _session.CompleteSelection();
             return;
         }
 
-        if (!ScreenGeometry.IsUsableSelection(_selectionPx, MinSelectionSizePx) &&
+        if (!ScreenGeometry.IsUsableSelection(_session.SelectionVirtual, MinSelectionSizePx) &&
             ScreenGeometry.IsUsableSelection(_clickElementPx, MinSelectionSizePx))
         {
-            _selectionPx = _clickElementPx;
+            _session.UpdateSelection(ScreenGeometry.ToVirtual(_clickElementPx, _monitor.Bounds));
         }
 
         _clickElementPx = default;
 
-        if (!ScreenGeometry.IsUsableSelection(_selectionPx))
+        if (!ScreenGeometry.IsUsableSelection(_session.SelectionVirtual))
         {
-            ResetToIdle();
+            _session.ClearSelection();
             return;
         }
 
@@ -688,12 +850,10 @@ public partial class ScreenshotOverlayWindow : Window
 
     private void CompleteNewSelection()
     {
-        _hasSelection = true;
         HideMagnifier();
         ClearElementHover();
-        UpdateSelectionVisual(showSize: true);
-        UpdateAnnotationFrame();
         HintChip.Visibility = Visibility.Collapsed;
+        _session.CompleteSelection();
 
         if (_mode == CaptureSessionMode.Ocr)
         {
@@ -707,7 +867,6 @@ public partial class ScreenshotOverlayWindow : Window
             return;
         }
 
-        ShowToolbar();
         Keyboard.Focus(Root);
     }
 
@@ -742,9 +901,9 @@ public partial class ScreenshotOverlayWindow : Window
             return;
         }
 
-        if (_hasSelection)
+        if (_session.HasSelection)
         {
-            ResetToIdle();
+            _session.ClearSelection();
             return;
         }
 
@@ -765,7 +924,7 @@ public partial class ScreenshotOverlayWindow : Window
             return;
         }
 
-        if (_hasSelection && _mode == CaptureSessionMode.Screenshot)
+        if (_hasSelection && _mode == CaptureSessionMode.Screenshot && IsSelectionHost)
         {
             if (e.Key == Key.Space)
             {
@@ -947,21 +1106,17 @@ public partial class ScreenshotOverlayWindow : Window
 
     private void NudgeSelection(Key key)
     {
+        if (!_session.HasSelection)
+        {
+            return;
+        }
+
         var step = Keyboard.Modifiers.HasFlag(ModifierKeys.Shift) ? 10 : 1;
         var dx = key == Key.Left ? -step : key == Key.Right ? step : 0;
         var dy = key == Key.Up ? -step : key == Key.Down ? step : 0;
 
-        _selectionPx = ScreenGeometry.MoveWithin(
-            _selectionPx,
-            dx,
-            dy,
-            _monitor.Bounds.Width,
-            _monitor.Bounds.Height);
-
+        _session.UpdateSelection(MoveVirtualSelection(_session.SelectionVirtual, dx, dy));
         RefreshMosaicTiles();
-        UpdateSelectionVisual(showSize: true);
-        UpdateAnnotationFrame();
-        PositionToolbar();
     }
 
     private void ActionButton_Click(object sender, RoutedEventArgs e)
@@ -1059,13 +1214,6 @@ public partial class ScreenshotOverlayWindow : Window
         PositionCrosshairFromCursor();
     }
 
-    private void ShowEmptySelectionChrome()
-    {
-        SelectionBorder.Visibility = Visibility.Visible;
-        SetCornersVisible(!_annotating);
-        UpdateSelectionVisual(showSize: false);
-    }
-
     private void UpdateSelectionVisual(bool showSize)
     {
         var width = Root.ActualWidth;
@@ -1076,25 +1224,34 @@ public partial class ScreenshotOverlayWindow : Window
             return;
         }
 
-        var left = _selectionPx.Left / _mapScaleX;
-        var top = _selectionPx.Top / _mapScaleY;
-        var selectionWidth = Math.Max(0, _selectionPx.Width / _mapScaleX);
-        var selectionHeight = Math.Max(0, _selectionPx.Height / _mapScaleY);
-        var right = Math.Min(width, left + selectionWidth);
-        var bottom = Math.Min(height, top + selectionHeight);
+        var virtualPx = _session.HasSelection
+            ? _session.SelectionVirtual
+            : ScreenGeometry.ToVirtual(_selectionPx, _monitor.Bounds);
 
-        left = Math.Clamp(left, 0, width);
-        top = Math.Clamp(top, 0, height);
-        selectionWidth = Math.Max(0, right - left);
-        selectionHeight = Math.Max(0, bottom - top);
+        var virtualLeft = (virtualPx.Left - _monitor.Bounds.Left) / _mapScaleX;
+        var virtualTop = (virtualPx.Top - _monitor.Bounds.Top) / _mapScaleY;
+        var virtualWidth = Math.Max(0, virtualPx.Width / _mapScaleX);
+        var virtualHeight = Math.Max(0, virtualPx.Height / _mapScaleY);
+        var virtualRight = virtualLeft + virtualWidth;
+        var virtualBottom = virtualTop + virtualHeight;
+
+        var localPx = ScreenGeometry.Intersect(virtualPx, MonitorLocalBounds);
+        var left = localPx.Left / _mapScaleX;
+        var top = localPx.Top / _mapScaleY;
+        var selectionWidth = Math.Max(0, localPx.Width / _mapScaleX);
+        var selectionHeight = Math.Max(0, localPx.Height / _mapScaleY);
+        var right = left + selectionWidth;
+        var bottom = top + selectionHeight;
+        var hasLocal = !localPx.IsEmpty;
 
         DimFull.Visibility = Visibility.Collapsed;
 
         // 录屏模式没有初始遮罩：按下鼠标但还没拉出可用选区时保持实时画面，
         // 选区可用后再压暗四周，与截图模式的选区观感一致。
-        var showOutsideDim = UsesIdleMask ||
-                             _hasSelection ||
-                             ScreenGeometry.IsUsableSelection(_selectionPx);
+        var showOutsideDim = hasLocal &&
+                             (UsesIdleMask ||
+                              (_dragKind != DragKind.Create && _session.HasSelection) ||
+                              ScreenGeometry.IsUsableSelection(virtualPx));
 
         if (showOutsideDim)
         {
@@ -1111,25 +1268,38 @@ public partial class ScreenshotOverlayWindow : Window
             DimRight.Visibility = Visibility.Collapsed;
         }
 
-        SelectionBorder.Visibility = Visibility.Visible;
-        SelectionBorder.Width = selectionWidth;
-        SelectionBorder.Height = selectionHeight;
-        Canvas.SetLeft(SelectionBorder, left);
-        Canvas.SetTop(SelectionBorder, top);
+        var showChrome = _hasSelection || _dragging;
+        SelectionBorder.Visibility = showChrome ? Visibility.Visible : Visibility.Collapsed;
 
-        SetCornerPosition(CornerTopLeft, left, top);
-        SetCornerPosition(CornerTopRight, right, top);
-        SetCornerPosition(CornerBottomLeft, left, bottom);
-        SetCornerPosition(CornerBottomRight, right, bottom);
-        SetCornerPosition(EdgeTop, left + (selectionWidth / 2), top);
-        SetCornerPosition(EdgeBottom, left + (selectionWidth / 2), bottom);
-        SetCornerPosition(EdgeLeft, left, top + (selectionHeight / 2));
-        SetCornerPosition(EdgeRight, right, top + (selectionHeight / 2));
-        SetCornersVisible(!_annotating && (_hasSelection || _dragging));
-
-        if (showSize)
+        if (showChrome)
         {
-            UpdateSizeBadge(_selectionPx, left, top);
+            SelectionBorder.Width = virtualWidth;
+            SelectionBorder.Height = virtualHeight;
+            Canvas.SetLeft(SelectionBorder, virtualLeft);
+            Canvas.SetTop(SelectionBorder, virtualTop);
+
+            SetCornerPosition(CornerTopLeft, virtualLeft, virtualTop);
+            SetCornerPosition(CornerTopRight, virtualRight, virtualTop);
+            SetCornerPosition(CornerBottomLeft, virtualLeft, virtualBottom);
+            SetCornerPosition(CornerBottomRight, virtualRight, virtualBottom);
+            SetCornerPosition(EdgeTop, virtualLeft + (virtualWidth / 2), virtualTop);
+            SetCornerPosition(EdgeBottom, virtualLeft + (virtualWidth / 2), virtualBottom);
+            SetCornerPosition(EdgeLeft, virtualLeft, virtualTop + (virtualHeight / 2));
+            SetCornerPosition(EdgeRight, virtualRight, virtualTop + (virtualHeight / 2));
+            SetCornersVisible(!_annotating && showChrome);
+        }
+        else
+        {
+            SetCornersVisible(false);
+        }
+
+        if (showSize && hasLocal)
+        {
+            UpdateSizeBadge(virtualPx, left, top);
+        }
+        else if (!_dragging)
+        {
+            SizeBadge.Visibility = Visibility.Collapsed;
         }
     }
 
@@ -1193,31 +1363,6 @@ public partial class ScreenshotOverlayWindow : Window
         var badgeLeft = Math.Clamp(left, 6, Math.Max(6, Root.ActualWidth - badge.Width - 6));
         badgeTop = Math.Clamp(badgeTop, 6, Math.Max(6, Root.ActualHeight - badge.Height - 6));
         SizeBadge.Margin = new Thickness(badgeLeft, badgeTop, 0, 0);
-    }
-
-    private void ApplyMove(PhysicalRect current)
-    {
-        var dx = current.Left - _dragStartPx.Left;
-        var dy = current.Top - _dragStartPx.Top;
-
-        _selectionPx = ScreenGeometry.MoveWithin(
-            _dragOrigin,
-            dx,
-            dy,
-            _monitor.Bounds.Width,
-            _monitor.Bounds.Height);
-    }
-
-    private void ApplyResize(PhysicalRect current)
-    {
-        _selectionPx = ScreenGeometry.ResizeEdges(
-            _dragOrigin,
-            _resizeMask,
-            current.Left,
-            current.Top,
-            _monitor.Bounds.Width,
-            _monitor.Bounds.Height,
-            MinSelectionSizePx);
     }
 
     private int HitTestSelectionHandle(Point dip)
@@ -1306,11 +1451,18 @@ public partial class ScreenshotOverlayWindow : Window
             return;
         }
 
+        var selection = LocalSelection;
+        if (selection.IsEmpty)
+        {
+            HideToolbar();
+            return;
+        }
+
         var desired = MeasureWithoutMargin(Toolbar);
-        var selectionLeft = _selectionPx.Left / _mapScaleX;
-        var selectionTop = _selectionPx.Top / _mapScaleY;
-        var selectionRight = (_selectionPx.Left + _selectionPx.Width) / _mapScaleX;
-        var selectionBottom = (_selectionPx.Top + _selectionPx.Height) / _mapScaleY;
+        var selectionLeft = selection.Left / _mapScaleX;
+        var selectionTop = selection.Top / _mapScaleY;
+        var selectionRight = (selection.Left + selection.Width) / _mapScaleX;
+        var selectionBottom = (selection.Top + selection.Height) / _mapScaleY;
         var rootWidth = Root.ActualWidth;
         var rootHeight = Root.ActualHeight;
 
@@ -1705,7 +1857,14 @@ public partial class ScreenshotOverlayWindow : Window
 
     private void UpdateAnnotationFrame()
     {
-        if (!_hasSelection)
+        if (!_hasSelection || !IsSelectionHost)
+        {
+            AnnotationLayer.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        var local = LocalSelection;
+        if (local.IsEmpty)
         {
             AnnotationLayer.Visibility = Visibility.Collapsed;
             return;
@@ -1713,8 +1872,8 @@ public partial class ScreenshotOverlayWindow : Window
 
         // 标注画布覆盖整个屏幕，选区只是输出范围；
         // 通过原点偏移让标注坐标仍以选区左上角为 (0,0)。
-        var originX = _selectionPx.Left / _mapScaleX;
-        var originY = _selectionPx.Top / _mapScaleY;
+        var originX = local.Left / _mapScaleX;
+        var originY = local.Top / _mapScaleY;
 
         AnnotationLayer.Visibility = Visibility.Visible;
         Canvas.SetLeft(AnnotationView, 0);
@@ -1727,7 +1886,8 @@ public partial class ScreenshotOverlayWindow : Window
 
     private void SetDrawingTool(AnnotationTool? tool)
     {
-        if (tool is not null && (!_hasSelection || _mode != CaptureSessionMode.Screenshot))
+        if (tool is not null &&
+            (!_session.HasSelection || _mode != CaptureSessionMode.Screenshot || !IsSelectionHost))
         {
             return;
         }
@@ -2295,10 +2455,11 @@ public partial class ScreenshotOverlayWindow : Window
     private void PlaceStep(Point point)
     {
         var radius = AnnotationDefaults.StepRadius;
-        var minX = (-_selectionPx.Left / _mapScaleX) + radius;
-        var minY = (-_selectionPx.Top / _mapScaleY) + radius;
-        var maxX = ((_monitor.Bounds.Width - _selectionPx.Left) / _mapScaleX) - radius;
-        var maxY = ((_monitor.Bounds.Height - _selectionPx.Top) / _mapScaleY) - radius;
+        var selection = LocalSelection;
+        var minX = (-selection.Left / _mapScaleX) + radius;
+        var minY = (-selection.Top / _mapScaleY) + radius;
+        var maxX = ((_monitor.Bounds.Width - selection.Left) / _mapScaleX) - radius;
+        var maxY = ((_monitor.Bounds.Height - selection.Top) / _mapScaleY) - radius;
         var center = new Point(
             maxX >= minX ? Math.Clamp(point.X, minX, maxX) : point.X,
             maxY >= minY ? Math.Clamp(point.Y, minY, maxY) : point.Y);
@@ -2346,10 +2507,11 @@ public partial class ScreenshotOverlayWindow : Window
 
         var scaleX = _mapScaleX;
         var scaleY = _mapScaleY;
-        var left = _selectionPx.Left + (int)Math.Round(rect.Left * scaleX);
-        var top = _selectionPx.Top + (int)Math.Round(rect.Top * scaleY);
-        var right = _selectionPx.Left + (int)Math.Round(rect.Right * scaleX);
-        var bottom = _selectionPx.Top + (int)Math.Round(rect.Bottom * scaleY);
+        var selection = LocalSelection;
+        var left = selection.Left + (int)Math.Round(rect.Left * scaleX);
+        var top = selection.Top + (int)Math.Round(rect.Top * scaleY);
+        var right = selection.Left + (int)Math.Round(rect.Right * scaleX);
+        var bottom = selection.Top + (int)Math.Round(rect.Bottom * scaleY);
         var blockPixels = Math.Max(4, (int)Math.Round(_mosaicBlockDip * scaleX));
         var limit = new PhysicalRect(0, 0, _monitor.Bounds.Width, _monitor.Bounds.Height);
         var snapped = MosaicRenderer.SnapToBlocks(left, top, right, bottom, limit, blockPixels);
@@ -2375,11 +2537,11 @@ public partial class ScreenshotOverlayWindow : Window
         stroke.Mosaic = tile;
         stroke.MosaicBlockPixels = blockPixels;
         stroke.Points[0] = new Point(
-            (snapped.X - _selectionPx.Left) / scaleX,
-            (snapped.Y - _selectionPx.Top) / scaleY);
+            (snapped.X - selection.Left) / scaleX,
+            (snapped.Y - selection.Top) / scaleY);
         stroke.Points[1] = new Point(
-            (snapped.X + snapped.Width - _selectionPx.Left) / scaleX,
-            (snapped.Y + snapped.Height - _selectionPx.Top) / scaleY);
+            (snapped.X + snapped.Width - selection.Left) / scaleX,
+            (snapped.Y + snapped.Height - selection.Top) / scaleY);
         AnnotationView.SetContent(_strokes, stroke, 1.0);
     }
 
@@ -2393,13 +2555,14 @@ public partial class ScreenshotOverlayWindow : Window
             return null;
         }
 
+        var selection = LocalSelection;
         var transform = new Matrix(
             _mapScaleX,
             0,
             0,
             _mapScaleY,
-            _selectionPx.Left - snapped.X,
-            _selectionPx.Top - snapped.Y);
+            selection.Left - snapped.X,
+            selection.Top - snapped.Y);
 
         return MosaicRenderer.CreateCompositedTile(
             _frozenSource,
@@ -2419,6 +2582,7 @@ public partial class ScreenshotOverlayWindow : Window
         var limit = new PhysicalRect(0, 0, _monitor.Bounds.Width, _monitor.Bounds.Height);
         var prior = new List<AnnotationStroke>();
         var changed = false;
+        var selection = LocalSelection;
 
         foreach (var stroke in _strokes)
         {
@@ -2426,10 +2590,10 @@ public partial class ScreenshotOverlayWindow : Window
                 stroke.Points.Count >= 2 &&
                 stroke.MosaicBlockPixels > 0)
             {
-                var left = _selectionPx.Left + (int)Math.Round(stroke.Points[0].X * _mapScaleX);
-                var top = _selectionPx.Top + (int)Math.Round(stroke.Points[0].Y * _mapScaleY);
-                var right = _selectionPx.Left + (int)Math.Round(stroke.Points[1].X * _mapScaleX);
-                var bottom = _selectionPx.Top + (int)Math.Round(stroke.Points[1].Y * _mapScaleY);
+                var left = selection.Left + (int)Math.Round(stroke.Points[0].X * _mapScaleX);
+                var top = selection.Top + (int)Math.Round(stroke.Points[0].Y * _mapScaleY);
+                var right = selection.Left + (int)Math.Round(stroke.Points[1].X * _mapScaleX);
+                var bottom = selection.Top + (int)Math.Round(stroke.Points[1].Y * _mapScaleY);
                 var snapped = MosaicRenderer.SnapToBlocks(
                     left,
                     top,
@@ -2446,11 +2610,11 @@ public partial class ScreenshotOverlayWindow : Window
                     {
                         stroke.Mosaic = tile;
                         stroke.Points[0] = new Point(
-                            (snapped.X - _selectionPx.Left) / _mapScaleX,
-                            (snapped.Y - _selectionPx.Top) / _mapScaleY);
+                            (snapped.X - selection.Left) / _mapScaleX,
+                            (snapped.Y - selection.Top) / _mapScaleY);
                         stroke.Points[1] = new Point(
-                            (snapped.X + snapped.Width - _selectionPx.Left) / _mapScaleX,
-                            (snapped.Y + snapped.Height - _selectionPx.Top) / _mapScaleY);
+                            (snapped.X + snapped.Width - selection.Left) / _mapScaleX,
+                            (snapped.Y + snapped.Height - selection.Top) / _mapScaleY);
                         changed = true;
                     }
                 }
@@ -2647,8 +2811,9 @@ public partial class ScreenshotOverlayWindow : Window
 
     private Point RootToSelectionDip(Point rootPoint)
     {
-        var left = _selectionPx.Left / _mapScaleX;
-        var top = _selectionPx.Top / _mapScaleY;
+        var selection = LocalSelection;
+        var left = selection.Left / _mapScaleX;
+        var top = selection.Top / _mapScaleY;
         return new Point(rootPoint.X - left, rootPoint.Y - top);
     }
 

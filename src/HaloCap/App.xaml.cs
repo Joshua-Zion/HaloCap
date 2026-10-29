@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Threading.Tasks;
 using System.Windows;
@@ -16,8 +17,17 @@ public partial class App : Application
 {
     private const string DisplayName = AppInfo.DisplayName;
 
+    private static readonly RadialAction[] ActionHotkeyOrder =
+    {
+        RadialAction.Screenshot,
+        RadialAction.Ocr,
+        RadialAction.Record,
+        RadialAction.Pin
+    };
+
     private readonly AutoStartService _autoStart = new();
     private readonly ClipboardPinService _clipboardPin = new();
+    private readonly Dictionary<RadialAction, HotkeyService> _actionHotkeyServices = new();
     private SingleInstanceService? _singleInstance;
     private HotkeyService? _hotkeyService;
     private TrayIconService? _tray;
@@ -90,6 +100,25 @@ public partial class App : Application
         _radial.UpdateHotkey(activeHotkey ?? _settings.Hotkey, activeHotkey is not null);
         UpdateHotkeyUi();
 
+        var actionHotkeyErrors = new List<string>();
+        foreach (var action in ActionHotkeyOrder)
+        {
+            var capturedAction = action;
+            var service = new HotkeyService();
+            service.Pressed += (_, _) => Defer(() => ToggleActionFromHotkey(capturedAction));
+            _actionHotkeyServices[capturedAction] = service;
+
+            if (!service.TryChange(_settings.GetActionHotkey(capturedAction), out var actionError))
+            {
+                actionHotkeyErrors.Add(
+                    $"{RadialActionInfo.Get(capturedAction).Title}：{actionError ?? "无法注册"}");
+            }
+            else
+            {
+                Log.Info($"已注册{RadialActionInfo.Get(capturedAction).Title}快捷键：{_settings.GetActionHotkey(capturedAction).DisplayText}");
+            }
+        }
+
         _singleInstance!.ActivationRequested += (_, _) =>
             Dispatcher.BeginInvoke(DispatcherPriority.Input, new Action(ShowRadialFromTray));
         _singleInstance.StartListening();
@@ -99,6 +128,14 @@ public partial class App : Application
             _tray.ShowNotification(
                 "快捷键未生效",
                 hotkeyError ?? "无法注册默认快捷键，请在设置中更换。",
+                System.Windows.Forms.ToolTipIcon.Warning);
+        }
+
+        if (actionHotkeyErrors.Count > 0)
+        {
+            _tray.ShowNotification(
+                "部分快捷键未生效",
+                string.Join(Environment.NewLine, actionHotkeyErrors) + Environment.NewLine + "可在设置中更换。",
                 System.Windows.Forms.ToolTipIcon.Warning);
         }
 
@@ -190,14 +227,24 @@ public partial class App : Application
             return;
         }
 
+        var actionHotkeys = new Dictionary<RadialAction, HotkeyDefinition>();
+        foreach (var action in ActionHotkeyOrder)
+        {
+            var registeredHotkey = _actionHotkeyServices.TryGetValue(action, out var service)
+                ? service.Current
+                : null;
+            actionHotkeys[action] = (registeredHotkey ?? _settings.GetActionHotkey(action)).Clone();
+        }
+
         var window = new SettingsWindow(
             _hotkeyService?.Current ?? _settings.Hotkey,
+            actionHotkeys,
             _autoStart.IsEnabled(),
             _settings.ScreenshotFormat,
             _settings.MenuSize,
             _settings.RecordingDirectory,
             _settings.ConvertFilePathsToImages,
-            ApplyHotkey,
+            ApplyHotkeys,
             ApplyAutoStart,
             ApplyScreenshotFormat,
             ApplyMenuSize,
@@ -217,23 +264,67 @@ public partial class App : Application
         window.Activate();
     }
 
-    private string? ApplyHotkey(HotkeyDefinition hotkey)
+    private string? ApplyHotkeys(
+        HotkeyDefinition radial,
+        IReadOnlyDictionary<RadialAction, HotkeyDefinition> actions)
     {
         if (_hotkeyService is null)
         {
             return "热键服务尚未就绪，请重启 HaloCap。";
         }
 
-        if (!_hotkeyService.TryChange(hotkey, out var error))
+        var labels = new List<(string Label, HotkeyDefinition Hotkey)>
         {
-            var registeredHotkey = _hotkeyService.Current;
-            _radial?.UpdateHotkey(registeredHotkey ?? _settings.Hotkey, registeredHotkey is not null);
-            UpdateHotkeyUi();
+            ("呼出光圈", radial)
+        };
+
+        foreach (var action in ActionHotkeyOrder)
+        {
+            labels.Add((RadialActionInfo.Get(action).Title, actions[action]));
+        }
+
+        for (var first = 0; first < labels.Count; first++)
+        {
+            for (var second = first + 1; second < labels.Count; second++)
+            {
+                if (SameHotkey(labels[first].Hotkey, labels[second].Hotkey))
+                {
+                    return $"「{labels[first].Label}」与「{labels[second].Label}」使用了相同的快捷键，请更换其中一个。";
+                }
+            }
+        }
+
+        var previousRadial = _settings.Hotkey.Clone();
+        var previousActions = new Dictionary<RadialAction, HotkeyDefinition>();
+        foreach (var action in ActionHotkeyOrder)
+        {
+            previousActions[action] = _settings.GetActionHotkey(action).Clone();
+        }
+
+        if (!_hotkeyService.TryChange(radial, out var error))
+        {
+            RefreshRadialHotkeyState();
             return error ?? "无法注册该快捷键，请换一个组合键。";
         }
 
-        var previous = _settings.Hotkey;
-        _settings.Hotkey = hotkey.Clone();
+        var changedActions = new List<RadialAction>();
+        foreach (var action in ActionHotkeyOrder)
+        {
+            var service = _actionHotkeyServices[action];
+            if (!service.TryChange(actions[action], out error))
+            {
+                RestoreHotkeys(previousRadial, previousActions, changedActions);
+                return $"{RadialActionInfo.Get(action).Title}：{error ?? "无法注册该快捷键。"}";
+            }
+
+            changedActions.Add(action);
+        }
+
+        _settings.Hotkey = radial.Clone();
+        foreach (var action in ActionHotkeyOrder)
+        {
+            _settings.SetActionHotkey(action, actions[action].Clone());
+        }
 
         try
         {
@@ -241,24 +332,56 @@ public partial class App : Application
         }
         catch (Exception ex)
         {
-            Log.Error("保存设置失败", ex);
-            _settings.Hotkey = previous;
-
-            if (!_hotkeyService.TryChange(previous, out var restoreError))
+            Log.Error("保存快捷键设置失败", ex);
+            _settings.Hotkey = previousRadial;
+            foreach (var action in ActionHotkeyOrder)
             {
-                Log.Error($"保存失败后恢复原快捷键失败：{restoreError}");
+                _settings.SetActionHotkey(action, previousActions[action]);
             }
 
-            var restoredHotkey = _hotkeyService.Current;
-            _radial?.UpdateHotkey(restoredHotkey ?? previous, restoredHotkey is not null);
-            UpdateHotkeyUi();
-            return "无法保存设置，已尝试恢复原快捷键：" + ex.Message;
+            RestoreHotkeys(previousRadial, previousActions, ActionHotkeyOrder);
+            return "无法保存设置，已恢复原快捷键：" + ex.Message;
         }
 
-        _radial?.UpdateHotkey(_settings.Hotkey, true);
-        UpdateHotkeyUi();
+        RefreshRadialHotkeyState();
         return null;
     }
+
+    private void RestoreHotkeys(
+        HotkeyDefinition radial,
+        IReadOnlyDictionary<RadialAction, HotkeyDefinition> actions,
+        IReadOnlyCollection<RadialAction> changedActions)
+    {
+        if (!_hotkeyService!.TryChange(radial, out var radialError))
+        {
+            Log.Error($"恢复呼出快捷键失败：{radialError}");
+        }
+
+        foreach (var action in changedActions)
+        {
+            if (!_actionHotkeyServices.TryGetValue(action, out var service))
+            {
+                continue;
+            }
+
+            if (!service.TryChange(actions[action], out var actionError))
+            {
+                Log.Error($"恢复{RadialActionInfo.Get(action).Title}快捷键失败：{actionError}");
+            }
+        }
+
+        RefreshRadialHotkeyState();
+    }
+
+    private void RefreshRadialHotkeyState()
+    {
+        var current = _hotkeyService?.Current;
+        _radial?.UpdateHotkey(current ?? _settings.Hotkey, current is not null);
+        UpdateHotkeyUi();
+    }
+
+    private static bool SameHotkey(HotkeyDefinition first, HotkeyDefinition second) =>
+        first.Modifiers == second.Modifiers && first.Key == second.Key;
 
     private string? ApplyAutoStart(bool enabled)
     {
@@ -414,6 +537,32 @@ public partial class App : Application
         _tray?.SetHotkeyText(current?.DisplayText ?? "未注册");
     }
 
+    private void ToggleActionFromHotkey(RadialAction action)
+    {
+        if (_isExiting || IsBusy || _settingsWindow is { IsCapturingHotkey: true })
+        {
+            return;
+        }
+
+        if (action == RadialAction.Pin)
+        {
+            _radial?.HideMenu();
+            PinFromClipboard();
+            return;
+        }
+
+        var wasRadialOpen = _radial?.IsOpen == true;
+        _radial?.HideMenu();
+        _ = StartCaptureAsync(ToCaptureMode(action), wasRadialOpen ? 170 : 0);
+    }
+
+    private static CaptureSessionMode ToCaptureMode(RadialAction action) => action switch
+    {
+        RadialAction.Ocr => CaptureSessionMode.Ocr,
+        RadialAction.Record => CaptureSessionMode.Record,
+        _ => CaptureSessionMode.Screenshot
+    };
+
     private async void OnActionSelected(RadialAction action)
     {
         if (_isExiting || IsBusy)
@@ -427,19 +576,25 @@ public partial class App : Application
             return;
         }
 
-        var mode = action switch
+        // 等待光圈淡出，避免遮罩把光圈本身截进去。
+        await StartCaptureAsync(ToCaptureMode(action), 170);
+    }
+
+    private async Task StartCaptureAsync(CaptureSessionMode mode, int delayMs)
+    {
+        if (_isExiting || IsBusy)
         {
-            RadialAction.Ocr => CaptureSessionMode.Ocr,
-            RadialAction.Record => CaptureSessionMode.Record,
-            _ => CaptureSessionMode.Screenshot
-        };
+            return;
+        }
 
         _captureStarting = true;
 
         try
         {
-            // 等待光圈淡出，避免遮罩把光圈本身截进去。
-            await Task.Delay(170);
+            if (delayMs > 0)
+            {
+                await Task.Delay(delayMs);
+            }
 
             if (_isExiting)
             {
@@ -748,6 +903,13 @@ public partial class App : Application
         _tray = null;
         _hotkeyService?.Dispose();
         _hotkeyService = null;
+
+        foreach (var service in _actionHotkeyServices.Values)
+        {
+            service.Dispose();
+        }
+
+        _actionHotkeyServices.Clear();
         _singleInstance?.Dispose();
         _singleInstance = null;
 

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
@@ -11,28 +12,40 @@ namespace HaloCap.UI;
 
 public partial class SettingsWindow : Window
 {
-    private readonly Func<HotkeyDefinition, string?> _applyHotkey;
+    private enum HotkeySlot
+    {
+        Radial,
+        Screenshot,
+        Ocr,
+        Record,
+        Pin
+    }
+
+    private readonly Func<HotkeyDefinition, IReadOnlyDictionary<RadialAction, HotkeyDefinition>, string?> _applyHotkeys;
     private readonly Func<bool, string?> _applyAutoStart;
     private readonly Func<ScreenshotImageFormat, string?> _applyScreenshotFormat;
     private readonly Func<RadialMenuSize, string?> _applyMenuSize;
     private readonly Func<string, string?> _applyRecordingDirectory;
     private readonly Func<bool, string?> _applyConvertFilePathsToImages;
-    private HotkeyDefinition _hotkey;
+    private readonly Dictionary<HotkeySlot, HotkeyDefinition> _hotkeys = new();
+    private readonly Dictionary<HotkeySlot, Button> _hotkeyButtons = new();
+    private readonly Dictionary<HotkeySlot, TextBlock> _hotkeyValues = new();
+    private HotkeySlot? _capturingSlot;
     private ScreenshotImageFormat _format;
     private RadialMenuSize _menuSize;
     private bool _autoStartEnabled;
-    private bool _capturingHotkey;
 
-    internal bool IsCapturingHotkey => _capturingHotkey;
+    internal bool IsCapturingHotkey => _capturingSlot is not null;
 
     public SettingsWindow(
-        HotkeyDefinition hotkey,
+        HotkeyDefinition radialHotkey,
+        IReadOnlyDictionary<RadialAction, HotkeyDefinition> actionHotkeys,
         bool autoStartEnabled,
         ScreenshotImageFormat screenshotFormat,
         RadialMenuSize menuSize,
         string recordingDirectory,
         bool convertFilePathsToImages,
-        Func<HotkeyDefinition, string?> applyHotkey,
+        Func<HotkeyDefinition, IReadOnlyDictionary<RadialAction, HotkeyDefinition>, string?> applyHotkeys,
         Func<bool, string?> applyAutoStart,
         Func<ScreenshotImageFormat, string?> applyScreenshotFormat,
         Func<RadialMenuSize, string?> applyMenuSize,
@@ -41,8 +54,25 @@ public partial class SettingsWindow : Window
     {
         InitializeComponent();
 
-        _hotkey = hotkey.Clone();
-        _applyHotkey = applyHotkey;
+        _hotkeys[HotkeySlot.Radial] = radialHotkey.Clone();
+        _hotkeys[HotkeySlot.Screenshot] = actionHotkeys[RadialAction.Screenshot].Clone();
+        _hotkeys[HotkeySlot.Ocr] = actionHotkeys[RadialAction.Ocr].Clone();
+        _hotkeys[HotkeySlot.Record] = actionHotkeys[RadialAction.Record].Clone();
+        _hotkeys[HotkeySlot.Pin] = actionHotkeys[RadialAction.Pin].Clone();
+
+        _hotkeyButtons[HotkeySlot.Radial] = RadialHotkeyButton;
+        _hotkeyButtons[HotkeySlot.Screenshot] = ScreenshotHotkeyButton;
+        _hotkeyButtons[HotkeySlot.Ocr] = OcrHotkeyButton;
+        _hotkeyButtons[HotkeySlot.Record] = RecordHotkeyButton;
+        _hotkeyButtons[HotkeySlot.Pin] = PinHotkeyButton;
+
+        _hotkeyValues[HotkeySlot.Radial] = RadialHotkeyValueText;
+        _hotkeyValues[HotkeySlot.Screenshot] = ScreenshotHotkeyValueText;
+        _hotkeyValues[HotkeySlot.Ocr] = OcrHotkeyValueText;
+        _hotkeyValues[HotkeySlot.Record] = RecordHotkeyValueText;
+        _hotkeyValues[HotkeySlot.Pin] = PinHotkeyValueText;
+
+        _applyHotkeys = applyHotkeys;
         _applyAutoStart = applyAutoStart;
         _applyScreenshotFormat = applyScreenshotFormat;
         _applyMenuSize = applyMenuSize;
@@ -53,7 +83,7 @@ public partial class SettingsWindow : Window
         _menuSize = menuSize;
 
         VersionText.Text = AppInfo.VersionLabel;
-        HotkeyValueText.Text = _hotkey.DisplayText;
+        RefreshHotkeyFields();
         UpdateHotkeyHint();
         AutoStartToggle.IsChecked = autoStartEnabled;
         UpdateAutoStartUi();
@@ -75,6 +105,31 @@ public partial class SettingsWindow : Window
         NavGeneral.IsChecked = true;
     }
 
+    private static string HotkeySlotLabel(HotkeySlot slot) => slot switch
+    {
+        HotkeySlot.Radial => "呼出光圈",
+        HotkeySlot.Screenshot => "截图",
+        HotkeySlot.Ocr => "文字识别",
+        HotkeySlot.Record => "录屏",
+        HotkeySlot.Pin => "贴图",
+        _ => "快捷键"
+    };
+
+    private void RefreshHotkeyFields()
+    {
+        foreach (var pair in _hotkeyValues)
+        {
+            pair.Value.Text = _hotkeys[pair.Key].DisplayText;
+            pair.Value.Foreground = (Brush)FindResource("TextPrimaryBrush");
+        }
+    }
+
+    private void RefreshHotkeyField(HotkeySlot slot)
+    {
+        _hotkeyValues[slot].Text = _hotkeys[slot].DisplayText;
+        _hotkeyValues[slot].Foreground = (Brush)FindResource("TextPrimaryBrush");
+    }
+
     private void NavItem_Checked(object sender, RoutedEventArgs e)
     {
         if (sender is not RadioButton { Uid: { } key })
@@ -82,7 +137,7 @@ public partial class SettingsWindow : Window
             return;
         }
 
-        if (_capturingHotkey)
+        if (_capturingSlot is not null)
         {
             CancelHotkeyCapture();
         }
@@ -98,31 +153,49 @@ public partial class SettingsWindow : Window
 
     private void HotkeyButton_Click(object sender, RoutedEventArgs e)
     {
-        if (_capturingHotkey)
+        if (sender is not FrameworkElement { Tag: string tag } ||
+            !Enum.TryParse<HotkeySlot>(tag, out var slot))
+        {
+            return;
+        }
+
+        if (_capturingSlot == slot)
         {
             CancelHotkeyCapture();
             return;
         }
 
-        BeginHotkeyCapture();
+        if (_capturingSlot is not null)
+        {
+            CancelHotkeyCapture();
+        }
+
+        StartHotkeyCapture(slot);
     }
 
-    private void BeginHotkeyCapture()
+    internal void BeginHotkeyCapture() => StartHotkeyCapture(HotkeySlot.Radial);
+
+    private void StartHotkeyCapture(HotkeySlot slot)
     {
-        _capturingHotkey = true;
-        HotkeyValueText.Text = "请按下快捷键…";
-        HotkeyValueText.Foreground = (Brush)FindResource("AccentBrush");
+        _capturingSlot = slot;
+        var value = _hotkeyValues[slot];
+        value.Text = "请按下快捷键…";
+        value.Foreground = (Brush)FindResource("AccentBrush");
         HotkeyHint.Text = "等待按键…  按 Esc 取消";
         SaveButton.IsEnabled = false;
         ClearError();
-        HotkeyButton.Focus();
+        _hotkeyButtons[slot].Focus();
     }
 
     private void CompleteHotkeyCapture()
     {
-        _capturingHotkey = false;
-        HotkeyValueText.Text = _hotkey.DisplayText;
-        HotkeyValueText.Foreground = (Brush)FindResource("TextPrimaryBrush");
+        if (_capturingSlot is not { } slot)
+        {
+            return;
+        }
+
+        _capturingSlot = null;
+        RefreshHotkeyField(slot);
         UpdateHotkeyHint();
         SaveButton.IsEnabled = true;
         SaveButton.Focus();
@@ -130,9 +203,13 @@ public partial class SettingsWindow : Window
 
     private void CancelHotkeyCapture()
     {
-        _capturingHotkey = false;
-        HotkeyValueText.Text = _hotkey.DisplayText;
-        HotkeyValueText.Foreground = (Brush)FindResource("TextPrimaryBrush");
+        if (_capturingSlot is not { } slot)
+        {
+            return;
+        }
+
+        _capturingSlot = null;
+        RefreshHotkeyField(slot);
         UpdateHotkeyHint();
         SaveButton.IsEnabled = true;
         ClearError();
@@ -140,14 +217,23 @@ public partial class SettingsWindow : Window
 
     private void UpdateHotkeyHint()
     {
-        HotkeyHint.Text = _hotkey.IsSingleKey
-            ? $"「{HotkeyDefinition.GetKeyName(_hotkey.Key)}」为单键快捷键，会独占该键；其他应用将无法输入。"
-            : "单击后按下新的组合键；单键会独占该键，Esc 取消";
+        var singleKeys = new List<string>();
+        foreach (var pair in _hotkeys)
+        {
+            if (pair.Value.IsSingleKey)
+            {
+                singleKeys.Add(HotkeySlotLabel(pair.Key));
+            }
+        }
+
+        HotkeyHint.Text = singleKeys.Count > 0
+            ? $"{string.Join("、", singleKeys)} 使用单键，会独占该键；点击对应按键可重新设置。"
+            : "单击按键区域后按下新的组合键；单键会独占该键，Esc 取消";
     }
 
     private void OnPreviewKeyDown(object sender, KeyEventArgs e)
     {
-        if (_capturingHotkey)
+        if (_capturingSlot is { } slot)
         {
             e.Handled = true;
 
@@ -173,7 +259,18 @@ public partial class SettingsWindow : Window
                 return;
             }
 
-            _hotkey = candidate;
+            foreach (var pair in _hotkeys)
+            {
+                if (pair.Key != slot &&
+                    pair.Value.Modifiers == candidate.Modifiers &&
+                    pair.Value.Key == candidate.Key)
+                {
+                    ShowError($"该快捷键已用于「{HotkeySlotLabel(pair.Key)}」，请换一个。");
+                    return;
+                }
+            }
+
+            _hotkeys[slot] = candidate;
             CompleteHotkeyCapture();
             ClearError();
             return;
@@ -264,7 +361,7 @@ public partial class SettingsWindow : Window
 
     private void SaveButton_Click(object sender, RoutedEventArgs e)
     {
-        if (_capturingHotkey)
+        if (_capturingSlot is not null)
         {
             return;
         }
@@ -274,7 +371,15 @@ public partial class SettingsWindow : Window
 
         try
         {
-            var hotkeyError = _applyHotkey(_hotkey.Clone());
+            var actionHotkeys = new Dictionary<RadialAction, HotkeyDefinition>
+            {
+                [RadialAction.Screenshot] = _hotkeys[HotkeySlot.Screenshot].Clone(),
+                [RadialAction.Ocr] = _hotkeys[HotkeySlot.Ocr].Clone(),
+                [RadialAction.Record] = _hotkeys[HotkeySlot.Record].Clone(),
+                [RadialAction.Pin] = _hotkeys[HotkeySlot.Pin].Clone()
+            };
+
+            var hotkeyError = _applyHotkeys(_hotkeys[HotkeySlot.Radial].Clone(), actionHotkeys);
             if (!string.IsNullOrEmpty(hotkeyError))
             {
                 ShowError(hotkeyError);

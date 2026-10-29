@@ -1195,6 +1195,7 @@ internal static class Program
             CaptureOverlayPreviewKeepsMouseSurface();
             CaptureSelectionHintsStayLightAndConcise();
             RecordSelectionDimsAfterUsableDrag();
+            CrossScreenSelectionSharesStateAndComposesCapture();
             SettingsAndTrayChromeUseCleanLayout(app);
             var names = new[]
             {
@@ -1257,6 +1258,8 @@ internal static class Program
             alphaPin.Close();
 
             var pin = new PinWindow(CreateSolidBitmap(1200, 800, Colors.White), new PhysicalRect(0, 0, 1200, 800), 1, ScreenshotImageFormat.Png);
+            True(!(bool)typeof(PinWindow).GetField("_textBold", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(pin)!,
+                "pin text tool should default to regular weight");
             var root = (FrameworkElement)pin.FindName("Root");
             root.Measure(new Size(1100, 600));
             root.Arrange(new Rect(0, 0, 1100, 600));
@@ -1286,9 +1289,9 @@ internal static class Program
             foreach (var initialConversion in new[] { new AppSettings().ConvertFilePathsToImages, false })
             {
                 var appliedValues = new List<bool>();
-                var settings = new SettingsWindow(HotkeyDefinition.Default, false, ScreenshotImageFormat.Png,
+                var settings = new SettingsWindow(HotkeyDefinition.Default, DefaultActionHotkeys(), false, ScreenshotImageFormat.Png,
                     RadialMenuSize.Medium, string.Empty, initialConversion,
-                    _ => null, _ => null, _ => null, _ => null, _ => null,
+                    (_, _) => null, _ => null, _ => null, _ => null, _ => null,
                     value =>
                     {
                         appliedValues.Add(value);
@@ -1450,6 +1453,8 @@ internal static class Program
                             ? dimFull.Visibility == Visibility.Collapsed
                             : dimFull.Visibility == Visibility.Visible,
                         "only record mode should start without the full-screen dim");
+                    True(!(bool)type.GetField("_textBold", flags)!.GetValue(overlay)!,
+                        "capture text tool should default to regular weight");
                     True(overlay.Opacity == 0,
                         "the overlay must stay transparent until its first frame has rendered");
                     type.GetMethod("RevealOverlay", flags)!.Invoke(overlay, null);
@@ -1619,11 +1624,137 @@ internal static class Program
         }
     }
 
+    private static void CrossScreenSelectionSharesStateAndComposesCapture()
+    {
+        const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
+        var monitorA = new ScreenMonitor
+        {
+            Bounds = new PhysicalRect(0, 0, 600, 400),
+            WorkArea = new PhysicalRect(0, 0, 600, 400),
+            Scale = 1.0,
+            IsPrimary = true
+        };
+        var monitorB = new ScreenMonitor
+        {
+            Bounds = new PhysicalRect(600, 0, 600, 400),
+            WorkArea = new PhysicalRect(600, 0, 600, 400),
+            Scale = 1.0
+        };
+
+        using var session = (ScreenshotSession)Activator.CreateInstance(typeof(ScreenshotSession), flags, null,
+            new object[] { CaptureSessionMode.Screenshot, (Action<CaptureResult>)(_ => { }) }, CultureInfo.InvariantCulture)!;
+        var red = CreateDrawingBitmap(600, 400, System.Drawing.Color.Red);
+        var blue = CreateDrawingBitmap(600, 400, System.Drawing.Color.RoyalBlue);
+        var overlayA = new ScreenshotOverlayWindow(session, monitorA, CaptureSessionMode.Screenshot, red);
+        var overlayB = new ScreenshotOverlayWindow(session, monitorB, CaptureSessionMode.Screenshot, blue);
+        try
+        {
+            Arrange(overlayA, 600, 400);
+            Arrange(overlayB, 600, 400);
+
+            Equal(1200, session.DesktopBounds.Width);
+            session.BeginSelection(overlayA, new PhysicalRect(450, 100, 300, 200));
+            session.CompleteSelection();
+
+            True(session.IsCrossMonitorSelection, "selection spanning two monitors should be cross-screen");
+            Equal(150, overlayA.LocalSelection.Width);
+            Equal(450, overlayA.LocalSelection.Left);
+            Equal(0, overlayB.LocalSelection.Left);
+            Equal(150, overlayB.LocalSelection.Width);
+            True(overlayA.HasSelection && overlayB.HasSelection, "both monitors should expose the shared selection");
+            True(((FrameworkElement)overlayA.FindName("Toolbar")).Visibility == Visibility.Visible,
+                "the monitor that starts the selection should host the toolbar");
+            True(((FrameworkElement)overlayB.FindName("Toolbar")).Visibility == Visibility.Collapsed,
+                "mirror monitors should not show a second toolbar");
+
+            var composed = session.CreateSelectionBitmap(false);
+            True(composed is not null, "cross-screen capture should compose a bitmap");
+            Equal(300, composed!.PixelWidth);
+            Equal(200, composed.PixelHeight);
+            True(ReadPixel(composed, 10, 10) == Colors.Red, "left part should come from the first monitor");
+            True(ReadPixel(composed, 290, 10) == Colors.RoyalBlue, "right part should come from the second monitor");
+
+            session.UpdateSelection(new PhysicalRect(700, 100, 300, 200));
+            True(ReferenceEquals(session.SelectionHost, overlayB),
+                "the toolbar host should follow a selection moved to another monitor");
+            True(((FrameworkElement)overlayB.FindName("Toolbar")).Visibility == Visibility.Visible,
+                "the new host should show the toolbar");
+            True(((FrameworkElement)overlayA.FindName("Toolbar")).Visibility == Visibility.Collapsed,
+                "the previous host should hide the toolbar");
+            True(overlayA.LocalSelection.IsEmpty, "a selection outside a monitor should not render chrome there");
+
+            var second = session.CreateSelectionBitmap(false);
+            True(second is not null &&
+                 ReadPixel(second!, 10, 10) == Colors.RoyalBlue &&
+                 ReadPixel(second!, 290, 10) == Colors.RoyalBlue,
+                "a selection moved onto one monitor should capture only that monitor");
+
+            var inside = (bool)typeof(ScreenshotOverlayWindow).GetMethod("IsInsideSelection", flags)!
+                .Invoke(overlayB, new object[] { new Point(400, 200) })!;
+            True(inside, "a mirror monitor should hit-test the shared selection in its local coordinates");
+            var handle = (int)typeof(ScreenshotOverlayWindow).GetMethod("HitTestSelectionHandle", flags)!
+                .Invoke(overlayB, new object[] { new Point(400, 200) })!;
+            True((handle & 2) != 0, "the right-edge handle should be hittable on the monitor that owns that edge");
+
+            var moveVirtual = typeof(ScreenshotOverlayWindow).GetMethod("MoveVirtualSelection", flags)!;
+            var movedSelection = (PhysicalRect)moveVirtual.Invoke(overlayB,
+                new object[] { new PhysicalRect(700, 100, 300, 200), -100, 0 })!;
+            Equal(600, movedSelection.Left);
+
+            var resizeVirtual = typeof(ScreenshotOverlayWindow).GetMethod("ResizeVirtualSelection", flags)!;
+            var resizedSelection = (PhysicalRect)resizeVirtual.Invoke(overlayB,
+                new object[] { new PhysicalRect(700, 100, 300, 200), 2, new PhysicalRect(1100, 300, 0, 0) })!;
+            Equal(400, resizedSelection.Width);
+
+            var normalize = typeof(ScreenshotOverlayWindow).GetMethod("NormalizeVirtualSelection", flags)!;
+            var screenshotSpan = (PhysicalRect)normalize.Invoke(overlayA,
+                new object[] { new PhysicalRect(500, 100, 0, 0), new PhysicalRect(700, 150, 0, 0) })!;
+            True(screenshotSpan.Right == 700, "screenshot selections should be allowed to cross monitors");
+
+            using var recordSession = (ScreenshotSession)Activator.CreateInstance(typeof(ScreenshotSession), flags, null,
+                new object[] { CaptureSessionMode.Record, (Action<CaptureResult>)(_ => { }) }, CultureInfo.InvariantCulture)!;
+            var recordOverlay = new ScreenshotOverlayWindow(recordSession, monitorA, CaptureSessionMode.Record, null);
+            try
+            {
+                Arrange(recordOverlay, 600, 400);
+                var recordSpan = (PhysicalRect)normalize.Invoke(recordOverlay,
+                    new object[] { new PhysicalRect(500, 100, 0, 0), new PhysicalRect(700, 150, 0, 0) })!;
+                True(recordSpan.Right <= 600, "record selections must stay on a single monitor");
+            }
+            finally
+            {
+                recordOverlay.Close();
+            }
+        }
+        finally
+        {
+            overlayA.Close();
+            overlayB.Close();
+        }
+
+        static void Arrange(ScreenshotOverlayWindow overlay, double width, double height)
+        {
+            var root = (FrameworkElement)overlay.Content;
+            root.Measure(new Size(width, height));
+            root.Arrange(new Rect(0, 0, width, height));
+            root.UpdateLayout();
+            typeof(ScreenshotOverlayWindow).GetMethod("RefreshMapping", flags)!.Invoke(overlay, null);
+        }
+    }
+
+    private static System.Drawing.Bitmap CreateDrawingBitmap(int width, int height, System.Drawing.Color color)
+    {
+        var bitmap = new System.Drawing.Bitmap(width, height);
+        using var graphics = System.Drawing.Graphics.FromImage(bitmap);
+        graphics.Clear(color);
+        return bitmap;
+    }
+
     private static void SettingsAndTrayChromeUseCleanLayout(HaloCap.App app)
     {
-        var settings = new SettingsWindow(HotkeyDefinition.Default, false, ScreenshotImageFormat.Png,
+        var settings = new SettingsWindow(HotkeyDefinition.Default, DefaultActionHotkeys(), false, ScreenshotImageFormat.Png,
             RadialMenuSize.Medium, string.Empty, true,
-            _ => null, _ => null, _ => null, _ => null, _ => null, _ => null);
+            (_, _) => null, _ => null, _ => null, _ => null, _ => null, _ => null);
         try
         {
             var root = (FrameworkElement)settings.Content;
@@ -1652,6 +1783,23 @@ internal static class Program
             var general = (FrameworkElement)settings.FindName("GeneralPane");
             True(general.TransformToAncestor(root).Transform(new Point()).Y >= 50,
                 "settings content should start below the unified title bar");
+
+            Equal("Ctrl + Alt + D", ((TextBlock)settings.FindName("RadialHotkeyValueText")).Text);
+            Equal("Ctrl + Alt + A", ((TextBlock)settings.FindName("ScreenshotHotkeyValueText")).Text);
+            Equal("Ctrl + Alt + O", ((TextBlock)settings.FindName("OcrHotkeyValueText")).Text);
+            Equal("Ctrl + Alt + R", ((TextBlock)settings.FindName("RecordHotkeyValueText")).Text);
+            Equal("Ctrl + Alt + P", ((TextBlock)settings.FindName("PinHotkeyValueText")).Text);
+            Equal("settings.hotkey.radial", AutomationProperties.GetAutomationId((Button)settings.FindName("RadialHotkeyButton")));
+            Equal("settings.hotkey.screenshot", AutomationProperties.GetAutomationId((Button)settings.FindName("ScreenshotHotkeyButton")));
+            Equal("settings.hotkey.ocr", AutomationProperties.GetAutomationId((Button)settings.FindName("OcrHotkeyButton")));
+            Equal("settings.hotkey.record", AutomationProperties.GetAutomationId((Button)settings.FindName("RecordHotkeyButton")));
+            Equal("settings.hotkey.pin", AutomationProperties.GetAutomationId((Button)settings.FindName("PinHotkeyButton")));
+
+            var defaults = new AppSettings();
+            Equal("Ctrl + Alt + A", defaults.GetActionHotkey(RadialAction.Screenshot).DisplayText);
+            Equal("Ctrl + Alt + O", defaults.GetActionHotkey(RadialAction.Ocr).DisplayText);
+            Equal("Ctrl + Alt + R", defaults.GetActionHotkey(RadialAction.Record).DisplayText);
+            Equal("Ctrl + Alt + P", defaults.GetActionHotkey(RadialAction.Pin).DisplayText);
 
             const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
             var settingsField = typeof(HaloCap.App).GetField("_settingsWindow", flags)!;
@@ -1703,6 +1851,13 @@ internal static class Program
         True(checkPoint.X > autoStart.ActualWidth / 2, "the tick should be placed on the right side");
         True(!HasText(menu, "本地处理 · 无网络请求"), "tray menu should no longer show the bottom-left description");
         True(HasText(menu, "Esc 关闭"), "tray menu should keep the escape hint");
+    }
+
+    private static Dictionary<RadialAction, HotkeyDefinition> DefaultActionHotkeys()
+    {
+        var settings = new AppSettings();
+        return new[] { RadialAction.Screenshot, RadialAction.Ocr, RadialAction.Record, RadialAction.Pin }
+            .ToDictionary(action => action, action => settings.GetActionHotkey(action).Clone());
     }
 
     private static bool HasText(DependencyObject root, string text) =>

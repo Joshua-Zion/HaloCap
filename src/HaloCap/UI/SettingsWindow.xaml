@@ -546,32 +546,154 @@
                                               HorizontalScrollBarVisibility="Disabled"
                                               Focusable="False">
                                     <StackPanel Margin="0,0,4,20">
-                                        <TextBlock Text="呼出" Style="{StaticResource GroupLabelStyle}" />
+                                        <TextBlock Text="快捷键" Style="{StaticResource GroupLabelStyle}" />
                                         <Border Style="{StaticResource CardStyle}">
                                             <StackPanel>
-                                                <Border Padding="16,14">
+                                                <Border Padding="16,8">
                                                     <Grid>
                                                         <Grid.ColumnDefinitions>
                                                             <ColumnDefinition Width="*" />
                                                             <ColumnDefinition Width="Auto" />
                                                         </Grid.ColumnDefinitions>
 
-                                                        <StackPanel VerticalAlignment="Center"
-                                                                    Margin="0,0,18,0">
-                                                            <TextBlock Text="全局快捷键"
-                                                                       Style="{StaticResource SettingTitleStyle}" />
-                                                            <TextBlock Text="在任何应用上方呼出光圈"
-                                                                       Style="{StaticResource SettingDescStyle}" />
-                                                        </StackPanel>
+                                                        <TextBlock Text="呼出光圈"
+                                                                   Style="{StaticResource SettingTitleStyle}"
+                                                                   VerticalAlignment="Center" />
 
-                                                        <Button x:Name="HotkeyButton"
+                                                        <Button x:Name="RadialHotkeyButton"
                                                                 Grid.Column="1"
                                                                 Width="168"
                                                                 Style="{StaticResource KeyFieldStyle}"
+                                                                Tag="Radial"
                                                                 ToolTip="单击后按下新的组合键"
-                                                                AutomationProperties.Name="修改全局快捷键"
+                                                                AutomationProperties.AutomationId="settings.hotkey.radial"
+                                                                AutomationProperties.Name="修改呼出光圈快捷键"
                                                                 Click="HotkeyButton_Click">
-                                                            <TextBlock x:Name="HotkeyValueText"
+                                                            <TextBlock x:Name="RadialHotkeyValueText"
+                                                                       FontFamily="Consolas, Segoe UI"
+                                                                       FontSize="12"
+                                                                       FontWeight="SemiBold"
+                                                                       Foreground="{StaticResource TextPrimaryBrush}" />
+                                                        </Button>
+                                                    </Grid>
+                                                </Border>
+
+                                                <Rectangle Style="{StaticResource RowDividerStyle}" />
+
+                                                <Border Padding="16,8">
+                                                    <Grid>
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="*" />
+                                                            <ColumnDefinition Width="Auto" />
+                                                        </Grid.ColumnDefinitions>
+
+                                                        <TextBlock Text="截图"
+                                                                   Style="{StaticResource SettingTitleStyle}"
+                                                                   VerticalAlignment="Center" />
+
+                                                        <Button x:Name="ScreenshotHotkeyButton"
+                                                                Grid.Column="1"
+                                                                Width="168"
+                                                                Style="{StaticResource KeyFieldStyle}"
+                                                                Tag="Screenshot"
+                                                                ToolTip="单击后按下新的组合键"
+                                                                AutomationProperties.AutomationId="settings.hotkey.screenshot"
+                                                                AutomationProperties.Name="修改截图快捷键"
+                                                                Click="HotkeyButton_Click">
+                                                            <TextBlock x:Name="ScreenshotHotkeyValueText"
+                                                                       FontFamily="Consolas, Segoe UI"
+                                                                       FontSize="12"
+                                                                       FontWeight="SemiBold"
+                                                                       Foreground="{StaticResource TextPrimaryBrush}" />
+                                                        </Button>
+                                                    </Grid>
+                                                </Border>
+
+                                                <Rectangle Style="{StaticResource RowDividerStyle}" />
+
+                                                <Border Padding="16,8">
+                                                    <Grid>
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="*" />
+                                                            <ColumnDefinition Width="Auto" />
+                                                        </Grid.ColumnDefinitions>
+
+                                                        <TextBlock Text="文字识别"
+                                                                   Style="{StaticResource SettingTitleStyle}"
+                                                                   VerticalAlignment="Center" />
+
+                                                        <Button x:Name="OcrHotkeyButton"
+                                                                Grid.Column="1"
+                                                                Width="168"
+                                                                Style="{StaticResource KeyFieldStyle}"
+                                                                Tag="Ocr"
+                                                                ToolTip="单击后按下新的组合键"
+                                                                AutomationProperties.AutomationId="settings.hotkey.ocr"
+                                                                AutomationProperties.Name="修改文字识别快捷键"
+                                                                Click="HotkeyButton_Click">
+                                                            <TextBlock x:Name="OcrHotkeyValueText"
+                                                                       FontFamily="Consolas, Segoe UI"
+                                                                       FontSize="12"
+                                                                       FontWeight="SemiBold"
+                                                                       Foreground="{StaticResource TextPrimaryBrush}" />
+                                                        </Button>
+                                                    </Grid>
+                                                </Border>
+
+                                                <Rectangle Style="{StaticResource RowDividerStyle}" />
+
+                                                <Border Padding="16,8">
+                                                    <Grid>
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="*" />
+                                                            <ColumnDefinition Width="Auto" />
+                                                        </Grid.ColumnDefinitions>
+
+                                                        <TextBlock Text="录屏"
+                                                                   Style="{StaticResource SettingTitleStyle}"
+                                                                   VerticalAlignment="Center" />
+
+                                                        <Button x:Name="RecordHotkeyButton"
+                                                                Grid.Column="1"
+                                                                Width="168"
+                                                                Style="{StaticResource KeyFieldStyle}"
+                                                                Tag="Record"
+                                                                ToolTip="单击后按下新的组合键"
+                                                                AutomationProperties.AutomationId="settings.hotkey.record"
+                                                                AutomationProperties.Name="修改录屏快捷键"
+                                                                Click="HotkeyButton_Click">
+                                                            <TextBlock x:Name="RecordHotkeyValueText"
+                                                                       FontFamily="Consolas, Segoe UI"
+                                                                       FontSize="12"
+                                                                       FontWeight="SemiBold"
+                                                                       Foreground="{StaticResource TextPrimaryBrush}" />
+                                                        </Button>
+                                                    </Grid>
+                                                </Border>
+
+                                                <Rectangle Style="{StaticResource RowDividerStyle}" />
+
+                                                <Border Padding="16,8">
+                                                    <Grid>
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="*" />
+                                                            <ColumnDefinition Width="Auto" />
+                                                        </Grid.ColumnDefinitions>
+
+                                                        <TextBlock Text="贴图"
+                                                                   Style="{StaticResource SettingTitleStyle}"
+                                                                   VerticalAlignment="Center" />
+
+                                                        <Button x:Name="PinHotkeyButton"
+                                                                Grid.Column="1"
+                                                                Width="168"
+                                                                Style="{StaticResource KeyFieldStyle}"
+                                                                Tag="Pin"
+                                                                ToolTip="单击后按下新的组合键"
+                                                                AutomationProperties.AutomationId="settings.hotkey.pin"
+                                                                AutomationProperties.Name="修改贴图快捷键"
+                                                                Click="HotkeyButton_Click">
+                                                            <TextBlock x:Name="PinHotkeyValueText"
                                                                        FontFamily="Consolas, Segoe UI"
                                                                        FontSize="12"
                                                                        FontWeight="SemiBold"
@@ -583,7 +705,7 @@
                                                 <Rectangle Style="{StaticResource RowDividerStyle}" />
 
                                                 <TextBlock x:Name="HotkeyHint"
-                                                           Text="单击后按下新的组合键；单键会独占该键，Esc 取消"
+                                                           Text="单击按键区域后按下新的组合键；单键会独占该键，Esc 取消"
                                                            FontSize="10.5"
                                                            Foreground="{StaticResource TextTertiaryBrush}"
                                                            TextWrapping="Wrap"

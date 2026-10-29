@@ -48,7 +48,7 @@ public partial class PinWindow : Window
     private int _mosaicBlockDip = AnnotationDefaults.MosaicBlockDip;
     private double _eraserSize = AnnotationDefaults.EraserSize;
     private bool _fillShapes;
-    private bool _textBold = true;
+    private bool _textBold = false;
     private bool _textItalic;
     private ArrowHeadMode _arrowHead = ArrowHeadMode.End;
     private bool _eraseHistoryPushed;

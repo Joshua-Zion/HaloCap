@@ -39,6 +39,19 @@ internal static class SettingsStore
                 settings.Hotkey = HotkeyDefinition.Default;
             }
 
+            var defaults = new AppSettings();
+            foreach (var action in new[]
+                     {
+                         RadialAction.Screenshot, RadialAction.Ocr, RadialAction.Record, RadialAction.Pin
+                     })
+            {
+                var hotkey = settings.GetActionHotkey(action);
+                if (hotkey is null || !hotkey.IsValid)
+                {
+                    settings.SetActionHotkey(action, defaults.GetActionHotkey(action).Clone());
+                }
+            }
+
             return settings;
         }
         catch (Exception ex)

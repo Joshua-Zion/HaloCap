@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using System.Text;
 using System.Text.Json;
@@ -79,7 +80,7 @@ internal static class Program
             ("Clipboard file batches enforce count and predecode byte budgets", ClipboardFileBatchesEnforceBudgets),
             ("Clipboard rendering bounds pixels and DPI stay consistent", ClipboardRenderingPreservesBoundsPixelsAndDpi),
             ("Clipboard file conversion settings default true and round trip false", ClipboardFileConversionSettingsRoundTrip),
-            ("WPF toolbars, clipboard actions and capture hover render correctly", ToolbarVectorIconsPreserveBoundsAndColors)
+            ("WPF chrome, clipboard actions and capture hover render correctly", ToolbarVectorIconsPreserveBoundsAndColors)
         };
 
         var failures = 0;
@@ -1192,6 +1193,7 @@ internal static class Program
             var app = new HaloCap.App();
             app.InitializeComponent();
             CaptureOverlayPreviewKeepsMouseSurface();
+            SettingsAndTrayChromeUseCleanLayout(app);
             var names = new[]
             {
                 "Select", "Shape", "Arrow", "Pen", "Highlighter", "Eraser", "Text", "Mosaic", "Step",
@@ -1487,6 +1489,103 @@ internal static class Program
                 {
                     overlay.Close();
                 }
+            }
+        }
+    }
+
+    private static void SettingsAndTrayChromeUseCleanLayout(HaloCap.App app)
+    {
+        var settings = new SettingsWindow(HotkeyDefinition.Default, false, ScreenshotImageFormat.Png,
+            RadialMenuSize.Medium, string.Empty, true,
+            _ => null, _ => null, _ => null, _ => null, _ => null, _ => null);
+        try
+        {
+            var root = (FrameworkElement)settings.Content;
+            root.Measure(new Size(820, 620));
+            root.Arrange(new Rect(0, 0, 820, 620));
+            root.UpdateLayout();
+
+            var titleBar = (Grid)settings.FindName("WindowTitleBar");
+            var close = (Button)settings.FindName("WindowCloseButton");
+            True(titleBar.ActualWidth > 700, "settings title bar should span the full window width");
+            Equal(50, titleBar.ActualHeight, 0.1);
+            var closePoint = close.TransformToAncestor(titleBar).Transform(new Point());
+            True(closePoint.X + close.ActualWidth >= titleBar.ActualWidth - 20,
+                "the close button should sit at the top-right edge");
+            True(!HasText(root, "本地处理 · 无网络请求"), "settings should no longer show the bottom-left description");
+            True(!HasText(root, "✕"), "settings should use the drawn close icon rather than the old text glyph");
+            var general = (FrameworkElement)settings.FindName("GeneralPane");
+            True(general.TransformToAncestor(root).Transform(new Point()).Y >= 50,
+                "settings content should start below the unified title bar");
+
+            const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
+            var settingsField = typeof(HaloCap.App).GetField("_settingsWindow", flags)!;
+            var previousWindow = settingsField.GetValue(app);
+            settingsField.SetValue(app, settings);
+            try
+            {
+                True((bool)typeof(HaloCap.App).GetMethod("CanShowTrayMenu", flags)!.Invoke(app, null)!,
+                    "opening settings should not block the tray menu");
+                True((bool)typeof(HaloCap.App).GetMethod("CanToggleRadial", flags)!.Invoke(app, null)!,
+                    "opening settings should not block summoning the aperture");
+                typeof(SettingsWindow).GetMethod("BeginHotkeyCapture", flags)!.Invoke(settings, null);
+                True(settings.IsCapturingHotkey, "settings should expose hotkey capture state to the app");
+                True(!(bool)typeof(HaloCap.App).GetMethod("CanToggleRadial", flags)!.Invoke(app, null)!,
+                    "hotkey capture should suppress the global hotkey briefly");
+                True((bool)typeof(HaloCap.App).GetMethod("CanShowTrayMenu", flags)!.Invoke(app, null)!,
+                    "hotkey capture should not block the tray menu");
+                typeof(SettingsWindow).GetMethod("CancelHotkeyCapture", flags)!.Invoke(settings, null);
+                True(!settings.IsCapturingHotkey, "cancelling capture should clear the app guard state");
+            }
+            finally
+            {
+                settingsField.SetValue(app, previousWindow);
+            }
+
+            var closedCount = 0;
+            settings.Closed += (_, _) => closedCount++;
+            ((Button)settings.FindName("SaveButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            Equal(1, closedCount);
+        }
+        finally
+        {
+            settings.Close();
+        }
+
+        var menu = new TrayMenu("v1.1.10", "Ctrl + Alt + D", autoStart: true, recording: false);
+        menu.ApplyTemplate();
+        var autoStart = menu.Items.OfType<MenuItem>()
+            .First(item => AutomationProperties.GetAutomationId(item) == "tray.item.autoStart");
+        True(autoStart.IsChecked, "the tray auto-start item should retain its checked state");
+        autoStart.ApplyTemplate();
+        autoStart.Measure(new Size(240, 36));
+        autoStart.Arrange(new Rect(0, 0, 240, 36));
+        autoStart.UpdateLayout();
+        var check = FindVisualChildren<System.Windows.Shapes.Path>(autoStart)
+            .First(path => AutomationProperties.GetAutomationId(path) == "tray.check");
+        True(check.Visibility == Visibility.Visible, "a checked auto-start item should show the tick");
+        var checkPoint = check.TransformToAncestor(autoStart).Transform(new Point());
+        True(checkPoint.X > autoStart.ActualWidth / 2, "the tick should be placed on the right side");
+        True(!HasText(menu, "本地处理 · 无网络请求"), "tray menu should no longer show the bottom-left description");
+        True(HasText(menu, "Esc 关闭"), "tray menu should keep the escape hint");
+    }
+
+    private static bool HasText(DependencyObject root, string text) =>
+        FindVisualChildren<TextBlock>(root).Any(block => block.Text == text);
+
+    private static IEnumerable<T> FindVisualChildren<T>(DependencyObject root) where T : DependencyObject
+    {
+        for (var index = 0; index < VisualTreeHelper.GetChildrenCount(root); index++)
+        {
+            var child = VisualTreeHelper.GetChild(root, index);
+            if (child is T match)
+            {
+                yield return match;
+            }
+
+            foreach (var descendant in FindVisualChildren<T>(child))
+            {
+                yield return descendant;
             }
         }
     }

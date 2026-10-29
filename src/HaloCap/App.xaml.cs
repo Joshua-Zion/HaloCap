@@ -116,9 +116,14 @@ public partial class App : Application
         _screenshotSession is not null ||
         _recording is { IsRecording: true };
 
+    private bool CanToggleRadial() =>
+        !_isExiting && !IsBusy && _settingsWindow is not { IsCapturingHotkey: true };
+
+    private bool CanShowTrayMenu() => !_isExiting && !_isDialogOpen;
+
     private void ToggleRadialFromHotkey()
     {
-        if (_isExiting || _settingsWindow is { IsVisible: true } || IsBusy)
+        if (!CanToggleRadial())
         {
             return;
         }
@@ -128,12 +133,6 @@ public partial class App : Application
 
     private void ShowRadialFromTray()
     {
-        if (_settingsWindow is { IsVisible: true })
-        {
-            _settingsWindow.Activate();
-            return;
-        }
-
         if (_isExiting || IsBusy)
         {
             return;
@@ -144,7 +143,7 @@ public partial class App : Application
 
     private void ShowTrayMenu()
     {
-        if (_isExiting || _isDialogOpen || _settingsWindow is { IsVisible: true })
+        if (!CanShowTrayMenu())
         {
             return;
         }
@@ -214,7 +213,8 @@ public partial class App : Application
             }
         };
 
-        window.ShowDialog();
+        window.Show();
+        window.Activate();
     }
 
     private string? ApplyHotkey(HotkeyDefinition hotkey)

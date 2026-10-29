@@ -23,6 +23,8 @@ public partial class SettingsWindow : Window
     private bool _autoStartEnabled;
     private bool _capturingHotkey;
 
+    internal bool IsCapturingHotkey => _capturingHotkey;
+
     public SettingsWindow(
         HotkeyDefinition hotkey,
         bool autoStartEnabled,
@@ -314,7 +316,7 @@ public partial class SettingsWindow : Window
                 return;
             }
 
-            DialogResult = true;
+            Close();
         }
         catch (Exception ex)
         {

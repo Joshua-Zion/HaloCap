@@ -93,6 +93,7 @@ public partial class TrayMenu : ContextMenu
             enabled: !recording);
         autoStartItem.IsCheckable = true;
         autoStartItem.IsChecked = autoStart;
+        System.Windows.Automation.AutomationProperties.SetAutomationId(autoStartItem, "tray.item.autoStart");
         autoStartItem.Click += (_, _) =>
         {
             var desired = autoStartItem.IsChecked;

@@ -21,7 +21,7 @@
     <Grid x:Name="Root"
           RenderTransformOrigin="0.5,0.5"
           IsHitTestVisible="False"
-          Background="Transparent">
+          Background="#01000000">
         <Grid.RenderTransform>
             <ScaleTransform x:Name="RootScale" ScaleX="1" ScaleY="1" />
         </Grid.RenderTransform>

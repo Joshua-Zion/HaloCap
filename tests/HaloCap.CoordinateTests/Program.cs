@@ -1318,6 +1318,16 @@ internal static class Program
             var controllerType = typeof(RadialMenuController);
             const BindingFlags privateInstance = BindingFlags.Instance | BindingFlags.NonPublic;
             var radialWindow = (RadialMenuWindow)controllerType.GetField("_window", privateInstance)!.GetValue(controller)!;
+            var nativeType = typeof(RadialMenuWindow).Assembly.GetType("HaloCap.Interop.NativeMethods")!;
+            var exStyle = ((IntPtr)nativeType.GetMethod("GetWindowLongPtr", BindingFlags.Static | BindingFlags.Public)!
+                .Invoke(null, new object[] { radialWindow.Handle, -20 })!).ToInt64();
+            True((exStyle & 0x00000020) == 0,
+                "the aperture must not be click-through (WS_EX_TRANSPARENT)");
+            True((exStyle & 0x08000000) != 0,
+                "the aperture must remain a no-activate window");
+            var radialRoot = (Grid)radialWindow.FindName("Root");
+            True(((SolidColorBrush)radialRoot.Background).Color.A == 1,
+                "the aperture needs a low-alpha hit surface so mouse input cannot fall through");
             var items = (Canvas)radialWindow.FindName("ItemLayer");
             True(items.Children.Count == 4, "radial menu should retain all four actions");
             FrameworkElement? pinItem = null;
@@ -1433,6 +1443,15 @@ internal static class Program
                 var overlay = new ScreenshotOverlayWindow(session, monitor, mode, bitmap);
                 try
                 {
+                    var dimFull = (FrameworkElement)overlay.FindName("DimFull");
+                    True(mode == CaptureSessionMode.Record
+                            ? dimFull.Visibility == Visibility.Collapsed
+                            : dimFull.Visibility == Visibility.Visible,
+                        "only record mode should start without the full-screen dim");
+                    True(overlay.Opacity == 0,
+                        "the overlay must stay transparent until its first frame has rendered");
+                    type.GetMethod("RevealOverlay", flags)!.Invoke(overlay, null);
+                    Equal(1.0, overlay.Opacity, 0.0001);
                     var root = (Grid)overlay.FindName("Root");
                     root.Measure(new Size(600, 400));
                     root.Arrange(new Rect(0, 0, 600, 400));
@@ -1467,9 +1486,26 @@ internal static class Program
                     showHover.Invoke(overlay, new object[] { new PhysicalRect(0, 0, pixelWidth, pixelHeight) });
                     RenderSurface();
                     type.GetMethod("Root_MouseLeave", flags)!.Invoke(overlay, new object[] { root, new MouseEventArgs(Mouse.PrimaryDevice, 0) });
-                    True(((FrameworkElement)overlay.FindName("DimFull")).Visibility == Visibility.Visible,
-                        "a genuine leave should still restore the idle mask");
-                    RenderSurface();
+                    var idleMask = ((FrameworkElement)overlay.FindName("DimFull")).Visibility;
+                    True(mode == CaptureSessionMode.Record
+                            ? idleMask == Visibility.Collapsed
+                            : idleMask == Visibility.Visible,
+                        "a genuine leave should restore the idle mask only outside record mode");
+                    True(((FrameworkElement)overlay.FindName("ElementBorder")).Visibility == Visibility.Collapsed,
+                        "leaving the overlay should clear the hovered-window border");
+                    var idle = RenderSurface();
+                    var cornerOffset = (((int)(8 * scale) * pixelWidth) + (int)(8 * scale)) * 4;
+                    Equal(
+                        frozen ? 255 : mode == CaptureSessionMode.Record ? 1 : 166,
+                        idle[cornerOffset + 3]);
+                    if (mode == CaptureSessionMode.Record)
+                    {
+                        True(((FrameworkElement)overlay.FindName("DimTop")).Visibility == Visibility.Collapsed &&
+                             ((FrameworkElement)overlay.FindName("DimBottom")).Visibility == Visibility.Collapsed &&
+                             ((FrameworkElement)overlay.FindName("DimLeft")).Visibility == Visibility.Collapsed &&
+                             ((FrameworkElement)overlay.FindName("DimRight")).Visibility == Visibility.Collapsed,
+                            "record mode must keep the live screen undimmed before a selection");
+                    }
                     hasSelectionField.SetValue(overlay, true);
                     selectionField.SetValue(overlay, candidate);
                     updateSelection.Invoke(overlay, new object[] { false });

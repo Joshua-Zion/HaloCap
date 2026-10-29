@@ -242,8 +242,10 @@ public partial class RadialMenuWindow : Window
         var handle = new WindowInteropHelper(this).Handle;
         var exStyle = NativeMethods.GetWindowLongPtr(handle, NativeMethods.GWL_EXSTYLE).ToInt64();
         exStyle |= NativeMethods.WS_EX_NOACTIVATE |
-                   NativeMethods.WS_EX_TOOLWINDOW |
-                   NativeMethods.WS_EX_TRANSPARENT;
+                   NativeMethods.WS_EX_TOOLWINDOW;
+        // 不再设置 WS_EX_TRANSPARENT：圆盘需要自己接收鼠标，
+        // 否则悬停与点击会落到下方窗口，表现为鼠标穿透。
+        exStyle &= ~NativeMethods.WS_EX_TRANSPARENT;
 
         NativeMethods.SetWindowLongPtr(handle, NativeMethods.GWL_EXSTYLE, new IntPtr(exStyle));
         NativeMethods.SetWindowPos(

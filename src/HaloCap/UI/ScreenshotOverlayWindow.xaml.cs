@@ -42,6 +42,7 @@ public partial class ScreenshotOverlayWindow : Window
 
     private IntPtr _handle;
     private bool _closed;
+    private bool _revealed;
     private bool _dragging;
     private bool _hasSelection;
     private DragKind _dragKind;
@@ -94,6 +95,10 @@ public partial class ScreenshotOverlayWindow : Window
     {
         InitializeComponent();
 
+        // 先在完全透明状态下完成首帧渲染，再一次性显示；分层窗口若带着未合成的首帧出现，
+        // 会先透出未变暗的实时桌面再变暗，看起来就是一次闪屏。
+        Opacity = 0;
+
         _session = session;
         _monitor = monitor;
         _mode = mode;
@@ -113,6 +118,10 @@ public partial class ScreenshotOverlayWindow : Window
 
         ConfigureMode();
         ConfigureWindowBounds();
+        if (!UsesIdleMask)
+        {
+            DimFull.Visibility = Visibility.Collapsed;
+        }
         RefreshMapping();
         UpdateAnnotationToolVisuals();
         UpdateAnnotationColorVisuals();
@@ -125,6 +134,7 @@ public partial class ScreenshotOverlayWindow : Window
         };
 
         SourceInitialized += (_, _) => ApplyOverlayWindowStyle();
+        ContentRendered += (_, _) => RevealOverlay();
 
         Loaded += (_, _) =>
         {
@@ -153,6 +163,8 @@ public partial class ScreenshotOverlayWindow : Window
 
     internal CaptureSessionMode Mode => _mode;
 
+    private bool UsesIdleMask => _mode != CaptureSessionMode.Record;
+
     internal ScreenMonitor Monitor => _monitor;
 
     internal bool HasSelection => _hasSelection;
@@ -175,6 +187,10 @@ public partial class ScreenshotOverlayWindow : Window
         ApplyPhysicalBounds();
 
         Dispatcher.BeginInvoke(
+            DispatcherPriority.ApplicationIdle,
+            new Action(RevealOverlay));
+
+        Dispatcher.BeginInvoke(
             DispatcherPriority.Loaded,
             new Action(() =>
             {
@@ -188,6 +204,17 @@ public partial class ScreenshotOverlayWindow : Window
                 ResetToIdle();
                 PositionCrosshairFromCursor();
             }));
+    }
+
+    private void RevealOverlay()
+    {
+        if (_revealed || _closed)
+        {
+            return;
+        }
+
+        _revealed = true;
+        Opacity = 1;
     }
 
     internal void ActivateForSelection()
@@ -1018,7 +1045,7 @@ public partial class ScreenshotOverlayWindow : Window
         SetCornersVisible(false);
         AnnotationLayer.Visibility = Visibility.Collapsed;
         EditorLayer.Children.Clear();
-        DimFull.Visibility = Visibility.Visible;
+        DimFull.Visibility = UsesIdleMask ? Visibility.Visible : Visibility.Collapsed;
         DimTop.Visibility = Visibility.Collapsed;
         DimBottom.Visibility = Visibility.Collapsed;
         DimLeft.Visibility = Visibility.Collapsed;
@@ -1612,11 +1639,14 @@ public partial class ScreenshotOverlayWindow : Window
         var width = Math.Max(0, right - left);
         var height = Math.Max(0, bottom - top);
 
-        DimFull.Visibility = Visibility.Collapsed;
-        UpdateDimRect(DimTop, 0, 0, Root.ActualWidth, top);
-        UpdateDimRect(DimBottom, 0, bottom, Root.ActualWidth, Math.Max(0, Root.ActualHeight - bottom));
-        UpdateDimRect(DimLeft, 0, top, left, height);
-        UpdateDimRect(DimRight, right, top, Math.Max(0, Root.ActualWidth - right), height);
+        if (UsesIdleMask)
+        {
+            DimFull.Visibility = Visibility.Collapsed;
+            UpdateDimRect(DimTop, 0, 0, Root.ActualWidth, top);
+            UpdateDimRect(DimBottom, 0, bottom, Root.ActualWidth, Math.Max(0, Root.ActualHeight - bottom));
+            UpdateDimRect(DimLeft, 0, top, left, height);
+            UpdateDimRect(DimRight, right, top, Math.Max(0, Root.ActualWidth - right), height);
+        }
 
         ElementBorder.Visibility = Visibility.Visible;
         ElementBorder.Width = width;
@@ -1640,7 +1670,7 @@ public partial class ScreenshotOverlayWindow : Window
 
         if (!_hasSelection && !_dragging && !_annotating)
         {
-            DimFull.Visibility = Visibility.Visible;
+            DimFull.Visibility = UsesIdleMask ? Visibility.Visible : Visibility.Collapsed;
             DimTop.Visibility = Visibility.Collapsed;
             DimBottom.Visibility = Visibility.Collapsed;
             DimLeft.Visibility = Visibility.Collapsed;

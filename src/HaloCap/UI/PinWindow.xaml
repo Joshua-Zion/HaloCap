@@ -11,6 +11,7 @@
         Topmost="True"
         ShowActivated="True"
         Background="Transparent"
+        FocusVisualStyle="{x:Null}"
         SnapsToDevicePixels="True"
         FontFamily="{StaticResource AppFont}"
         Cursor="SizeAll"
@@ -262,18 +263,21 @@
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
 
-        <Border x:Name="PinOutline"
-                Grid.Row="1"
-                Margin="0.75"
-                BorderBrush="#996FA8FF"
-                BorderThickness="1.5"
-                CornerRadius="5"
-                IsHitTestVisible="False" />
+        <Grid x:Name="ImageHost"
+              Grid.Row="1"
+              HorizontalAlignment="Center">
+            <Border x:Name="PinOutline"
+                    Margin="0.75"
+                    BorderBrush="#996FA8FF"
+                    BorderThickness="1.5"
+                    CornerRadius="5"
+                    IsHitTestVisible="False" />
 
-        <Border Grid.Row="1" Padding="4" Background="Transparent">
+            <Border Padding="4" Background="Transparent">
             <Grid x:Name="Root"
                   Background="Transparent"
                   Focusable="True"
+                  FocusVisualStyle="{x:Null}"
                   PreviewMouseLeftButtonDown="Root_PreviewMouseLeftButtonDown"
                   PreviewMouseMove="Root_PreviewMouseMove"
                   PreviewMouseLeftButtonUp="Root_PreviewMouseLeftButtonUp">
@@ -304,15 +308,15 @@
                                Foreground="#EAF0F8" />
                 </Border>
             </Grid>
-        </Border>
+            </Border>
+        </Grid>
 
         <Viewbox x:Name="AnnotationBarHost"
                  Grid.Row="2"
-                 HorizontalAlignment="Stretch"
+                 HorizontalAlignment="Center"
                  VerticalAlignment="Top"
                  Margin="4,6,4,4"
-                 Stretch="Uniform"
-                 StretchDirection="DownOnly"
+                 Stretch="None"
                  Visibility="Collapsed">
             <StackPanel x:Name="ToolbarStack">
             <Border x:Name="AnnotationBar"
@@ -440,6 +444,10 @@
                             <Path Style="{StaticResource ToolbarIconStyle}" Data="{StaticResource ToolbarClearGeometry}" />
                         </Viewbox>
                     </Button>
+                    <Border x:Name="EditSeparator"
+                            Width="1"
+                            Margin="4,7"
+                            Background="#1A000000" />
                     <Button x:Name="CloseEditButton"
                             AutomationProperties.AutomationId="action.close"
                             AutomationProperties.Name="关闭编辑"
@@ -451,12 +459,11 @@
                             <Path Style="{StaticResource ToolbarIconStyle}" Data="{StaticResource ToolbarCloseGeometry}" />
                         </Viewbox>
                     </Button>
-                    <Button Style="{StaticResource PinToolButtonStyle}"
+                    <Button x:Name="DoneEditButton"
+                            Style="{StaticResource PinToolButtonStyle}"
                             AutomationProperties.AutomationId="action.done"
                             AutomationProperties.Name="完成"
                             Tag="Done"
-                            Foreground="#FFFFFFFF"
-                            Background="#FF2F7CF6"
                             ToolTip="完成并退出标注 (Space)"
                             Click="AnnotationAction_Click">
                         <Viewbox Width="20" Height="20">

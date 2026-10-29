@@ -1269,6 +1269,8 @@ internal static class Program
             var mainBar = (Border)pin.FindName("AnnotationBar");
             var optionBar = (Border)pin.FindName("PinOptionBar");
             var host = (FrameworkElement)pin.FindName("AnnotationBarHost");
+            True(((Viewbox)host).Stretch == Stretch.None,
+                "the pin annotation toolbar should keep its natural size instead of scaling with the pin");
             var mainOrigin = mainBar.TransformToAncestor(host).Transform(new Point());
             var optionOrigin = optionBar.TransformToAncestor(host).Transform(new Point());
             True(optionOrigin.Y >= mainOrigin.Y + mainBar.ActualHeight + 5, "pin options should expand on a separate row");
@@ -1282,6 +1284,13 @@ internal static class Program
             var closeEdit = (Button)pin.FindName("CloseEditButton");
             Equal("action.close", AutomationProperties.GetAutomationId(closeEdit));
             True(tools.Children[tools.Children.Count - 2] == closeEdit, "the close button should sit next to the completion button");
+            var editSeparator = (Border)pin.FindName("EditSeparator");
+            True(tools.Children[tools.Children.Count - 3] == editSeparator,
+                "a separator should divide the pin close and completion buttons from the tools");
+            True(editSeparator.Width == 1 &&
+                 editSeparator.Background is SolidColorBrush { Color: var separatorColor } &&
+                 separatorColor == Color.FromArgb(0x1A, 0, 0, 0),
+                "the pin toolbar separator should match the screenshot toolbar divider");
             closeEdit.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             ArrangeShell();
             True(((FrameworkElement)pin.FindName("AnnotationBarHost")).Visibility == Visibility.Collapsed,
@@ -1295,6 +1304,15 @@ internal static class Program
                 "a pin with room below should keep the toolbar under the image");
             True(PinWindow.PreferToolbarAbove(new PhysicalRect(100, 900, 600, 600), 96, workArea, 4),
                 "a pin taller than the work area should use the side with more room");
+            var narrow = PinWindow.FitImageWindow(88, 460);
+            Equal(460, narrow.WindowWidth);
+            Equal(186, narrow.SideInset);
+            var wide = PinWindow.FitImageWindow(1208, 460);
+            Equal(1208, wide.WindowWidth);
+            Equal(0, wide.SideInset);
+            var plain = PinWindow.FitImageWindow(88, 0);
+            Equal(88, plain.WindowWidth);
+            Equal(0, plain.SideInset);
             var toolbarStack = (StackPanel)pin.FindName("ToolbarStack");
             var placement = typeof(PinWindow).GetMethod("ApplyToolbarPlacement", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
             placement.Invoke(pin, new object[] { true });
@@ -1397,7 +1415,10 @@ internal static class Program
             True(pinItem is not null, "radial.pin should be identifiable by automation ID");
             radialWindow.SetHover(RadialAction.Pin);
             var centerTitle = (TextBlock)radialWindow.FindName("CenterTitle");
-            Equal("光圈", centerTitle.Text);
+            var centerDot = (System.Windows.Shapes.Ellipse)radialWindow.FindName("CenterDot");
+            Equal("HaloCap", centerTitle.Text);
+            True(centerDot.Visibility == Visibility.Collapsed,
+                "the idle radial center should hide the accent dot");
             True(radialWindow.FindName("CenterSubtitle") is null,
                 "the radial center should no longer show the multi-word hint");
             var outerDisk = (System.Windows.Shapes.Ellipse)radialWindow.FindName("OuterDisk");
@@ -1411,10 +1432,17 @@ internal static class Program
             foreach (var action in new[] { RadialAction.Screenshot, RadialAction.Ocr, RadialAction.Record })
             {
                 radialWindow.SetHover(action);
-                Equal(RadialActionInfo.Get(action).Title, centerTitle.Text);
+                var info = RadialActionInfo.Get(action);
+                Equal(info.Title, centerTitle.Text);
+                True(centerDot.Visibility == Visibility.Visible,
+                    $"{action} should show its accent dot in the radial center");
+                True(((SolidColorBrush)centerDot.Fill).Color == UiColors.Parse(info.AccentHex),
+                    $"{action} should color the center dot with its accent");
             }
             radialWindow.SetHover(RadialAction.Pin);
-            Equal("光圈", centerTitle.Text);
+            Equal("HaloCap", centerTitle.Text);
+            True(centerDot.Visibility == Visibility.Collapsed,
+                "the idle radial center should hide the accent dot again");
 
             var selected = new List<RadialAction>();
             controller.ActionSelected += selected.Add;
@@ -2014,6 +2042,7 @@ internal static class Program
         using var session = (ScreenshotSession)Activator.CreateInstance(typeof(ScreenshotSession), flags, null,
             new object[] { CaptureSessionMode.Screenshot, (Action<CaptureResult>)(_ => { }) }, CultureInfo.InvariantCulture)!;
         var overlay = new ScreenshotOverlayWindow(session, monitor, CaptureSessionMode.Screenshot, null);
+        System.Windows.Media.Geometry? overlayCheckGeometry = null;
         try
         {
             var toolStyle = (Style)overlay.Resources["AnnotationToolButtonStyle"];
@@ -2028,6 +2057,14 @@ internal static class Program
                 "the close button should reuse the same tool hover");
             True(closeStyle.Setters.OfType<Setter>().All(setter => setter.Property != Control.TemplateProperty),
                 "the close button should not override the shared hover template");
+            var overlayDone = (Button)overlay.FindName("DoneButton");
+            True(overlayDone.ReadLocalValue(Control.ForegroundProperty) == DependencyProperty.UnsetValue &&
+                 overlayDone.ReadLocalValue(Control.BackgroundProperty) == DependencyProperty.UnsetValue,
+                "the screenshot check should use the neutral tool colors instead of a special accent");
+            True(overlay.FocusVisualStyle is null &&
+                 ((FrameworkElement)overlay.FindName("Root")).FocusVisualStyle is null,
+                "the overlay and its root must not draw dashed focus rectangles");
+            overlayCheckGeometry = ((System.Windows.Shapes.Path)((Viewbox)overlayDone.Content).Child).Data;
         }
         finally
         {
@@ -2044,6 +2081,19 @@ internal static class Program
             AssertHoverTint((Style)pin.Resources["PinColorSwatchStyle"], "pin color swatch", "Ring");
             True(ReferenceEquals(((Style)pin.Resources["PinOptionButtonStyle"]).BasedOn, pinToolStyle),
                 "pin option buttons should reuse the tool hover");
+            var pinDone = (Button)pin.FindName("DoneEditButton");
+            True(pinDone.ReadLocalValue(Control.ForegroundProperty) == DependencyProperty.UnsetValue &&
+                 pinDone.ReadLocalValue(Control.BackgroundProperty) == DependencyProperty.UnsetValue,
+                "the pin completion check should use the same neutral tool colors");
+            True(pinDone.Foreground is SolidColorBrush { Color: var doneColor } &&
+                 doneColor == Color.FromRgb(0x3C, 0x42, 0x50),
+                "the pin completion check should keep the standard tool icon color");
+            var pinCheckGeometry = ((System.Windows.Shapes.Path)((Viewbox)pinDone.Content).Child).Data;
+            True(ReferenceEquals(pinCheckGeometry, overlayCheckGeometry),
+                "the screenshot and pin completion checks should use the same icon");
+            True(pin.FocusVisualStyle is null &&
+                 ((FrameworkElement)pin.FindName("Root")).FocusVisualStyle is null,
+                "the pin and its root must not draw dashed focus rectangles");
         }
         finally
         {
@@ -2175,6 +2225,8 @@ internal static class Program
             (_, _) => null, _ => null, _ => null, _ => null, _ => null, _ => null);
         try
         {
+            True(settings.FocusVisualStyle is null,
+                "the settings window must not draw a dashed focus rectangle around its frame");
             var root = (FrameworkElement)settings.Content;
             root.Measure(new Size(820, 620));
             root.Arrange(new Rect(0, 0, 820, 620));
@@ -2193,6 +2245,9 @@ internal static class Program
                 "the title bar should keep the rounded top corners");
             True(HasText(root, "光圈"), "the title bar should label the app as 光圈");
             True(!HasText(root, "设置"), "the title bar should no longer show the 设置 label");
+            True(HasText(root, "开机自启"), "settings should label auto-start as 开机自启");
+            True(!HasText(root, "登录时启动"), "settings should no longer use the old auto-start wording");
+            Equal("开机自启", AutomationProperties.GetName((DependencyObject)settings.FindName("AutoStartToggle")!));
             var closePoint = close.TransformToAncestor(titleBar).Transform(new Point());
             True(closePoint.X + close.ActualWidth >= titleBar.ActualWidth - 20,
                 "the close button should sit at the top-right edge");
@@ -2270,6 +2325,8 @@ internal static class Program
         Equal("Ctrl + Alt + R", actionItems[2].InputGestureText);
         Equal("Ctrl + Alt + P", actionItems[3].InputGestureText);
         True(actionItems.All(item => item.IsEnabled), "all four tray actions should be enabled by default");
+        Equal("开机自启", menu.Items.OfType<MenuItem>()
+            .First(item => AutomationProperties.GetAutomationId(item) == "tray.item.autoStart").Header as string);
 
         var selected = new List<RadialAction>();
         menu.ActionRequested += selected.Add;

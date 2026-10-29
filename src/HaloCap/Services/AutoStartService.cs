@@ -48,7 +48,7 @@ internal sealed class AutoStartService
             }
 
             using var key = Registry.CurrentUser.CreateSubKey(RunKeyPath, true)
-                ?? throw new InvalidOperationException("无法打开登录时启动的注册表项。");
+                ?? throw new InvalidOperationException("无法打开开机自启的注册表项。");
 
             if (enabled)
             {
@@ -62,7 +62,7 @@ internal sealed class AutoStartService
         catch (Exception ex)
         {
             Log.Error($"更新开机自启状态失败（enabled={enabled}）", ex);
-            throw new InvalidOperationException("无法更新登录时启动设置，请检查注册表权限。", ex);
+            throw new InvalidOperationException("无法更新开机自启设置，请检查注册表权限。", ex);
         }
     }
 

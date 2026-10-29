@@ -4,6 +4,7 @@
              Width="252"
              Placement="MousePoint"
              HasDropShadow="True"
+             FocusVisualStyle="{x:Null}"
              SnapsToDevicePixels="True"
              UseLayoutRounding="True"
              TextOptions.TextFormattingMode="Display"

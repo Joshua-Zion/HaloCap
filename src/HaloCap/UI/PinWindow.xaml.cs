@@ -198,8 +198,11 @@ public partial class PinWindow : Window
         var padding = (int)Math.Round(OutlinePaddingDip * scale);
         var imageWidth = Math.Max(24, imageRect.Width);
         var imageHeight = Math.Max(24, imageRect.Height);
-        var windowWidth = imageWidth + padding * 2;
-        var toolbarHeight = MeasureToolbarHeight(scale, windowWidth);
+        var imageWindowWidth = imageWidth + padding * 2;
+        var toolbarSize = MeasureToolbar();
+        var toolbarHeight = (int)Math.Round(toolbarSize.Height * scale);
+        var toolbarWidth = (int)Math.Ceiling(toolbarSize.Width * scale);
+        var (windowWidth, sideInset) = FitImageWindow(imageWindowWidth, toolbarWidth);
         var toolbarAbove = toolbarHeight > 0 && ShouldPlaceToolbarAbove(imageRect, toolbarHeight, padding);
         var windowHeight = imageHeight + padding * 2 + toolbarHeight;
         var windowTop = toolbarAbove
@@ -208,18 +211,24 @@ public partial class PinWindow : Window
 
         ApplyToolbarPlacement(toolbarAbove);
 
+        ImageHost.Width = imageWindowWidth / scale;
         Width = windowWidth / scale;
         Height = windowHeight / scale;
 
         NativeMethods.SetWindowPos(
             _handle,
             NativeMethods.HWND_TOPMOST,
-            imageRect.Left - padding,
+            imageRect.Left - padding - sideInset,
             windowTop,
             windowWidth,
             windowHeight,
             NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_SHOWWINDOW);
     }
+
+    internal static (int WindowWidth, int SideInset) FitImageWindow(int imageWindowWidth, int toolbarWidth) =>
+        toolbarWidth <= imageWindowWidth
+            ? (imageWindowWidth, 0)
+            : (toolbarWidth, (toolbarWidth - imageWindowWidth) / 2);
 
     private bool ShouldPlaceToolbarAbove(PhysicalRect imageRect, int toolbarHeight, int padding)
     {
@@ -275,15 +284,15 @@ public partial class PinWindow : Window
         return dpi > 0 ? dpi / 96.0 : _monitorScale;
     }
 
-    private int MeasureToolbarHeight(double scale, int windowWidth)
+    private Size MeasureToolbar()
     {
         if (!_annotating)
         {
-            return 0;
+            return new Size(0, 0);
         }
 
-        AnnotationBarHost.Measure(new Size(windowWidth / scale, double.PositiveInfinity));
-        return (int)Math.Round(Math.Max(0, AnnotationBarHost.DesiredSize.Height) * scale);
+        AnnotationBarHost.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        return AnnotationBarHost.DesiredSize;
     }
 
     private void Root_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
@@ -1637,6 +1646,7 @@ public partial class PinWindow : Window
             BorderThickness = new Thickness(1),
             CaretBrush = brush,
             SelectionBrush = brush,
+            FocusVisualStyle = null,
             AcceptsReturn = false
         };
 

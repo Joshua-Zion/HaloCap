@@ -7,6 +7,7 @@
         WindowStyle="None"
         AllowsTransparency="True"
         Background="Transparent"
+        FocusVisualStyle="{x:Null}"
         ResizeMode="NoResize"
         WindowStartupLocation="CenterScreen"
         ShowInTaskbar="False"
@@ -734,7 +735,7 @@
 
                                                     <StackPanel VerticalAlignment="Center"
                                                                 Margin="0,0,18,0">
-                                                        <TextBlock Text="登录时启动"
+                                                        <TextBlock Text="开机自启"
                                                                    Style="{StaticResource SettingTitleStyle}" />
                                                         <TextBlock Text="进入桌面后静默运行，仅驻留托盘"
                                                                    Style="{StaticResource SettingDescStyle}" />
@@ -744,8 +745,8 @@
                                                                   Grid.Column="1"
                                                                   VerticalAlignment="Center"
                                                                   Style="{StaticResource ToggleSwitchStyle}"
-                                                                  ToolTip="开启登录时启动"
-                                                                  AutomationProperties.Name="登录时启动" />
+                                                                  ToolTip="开启开机自启"
+                                                                  AutomationProperties.Name="开机自启" />
                                                 </Grid>
                                             </Border>
                                         </Border>

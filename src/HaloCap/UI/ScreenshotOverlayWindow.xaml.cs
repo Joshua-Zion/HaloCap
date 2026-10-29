@@ -2968,6 +2968,7 @@ public partial class ScreenshotOverlayWindow : Window
             BorderThickness = new Thickness(1),
             CaretBrush = brush,
             SelectionBrush = brush,
+            FocusVisualStyle = null,
             AcceptsReturn = false
         };
 

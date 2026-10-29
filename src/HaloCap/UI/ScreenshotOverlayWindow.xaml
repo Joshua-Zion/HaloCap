@@ -6,6 +6,7 @@
         WindowStyle="None"
         AllowsTransparency="True"
         Background="Transparent"
+        FocusVisualStyle="{x:Null}"
         ResizeMode="NoResize"
         WindowStartupLocation="Manual"
         ShowInTaskbar="False"
@@ -181,6 +182,7 @@
     <Grid x:Name="Root"
           Background="Transparent"
           Focusable="True"
+          FocusVisualStyle="{x:Null}"
           ClipToBounds="True"
           PreviewMouseLeftButtonDown="Root_PreviewMouseLeftButtonDown"
           PreviewMouseMove="Root_PreviewMouseMove"
@@ -588,7 +590,6 @@
                         Tag="Done"
                         ToolTip="完成并复制到剪贴板 (Enter)"
                         AutomationProperties.Name="完成并复制"
-                        Foreground="#FF2F7CF6"
                         Click="ActionButton_Click">
                     <Viewbox Width="20" Height="20">
                         <Path Style="{StaticResource ToolbarIconStyle}" Data="{StaticResource ToolbarDoneGeometry}" />

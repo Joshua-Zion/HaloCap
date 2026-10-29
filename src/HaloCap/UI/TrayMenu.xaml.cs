@@ -149,7 +149,7 @@ public partial class TrayMenu : ContextMenu
         Items.Add(CreateSeparator());
 
         var autoStartItem = CreateItem(
-            "登录时启动",
+            "开机自启",
             string.Empty,
             "M12 3.5V11 M7.2 6.6A7.5 7.5 0 1 0 16.8 6.6",
             enabled: !recording);

@@ -292,7 +292,7 @@ public partial class SettingsWindow : Window
 
     private void UpdateAutoStartUi()
     {
-        AutoStartToggle.ToolTip = _autoStartEnabled ? "关闭登录时启动" : "开启登录时启动";
+        AutoStartToggle.ToolTip = _autoStartEnabled ? "关闭开机自启" : "开启开机自启";
     }
 
     private void FormatRadio_Checked(object sender, RoutedEventArgs e)

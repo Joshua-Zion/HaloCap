@@ -12,6 +12,7 @@
         ShowInTaskbar="False"
         Topmost="True"
         ShowActivated="False"
+        FocusVisualStyle="{x:Null}"
         FontFamily="{StaticResource AppFont}">
     <Window.Resources>
         <Style x:Key="HudStopButtonStyle" TargetType="Button">

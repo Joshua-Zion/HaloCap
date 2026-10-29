@@ -226,14 +226,15 @@ public partial class RadialMenuWindow : Window
     {
         if (action is null)
         {
-            CenterTitle.Text = "光圈";
+            CenterTitle.Text = "HaloCap";
             CenterTitle.Foreground = UiColors.Brush("#FF1D1D1F");
-            CenterDot.Fill = UiColors.Brush("#FFF5B963");
+            CenterDot.Visibility = Visibility.Collapsed;
             return;
         }
 
         var info = RadialActionInfo.Get(action.Value);
         CenterTitle.Text = info.Title;
+        CenterDot.Visibility = Visibility.Visible;
         CenterDot.Fill = new SolidColorBrush(UiColors.Parse(info.AccentHex));
     }
 

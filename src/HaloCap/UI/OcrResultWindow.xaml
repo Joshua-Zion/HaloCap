@@ -8,6 +8,7 @@
         WindowStyle="None"
         AllowsTransparency="True"
         Background="Transparent"
+        FocusVisualStyle="{x:Null}"
         ResizeMode="NoResize"
         WindowStartupLocation="Manual"
         ShowInTaskbar="False"
@@ -206,7 +207,7 @@
         </Style>
     </Window.Resources>
 
-    <Grid x:Name="Root" Margin="18" Focusable="True">
+    <Grid x:Name="Root" Margin="18" Focusable="True" FocusVisualStyle="{x:Null}">
         <Border CornerRadius="17" Background="#FFFFFFFF">
             <Border.Effect>
                 <DropShadowEffect Color="#FF000000" BlurRadius="28" ShadowDepth="8" Opacity="0.26" />

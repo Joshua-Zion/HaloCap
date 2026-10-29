@@ -13,6 +13,7 @@
         ShowActivated="False"
         Topmost="True"
         Focusable="False"
+        FocusVisualStyle="{x:Null}"
         SnapsToDevicePixels="True"
         UseLayoutRounding="True"
         TextOptions.TextRenderingMode="Grayscale"
@@ -89,9 +90,10 @@
                          Height="6"
                          Fill="#FFF5B963"
                          HorizontalAlignment="Center"
-                         Margin="0,0,0,8" />
+                         Margin="0,0,0,8"
+                         Visibility="Collapsed" />
                 <TextBlock x:Name="CenterTitle"
-                           Text="光圈"
+                           Text="HaloCap"
                            FontSize="13.5"
                            FontWeight="SemiBold"
                            Foreground="#FF1D1D1F"

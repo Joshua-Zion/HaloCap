@@ -20,6 +20,7 @@ public partial class PinWindow : Window
 {
     private const double MinZoom = 0.12;
     private const double MaxZoom = 8.0;
+    private const double OutlinePaddingDip = 4;
 
     private static readonly List<PinWindow> OpenPins = new();
 
@@ -35,9 +36,15 @@ public partial class PinWindow : Window
     private const int MaxHistory = 40;
     private readonly DispatcherTimer _hudTimer;
     private IntPtr _handle;
+    private PhysicalRect _imageRect;
     private double _zoom = 1.0;
     private double _opacity = 1.0;
-    private bool _glowEnabled;
+    private bool _outlineEnabled;
+    private bool _draggingWindow;
+    private NativeMethods.POINT _dragStartCursor;
+    private NativeMethods.RECT _dragStartWindowRect;
+    private PhysicalRect _dragStartImageRect;
+    private bool _toolbarAbove;
 
     private bool _annotating;
     private AnnotationTool _annotationTool = AnnotationTool.Pen;
@@ -65,7 +72,7 @@ public partial class PinWindow : Window
         PhysicalRect initialRect,
         double monitorScale,
         ScreenshotImageFormat format,
-        bool glowEnabled = true)
+        bool outlineEnabled = true)
     {
         InitializeComponent();
 
@@ -73,25 +80,26 @@ public partial class PinWindow : Window
         _initialRect = initialRect.Width > 0 && initialRect.Height > 0
             ? initialRect
             : new PhysicalRect(initialRect.Left, initialRect.Top, image.PixelWidth, image.PixelHeight);
+        _imageRect = _initialRect;
         _monitorScale = monitorScale > 0.1 ? monitorScale : 1.0;
         _format = format;
         _imageDipWidth = image.PixelWidth * 96.0 / (image.DpiX > 0.1 ? image.DpiX : 96.0);
         _imageDipHeight = image.PixelHeight * 96.0 / (image.DpiY > 0.1 ? image.DpiY : 96.0);
 
-        _glowEnabled = glowEnabled;
-        GlowLayer.Visibility = glowEnabled ? Visibility.Visible : Visibility.Collapsed;
-        GlowMenuItem.IsChecked = glowEnabled;
-        PinContextMenu.Opened += (_, _) => GlowMenuItem.IsChecked = _glowEnabled;
+        _outlineEnabled = outlineEnabled;
+        PinOutline.Visibility = outlineEnabled ? Visibility.Visible : Visibility.Collapsed;
+        OutlineMenuItem.IsChecked = outlineEnabled;
+        PinContextMenu.Opened += (_, _) => OutlineMenuItem.IsChecked = _outlineEnabled;
 
         PreviewImage.Source = _image;
         WindowStartupLocation = WindowStartupLocation.Manual;
 
         var initialWidth = Math.Max(24, _initialRect.Width);
         var initialHeight = Math.Max(24, _initialRect.Height);
-        Width = initialWidth / _monitorScale;
-        Height = initialHeight / _monitorScale;
-        Left = _initialRect.Left / _monitorScale;
-        Top = _initialRect.Top / _monitorScale;
+        Width = initialWidth / _monitorScale + OutlinePaddingDip * 2;
+        Height = initialHeight / _monitorScale + OutlinePaddingDip * 2;
+        Left = _initialRect.Left / _monitorScale - OutlinePaddingDip;
+        Top = _initialRect.Top / _monitorScale - OutlinePaddingDip;
 
         _hudTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1250) };
         _hudTimer.Tick += (_, _) =>
@@ -113,23 +121,23 @@ public partial class PinWindow : Window
         UpdateHistoryVisuals();
     }
 
-    internal event Action<bool>? GlowChanged;
+    internal event Action<bool>? OutlineChanged;
 
     internal static int OpenPinCount => OpenPins.Count;
 
-    internal static void SetGlowForAll(bool enabled)
+    internal static void SetOutlineForAll(bool enabled)
     {
         foreach (var pin in OpenPins.ToArray())
         {
-            pin.SetGlow(enabled);
+            pin.SetOutline(enabled);
         }
     }
 
-    private void SetGlow(bool enabled)
+    private void SetOutline(bool enabled)
     {
-        _glowEnabled = enabled;
-        GlowLayer.Visibility = enabled ? Visibility.Visible : Visibility.Collapsed;
-        GlowMenuItem.IsChecked = enabled;
+        _outlineEnabled = enabled;
+        PinOutline.Visibility = enabled ? Visibility.Visible : Visibility.Collapsed;
+        OutlineMenuItem.IsChecked = enabled;
     }
 
     internal static void CloseAllPins()
@@ -152,7 +160,7 @@ public partial class PinWindow : Window
         Opacity = 0;
 
         Show();
-        ApplyPhysicalRect(_initialRect);
+        ApplyImageRect(_initialRect);
         UpdateAnnotationScale();
 
         try
@@ -172,8 +180,10 @@ public partial class PinWindow : Window
             new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(140)) { EasingFunction = ease });
     }
 
-    private void ApplyPhysicalRect(PhysicalRect rect)
+    private void ApplyImageRect(PhysicalRect imageRect)
     {
+        _imageRect = imageRect;
+
         if (_handle == IntPtr.Zero)
         {
             _handle = new WindowInteropHelper(this).Handle;
@@ -184,14 +194,96 @@ public partial class PinWindow : Window
             return;
         }
 
+        var scale = CurrentDpiScale();
+        var padding = (int)Math.Round(OutlinePaddingDip * scale);
+        var imageWidth = Math.Max(24, imageRect.Width);
+        var imageHeight = Math.Max(24, imageRect.Height);
+        var windowWidth = imageWidth + padding * 2;
+        var toolbarHeight = MeasureToolbarHeight(scale, windowWidth);
+        var toolbarAbove = toolbarHeight > 0 && ShouldPlaceToolbarAbove(imageRect, toolbarHeight, padding);
+        var windowHeight = imageHeight + padding * 2 + toolbarHeight;
+        var windowTop = toolbarAbove
+            ? imageRect.Top - padding - toolbarHeight
+            : imageRect.Top - padding;
+
+        ApplyToolbarPlacement(toolbarAbove);
+
+        Width = windowWidth / scale;
+        Height = windowHeight / scale;
+
         NativeMethods.SetWindowPos(
             _handle,
             NativeMethods.HWND_TOPMOST,
-            rect.Left,
-            rect.Top,
-            Math.Max(1, rect.Width),
-            Math.Max(1, rect.Height),
+            imageRect.Left - padding,
+            windowTop,
+            windowWidth,
+            windowHeight,
             NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_SHOWWINDOW);
+    }
+
+    private bool ShouldPlaceToolbarAbove(PhysicalRect imageRect, int toolbarHeight, int padding)
+    {
+        var monitor = MonitorService.GetMonitorAt(
+            imageRect.Left + (imageRect.Width / 2),
+            imageRect.Top + (imageRect.Height / 2));
+        return PreferToolbarAbove(imageRect, toolbarHeight, monitor.WorkArea, padding);
+    }
+
+    internal static bool PreferToolbarAbove(
+        PhysicalRect imageRect,
+        int toolbarHeight,
+        PhysicalRect workArea,
+        int padding)
+    {
+        var spaceBelow = workArea.Bottom - (imageRect.Top + imageRect.Height) - padding;
+        var spaceAbove = imageRect.Top - workArea.Top - padding;
+        return spaceBelow < toolbarHeight && spaceAbove > spaceBelow;
+    }
+
+    private void ApplyToolbarPlacement(bool above)
+    {
+        if (_toolbarAbove == above)
+        {
+            return;
+        }
+
+        _toolbarAbove = above;
+        Grid.SetRow(AnnotationBarHost, above ? 0 : 2);
+        AnnotationBarHost.Margin = above ? new Thickness(4, 4, 4, 6) : new Thickness(4, 6, 4, 4);
+
+        ToolbarStack.Children.Remove(PinOptionBar);
+        if (above)
+        {
+            PinOptionBar.Margin = new Thickness(0, 0, 0, 6);
+            ToolbarStack.Children.Insert(0, PinOptionBar);
+        }
+        else
+        {
+            PinOptionBar.Margin = new Thickness(0, 6, 0, 0);
+            ToolbarStack.Children.Add(PinOptionBar);
+        }
+    }
+
+    private double CurrentDpiScale()
+    {
+        if (_handle == IntPtr.Zero)
+        {
+            _handle = new WindowInteropHelper(this).Handle;
+        }
+
+        var dpi = _handle != IntPtr.Zero ? NativeMethods.GetDpiForWindow(_handle) : 0;
+        return dpi > 0 ? dpi / 96.0 : _monitorScale;
+    }
+
+    private int MeasureToolbarHeight(double scale, int windowWidth)
+    {
+        if (!_annotating)
+        {
+            return 0;
+        }
+
+        AnnotationBarHost.Measure(new Size(windowWidth / scale, double.PositiveInfinity));
+        return (int)Math.Round(Math.Max(0, AnnotationBarHost.DesiredSize.Height) * scale);
     }
 
     private void Root_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
@@ -219,14 +311,84 @@ public partial class PinWindow : Window
         }
 
         HideHudImmediately();
+        BeginWindowDrag();
+    }
 
-        try
+    private void BeginWindowDrag()
+    {
+        if (_handle == IntPtr.Zero)
         {
-            DragMove();
+            _handle = new WindowInteropHelper(this).Handle;
         }
-        catch (InvalidOperationException)
+
+        if (_handle == IntPtr.Zero ||
+            !NativeMethods.GetCursorPos(out _dragStartCursor) ||
+            !NativeMethods.GetWindowRect(_handle, out _dragStartWindowRect))
         {
-            // 鼠标在拖动开始前已经释放。
+            return;
+        }
+
+        _dragStartImageRect = _imageRect;
+        _draggingWindow = true;
+        Mouse.Capture(Root);
+    }
+
+    private void ContinueWindowDrag()
+    {
+        if (!_draggingWindow)
+        {
+            return;
+        }
+
+        if (Mouse.LeftButton != MouseButtonState.Pressed)
+        {
+            EndWindowDrag();
+            return;
+        }
+
+        if (!NativeMethods.GetCursorPos(out var cursor))
+        {
+            return;
+        }
+
+        var dx = cursor.X - _dragStartCursor.X;
+        var dy = cursor.Y - _dragStartCursor.Y;
+
+        // 直接按物理像素移动，不交给系统拖动，避免贴图在屏幕边缘被拉回。
+        NativeMethods.SetWindowPos(
+            _handle,
+            NativeMethods.HWND_TOPMOST,
+            _dragStartWindowRect.Left + dx,
+            _dragStartWindowRect.Top + dy,
+            0,
+            0,
+            NativeMethods.SWP_NOSIZE | NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_SHOWWINDOW);
+
+        _imageRect = new PhysicalRect(
+            _dragStartImageRect.Left + dx,
+            _dragStartImageRect.Top + dy,
+            _imageRect.Width,
+            _imageRect.Height);
+    }
+
+    private void EndWindowDrag()
+    {
+        if (!_draggingWindow)
+        {
+            return;
+        }
+
+        _draggingWindow = false;
+
+        if (Mouse.Captured == Root)
+        {
+            Mouse.Capture(null);
+        }
+
+        if (_annotating)
+        {
+            // 拖到屏幕底部后重新判断工具栏位置，必要时翻到图片上方。
+            ApplyImageRect(_imageRect);
         }
     }
 
@@ -258,14 +420,7 @@ public partial class PinWindow : Window
 
     private void ZoomAtCursor(int wheelDelta)
     {
-        if (_handle == IntPtr.Zero)
-        {
-            _handle = new WindowInteropHelper(this).Handle;
-        }
-
-        if (!NativeMethods.GetWindowRect(_handle, out var currentRect) ||
-            currentRect.Width <= 0 ||
-            currentRect.Height <= 0)
+        if (_imageRect.Width <= 0 || _imageRect.Height <= 0)
         {
             return;
         }
@@ -290,36 +445,19 @@ public partial class PinWindow : Window
 
         if (cursorAvailable)
         {
-            fractionX = Math.Clamp((cursor.X - currentRect.Left) / (double)currentRect.Width, 0.0, 1.0);
-            fractionY = Math.Clamp((cursor.Y - currentRect.Top) / (double)currentRect.Height, 0.0, 1.0);
+            fractionX = Math.Clamp((cursor.X - _imageRect.Left) / (double)_imageRect.Width, 0.0, 1.0);
+            fractionY = Math.Clamp((cursor.Y - _imageRect.Top) / (double)_imageRect.Height, 0.0, 1.0);
         }
 
         var newLeft = cursorAvailable
             ? (int)Math.Round(cursor.X - (fractionX * newWidth))
-            : currentRect.Left - ((newWidth - currentRect.Width) / 2);
+            : _imageRect.Left - ((newWidth - _imageRect.Width) / 2);
         var newTop = cursorAvailable
             ? (int)Math.Round(cursor.Y - (fractionY * newHeight))
-            : currentRect.Top - ((newHeight - currentRect.Height) / 2);
-
-        NativeMethods.SetWindowPos(
-            _handle,
-            NativeMethods.HWND_TOPMOST,
-            newLeft,
-            newTop,
-            newWidth,
-            newHeight,
-            NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_SHOWWINDOW);
+            : _imageRect.Top - ((newHeight - _imageRect.Height) / 2);
 
         _zoom = targetZoom;
-
-        var dpi = NativeMethods.GetDpiForWindow(_handle);
-        var scale = dpi > 0 ? dpi / 96.0 : _monitorScale;
-        if (scale > 0.1)
-        {
-            Width = newWidth / scale;
-            Height = newHeight / scale;
-        }
-
+        ApplyImageRect(new PhysicalRect(newLeft, newTop, newWidth, newHeight));
         ShowHud($"缩放 {_zoom * 100:0}%");
     }
 
@@ -337,12 +475,17 @@ public partial class PinWindow : Window
         _opacity = 1.0;
         BeginAnimation(OpacityProperty, null);
         Opacity = 1.0;
-        ApplyPhysicalRect(_initialRect);
 
-        var dpi = NativeMethods.GetDpiForWindow(_handle);
-        var scale = dpi > 0 ? dpi / 96.0 : _monitorScale;
-        Width = Math.Max(24, _initialRect.Width) / scale;
-        Height = Math.Max(24, _initialRect.Height) / scale;
+        var width = Math.Max(24, _initialRect.Width);
+        var height = Math.Max(24, _initialRect.Height);
+        var centerX = _imageRect.Left + (_imageRect.Width / 2.0);
+        var centerY = _imageRect.Top + (_imageRect.Height / 2.0);
+
+        ApplyImageRect(new PhysicalRect(
+            (int)Math.Round(centerX - (width / 2.0)),
+            (int)Math.Round(centerY - (height / 2.0)),
+            width,
+            height));
 
         ShowHud("已恢复实际大小");
     }
@@ -596,6 +739,7 @@ public partial class PinWindow : Window
 
         _annotating = enabled;
         AnnotationBarHost.Visibility = enabled ? Visibility.Visible : Visibility.Collapsed;
+        ApplyImageRect(_imageRect);
 
         if (!enabled)
         {
@@ -712,6 +856,13 @@ public partial class PinWindow : Window
 
     private void Root_PreviewMouseMove(object sender, MouseEventArgs e)
     {
+        if (_draggingWindow)
+        {
+            e.Handled = true;
+            ContinueWindowDrag();
+            return;
+        }
+
         if (!_annotating || !_drawingAnnotation)
         {
             return;
@@ -798,6 +949,13 @@ public partial class PinWindow : Window
 
     private void Root_PreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
     {
+        if (_draggingWindow)
+        {
+            e.Handled = true;
+            EndWindowDrag();
+            return;
+        }
+
         if (!_drawingAnnotation)
         {
             return;
@@ -1145,6 +1303,7 @@ public partial class PinWindow : Window
                 ClearAnnotationStrokes();
                 break;
 
+            case "Close":
             case "Done":
                 SetAnnotationMode(false);
                 break;
@@ -1626,11 +1785,11 @@ public partial class PinWindow : Window
 
     private void CopyMenuItem_Click(object sender, RoutedEventArgs e) => CopyImage();    private void SaveMenuItem_Click(object sender, RoutedEventArgs e) => SaveImage();
 
-    private void GlowMenuItem_Click(object sender, RoutedEventArgs e)
+    private void OutlineMenuItem_Click(object sender, RoutedEventArgs e)
     {
-        var enabled = GlowMenuItem.IsChecked;
-        SetGlowForAll(enabled);
-        GlowChanged?.Invoke(enabled);
+        var enabled = OutlineMenuItem.IsChecked;
+        SetOutlineForAll(enabled);
+        OutlineChanged?.Invoke(enabled);
     }
 
     private void ResetMenuItem_Click(object sender, RoutedEventArgs e) => ResetSizeAndOpacity();

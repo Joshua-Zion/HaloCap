@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
@@ -10,12 +11,25 @@ using System.Windows.Shapes;
 using System.Windows.Threading;
 using HaloCap.Diagnostics;
 using HaloCap.Interop;
+using HaloCap.Models;
 
 namespace HaloCap.UI;
 
 public partial class TrayMenu : ContextMenu
 {
+    private static readonly RadialAction[] ActionOrder =
+    {
+        RadialAction.Screenshot,
+        RadialAction.Ocr,
+        RadialAction.Record,
+        RadialAction.Pin
+    };
+
     private static readonly Brush IconBrush = UiColors.Brush("#6E6E73");
+    private static readonly Brush ScreenshotBrush = UiColors.Brush("#6CA8FF");
+    private static readonly Brush OcrBrush = UiColors.Brush("#B08CFF");
+    private static readonly Brush RecordBrush = UiColors.Brush("#FF7373");
+    private static readonly Brush PinBrush = UiColors.Brush("#F5B963");
     private static readonly Brush RecordingBrush = UiColors.Brush("#E5484D");
     private static readonly Brush RecordingTextBrush = UiColors.Brush("#D70015");
 
@@ -23,11 +37,17 @@ public partial class TrayMenu : ContextMenu
     private IntPtr _mouseHook;
     private IntPtr _popupHandle;
 
-    public TrayMenu(string versionLabel, string hotkeyDisplay, bool autoStart, bool recording)
+    public TrayMenu(
+        string versionLabel,
+        string hotkeyDisplay,
+        IReadOnlyDictionary<RadialAction, HotkeyDefinition> actionHotkeys,
+        bool autoStart,
+        bool recording,
+        bool pinAvailable)
     {
         InitializeComponent();
         Tag = versionLabel;
-        BuildMenu(hotkeyDisplay, autoStart, recording);
+        BuildMenu(hotkeyDisplay, actionHotkeys, autoStart, recording, pinAvailable);
 
         // 点击菜单外部或托盘区域收起时自动关闭，避免菜单长期停留。
         StaysOpen = false;
@@ -55,9 +75,9 @@ public partial class TrayMenu : ContextMenu
 
     public event EventHandler? SettingsRequested;
 
-    public event EventHandler? StopRecordingRequested;
-
     public event EventHandler? ExitRequested;
+
+    public event Action<RadialAction>? ActionRequested;
 
     public event Action<bool>? AutoStartToggleRequested;
 
@@ -69,21 +89,46 @@ public partial class TrayMenu : ContextMenu
 
     public void Dismiss() => IsOpen = false;
 
-    private void BuildMenu(string hotkeyDisplay, bool autoStart, bool recording)
+    private void BuildMenu(
+        string hotkeyDisplay,
+        IReadOnlyDictionary<RadialAction, HotkeyDefinition> actionHotkeys,
+        bool autoStart,
+        bool recording,
+        bool pinAvailable)
     {
-        if (recording)
+        foreach (var action in ActionOrder)
         {
-            var stop = CreateItem(
-                "停止录制",
-                string.Empty,
-                "M12 5.5A6.5 6.5 0 1 0 12 18.5A6.5 6.5 0 0 0 12 5.5Z",
-                filled: true,
-                iconBrush: RecordingBrush);
-            stop.Foreground = RecordingTextBrush;
-            stop.Click += (_, _) => Activate(StopRecordingRequested);
-            Items.Add(stop);
-            Items.Add(CreateSeparator());
+            var capturedAction = action;
+            var info = RadialActionInfo.Get(action);
+            var stopping = action == RadialAction.Record && recording;
+            var enabled = stopping || (!recording && (action != RadialAction.Pin || pinAvailable));
+            var shortcut = actionHotkeys.TryGetValue(action, out var hotkey)
+                ? hotkey.DisplayText
+                : info.Shortcut;
+
+            var item = CreateItem(
+                stopping ? "停止录制" : info.Title,
+                shortcut,
+                stopping
+                    ? "M12 5.5A6.5 6.5 0 1 0 12 18.5A6.5 6.5 0 0 0 12 5.5Z"
+                    : info.IconGeometry,
+                enabled,
+                filled: stopping,
+                iconBrush: stopping ? RecordingBrush : ActionBrush(action));
+
+            if (stopping)
+            {
+                item.Foreground = RecordingTextBrush;
+            }
+
+            System.Windows.Automation.AutomationProperties.SetAutomationId(
+                item,
+                $"tray.action.{action.ToString().ToLowerInvariant()}");
+            item.Click += (_, _) => ActivateAction(capturedAction);
+            Items.Add(item);
         }
+
+        Items.Add(CreateSeparator());
 
         var open = CreateItem(
             "打开光圈",
@@ -134,6 +179,21 @@ public partial class TrayMenu : ContextMenu
         IsOpen = false;
         handler?.Invoke(this, EventArgs.Empty);
     }
+
+    private void ActivateAction(RadialAction action)
+    {
+        IsOpen = false;
+        ActionRequested?.Invoke(action);
+    }
+
+    private static Brush ActionBrush(RadialAction action) => action switch
+    {
+        RadialAction.Screenshot => ScreenshotBrush,
+        RadialAction.Ocr => OcrBrush,
+        RadialAction.Record => RecordBrush,
+        RadialAction.Pin => PinBrush,
+        _ => IconBrush
+    };
 
     private MenuItem CreateItem(
         string header,

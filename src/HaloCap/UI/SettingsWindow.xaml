@@ -73,6 +73,7 @@
         </Style>
 
         <Style x:Key="NavItemStyle" TargetType="RadioButton">
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
             <Setter Property="Height" Value="34" />
             <Setter Property="Margin" Value="0,1" />
             <Setter Property="Cursor" Value="Hand" />
@@ -121,6 +122,7 @@
         </Style>
 
         <Style x:Key="WindowCloseButtonStyle" TargetType="Button">
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
             <Setter Property="Width" Value="28" />
             <Setter Property="Height" Value="28" />
             <Setter Property="Cursor" Value="Hand" />
@@ -160,6 +162,7 @@
         </Style>
 
         <Style x:Key="SegmentOptionStyle" TargetType="RadioButton">
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
             <Setter Property="Height" Value="26" />
             <Setter Property="Cursor" Value="Hand" />
             <Setter Property="FontSize" Value="11.5" />
@@ -192,6 +195,7 @@
         </Style>
 
         <Style x:Key="ToggleSwitchStyle" TargetType="ToggleButton">
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
             <Setter Property="Width" Value="44" />
             <Setter Property="Height" Value="24" />
             <Setter Property="Cursor" Value="Hand" />
@@ -233,6 +237,7 @@
         </Style>
 
         <Style x:Key="KeyFieldStyle" TargetType="Button">
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
             <Setter Property="Height" Value="34" />
             <Setter Property="Cursor" Value="Hand" />
             <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}" />
@@ -264,6 +269,7 @@
         </Style>
 
         <Style x:Key="FieldTextBoxStyle" TargetType="TextBox">
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
             <Setter Property="Height" Value="34" />
             <Setter Property="Background" Value="{StaticResource SettingsFieldBrush}" />
             <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}" />
@@ -298,6 +304,7 @@
         </Style>
 
         <Style x:Key="FooterGhostButtonStyle" TargetType="Button">
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
             <Setter Property="Height" Value="32" />
             <Setter Property="Padding" Value="16,0" />
             <Setter Property="FontSize" Value="12" />
@@ -328,6 +335,7 @@
         </Style>
 
         <Style x:Key="FooterPrimaryButtonStyle" TargetType="Button">
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
             <Setter Property="Height" Value="32" />
             <Setter Property="Padding" Value="20,0" />
             <Setter Property="FontSize" Value="12" />

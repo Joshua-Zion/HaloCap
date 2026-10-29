@@ -1194,6 +1194,7 @@ internal static class Program
             app.InitializeComponent();
             CaptureOverlayPreviewKeepsMouseSurface();
             CaptureSelectionHintsStayLightAndConcise();
+            CaptureSelectionFallsBackToFullScreen();
             RecordSelectionDimsAfterUsableDrag();
             CrossScreenSelectionSharesStateAndComposesCapture();
             SettingsAndTrayChromeUseCleanLayout(app);
@@ -1260,25 +1261,54 @@ internal static class Program
             var pin = new PinWindow(CreateSolidBitmap(1200, 800, Colors.White), new PhysicalRect(0, 0, 1200, 800), 1, ScreenshotImageFormat.Png);
             True(!(bool)typeof(PinWindow).GetField("_textBold", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(pin)!,
                 "pin text tool should default to regular weight");
+            var pinShell = (FrameworkElement)pin.FindName("PinShell");
             var root = (FrameworkElement)pin.FindName("Root");
-            root.Measure(new Size(1100, 600));
-            root.Arrange(new Rect(0, 0, 1100, 600));
             typeof(PinWindow).GetMethod("SetAnnotationMode", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.Invoke(pin, new object[] { true });
             ((Button)pin.FindName("ToolShapeButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-            root.UpdateLayout();
+            ArrangeShell();
             var mainBar = (Border)pin.FindName("AnnotationBar");
             var optionBar = (Border)pin.FindName("PinOptionBar");
             var host = (FrameworkElement)pin.FindName("AnnotationBarHost");
             var mainOrigin = mainBar.TransformToAncestor(host).Transform(new Point());
             var optionOrigin = optionBar.TransformToAncestor(host).Transform(new Point());
             True(optionOrigin.Y >= mainOrigin.Y + mainBar.ActualHeight + 5, "pin options should expand on a separate row");
+            var hostOrigin = host.TransformToAncestor(pinShell).Transform(new Point());
+            var rootOrigin = root.TransformToAncestor(pinShell).Transform(new Point());
+            True(hostOrigin.Y >= rootOrigin.Y + root.ActualHeight - 0.5,
+                "the pin annotation toolbar should sit below the image, outside its bounds");
             var tools = (StackPanel)mainBar.Child;
             var done = (Button)tools.Children[tools.Children.Count - 1];
             True(done.Content is Viewbox, "pin completion should contain only the checkmark icon");
+            var closeEdit = (Button)pin.FindName("CloseEditButton");
+            Equal("action.close", AutomationProperties.GetAutomationId(closeEdit));
+            True(tools.Children[tools.Children.Count - 2] == closeEdit, "the close button should sit next to the completion button");
+            closeEdit.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            ArrangeShell();
+            True(((FrameworkElement)pin.FindName("AnnotationBarHost")).Visibility == Visibility.Collapsed,
+                "closing from the pin toolbar should exit annotation mode instead of closing the pin");
+            typeof(PinWindow).GetMethod("SetAnnotationMode", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.Invoke(pin, new object[] { true });
+            ArrangeShell();
+            var workArea = new PhysicalRect(0, 0, 1920, 1040);
+            True(PinWindow.PreferToolbarAbove(new PhysicalRect(100, 800, 600, 400), 96, workArea, 4),
+                "a pin crossing the screen bottom should move its toolbar above the image");
+            True(!PinWindow.PreferToolbarAbove(new PhysicalRect(100, 100, 600, 400), 96, workArea, 4),
+                "a pin with room below should keep the toolbar under the image");
+            True(PinWindow.PreferToolbarAbove(new PhysicalRect(100, 900, 600, 600), 96, workArea, 4),
+                "a pin taller than the work area should use the side with more room");
+            var toolbarStack = (StackPanel)pin.FindName("ToolbarStack");
+            var placement = typeof(PinWindow).GetMethod("ApplyToolbarPlacement", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+            placement.Invoke(pin, new object[] { true });
+            ArrangeShell();
+            True(Grid.GetRow(host) == 0 && toolbarStack.Children[0] == optionBar,
+                "the flipped toolbar should sit above the image with its option bar on top");
+            placement.Invoke(pin, new object[] { false });
+            ArrangeShell();
+            True(Grid.GetRow(host) == 2 && toolbarStack.Children[toolbarStack.Children.Count - 1] == optionBar,
+                "the toolbar should return below the image when there is room");
             foreach (var name in new[] { "ToolShapeButton", "ToolArrowButton", "ToolPenButton", "ToolHighlighterButton", "ToolEraserButton", "ToolTextButton", "ToolMosaicButton", "ToolStepButton" })
             {
                 ((Button)pin.FindName(name)).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-                root.UpdateLayout();
+                ArrangeShell();
                 True(optionBar.ActualWidth <= mainBar.ActualWidth + 0.1, $"{name} options should not exceed the main toolbar width");
             }
             ((Button)pin.FindName("ToolMosaicButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
@@ -1286,7 +1316,14 @@ internal static class Program
             True(((FrameworkElement)pin.FindName("PinColorSeparator")).Visibility == Visibility.Collapsed, "mosaic should hide the color separator");
 
             ToolbarHoverTintsPreserveActiveBackgrounds();
-            PinGlowAndLightMenuBehaveConsistently(pin);
+            PinOutlineAndLightMenuBehaveConsistently(pin);
+
+            void ArrangeShell()
+            {
+                pinShell.Measure(new Size(1100, 900));
+                pinShell.Arrange(new Rect(0, 0, 1100, 900));
+                pinShell.UpdateLayout();
+            }
 
             // Reuse this Application and STA without showing windows or pumping startup callbacks.
             foreach (var initialConversion in new[] { new AppSettings().ConvertFilePathsToImages, false })
@@ -1591,6 +1628,42 @@ internal static class Program
             {
                 overlay.Close();
             }
+        }
+    }
+
+    private static void CaptureSelectionFallsBackToFullScreen()
+    {
+        const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
+        var monitor = new ScreenMonitor
+        {
+            Bounds = new PhysicalRect(0, 0, 600, 400),
+            WorkArea = new PhysicalRect(0, 0, 600, 400),
+            Scale = 1.0
+        };
+        using var session = (ScreenshotSession)Activator.CreateInstance(typeof(ScreenshotSession), flags, null,
+            new object[] { CaptureSessionMode.Screenshot, (Action<CaptureResult>)(_ => { }) }, CultureInfo.InvariantCulture)!;
+        var overlay = new ScreenshotOverlayWindow(session, monitor, CaptureSessionMode.Screenshot, null);
+        try
+        {
+            var root = (Grid)overlay.FindName("Root");
+            root.Measure(new Size(600, 400));
+            root.Arrange(new Rect(0, 0, 600, 400));
+            typeof(ScreenshotOverlayWindow).GetMethod("RefreshMapping", flags)!.Invoke(overlay, null);
+
+            typeof(ScreenshotOverlayWindow).GetMethod("ShowElementHoverOrFullScreen", flags)!
+                .Invoke(overlay, new object?[] { null });
+
+            var border = (FrameworkElement)overlay.FindName("ElementBorder");
+            True(border.Visibility == Visibility.Visible, "the fallback should show the element border");
+            Equal(600.0, border.Width, 0.01);
+            Equal(400.0, border.Height, 0.01);
+            Equal(
+                new PhysicalRect(0, 0, 600, 400),
+                (PhysicalRect)typeof(ScreenshotOverlayWindow).GetField("_hoverElementPx", flags)!.GetValue(overlay)!);
+        }
+        finally
+        {
+            overlay.Close();
         }
     }
 
@@ -2000,12 +2073,12 @@ internal static class Program
             $"{name} hover should not replace the active fill or icon color");
     }
 
-    private static void PinGlowAndLightMenuBehaveConsistently(PinWindow pin)
+    private static void PinOutlineAndLightMenuBehaveConsistently(PinWindow pin)
     {
         const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
-        var glowLayer = (FrameworkElement)pin.FindName("GlowLayer");
-        True(glowLayer.Visibility == Visibility.Visible, "pins should show the glow outline by default");
-        True(new AppSettings().PinGlowEnabled, "the pin glow setting should default to enabled");
+        var outline = (FrameworkElement)pin.FindName("PinOutline");
+        True(outline.Visibility == Visibility.Visible, "pins should show the outer outline by default");
+        True(new AppSettings().PinGlowEnabled, "the pin outline setting should default to enabled");
 
         var menu = pin.ContextMenu;
         True(menu is not null, "pins should keep a context menu");
@@ -2023,76 +2096,80 @@ internal static class Program
              menuBackground.Color.B >= 0xF5,
             "the pin menu should use the light HaloCap surface");
 
-        var glowItem = menu!.Items.OfType<MenuItem>()
-            .First(item => item.Header as string == "发光描边");
-        True(glowItem.IsChecked, "the glow menu item should start checked");
-        var foreground = (SolidColorBrush)glowItem.Foreground;
+        var outlineItem = menu!.Items.OfType<MenuItem>()
+            .First(item => item.Header as string == "外描边");
+        True(outlineItem.IsChecked, "the outline menu item should start checked");
+        var foreground = (SolidColorBrush)outlineItem.Foreground;
         True(foreground.Color.R < 0x40 && foreground.Color.G < 0x40 && foreground.Color.B < 0x40,
             "pin menu text should be dark on the light surface");
 
-        glowItem.ApplyTemplate();
-        glowItem.Measure(new Size(220, 34));
-        glowItem.Arrange(new Rect(0, 0, 220, 34));
-        glowItem.UpdateLayout();
-        var check = (System.Windows.Shapes.Path?)glowItem.Template.FindName("CheckGlyph", glowItem);
+        outlineItem.ApplyTemplate();
+        outlineItem.Measure(new Size(220, 34));
+        outlineItem.Arrange(new Rect(0, 0, 220, 34));
+        outlineItem.UpdateLayout();
+        var check = (System.Windows.Shapes.Path?)outlineItem.Template.FindName("CheckGlyph", outlineItem);
         True(check is { Visibility: Visibility.Visible },
-            "the enabled glow state should show a check glyph");
+            "the enabled outline state should show a check glyph");
 
         var fired = new List<bool>();
-        pin.GlowChanged += fired.Add;
-        glowItem.IsChecked = false;
-        typeof(PinWindow).GetMethod("GlowMenuItem_Click", flags)!
-            .Invoke(pin, new object[] { glowItem, new RoutedEventArgs() });
-        True(glowLayer.Visibility == Visibility.Collapsed, "turning off the glow should hide the outline");
-        True(fired.Count == 1 && !fired[0], "the glow toggle should notify the app to persist it");
-        glowItem.UpdateLayout();
+        pin.OutlineChanged += fired.Add;
+        outlineItem.IsChecked = false;
+        typeof(PinWindow).GetMethod("OutlineMenuItem_Click", flags)!
+            .Invoke(pin, new object[] { outlineItem, new RoutedEventArgs() });
+        True(outline.Visibility == Visibility.Collapsed, "turning off the outline should hide it");
+        True(fired.Count == 1 && !fired[0], "the outline toggle should notify the app to persist it");
+        outlineItem.UpdateLayout();
         True(check is not null && check.Visibility == Visibility.Collapsed,
-            "the unchecked glow item should hide the check glyph");
+            "the unchecked outline item should hide the check glyph");
 
         var sample = new PinWindow(CreateSolidBitmap(120, 80, Colors.White),
             new PhysicalRect(0, 0, 120, 80), 1, ScreenshotImageFormat.Png);
         try
         {
-            var sampleRoot = (FrameworkElement)sample.FindName("Root");
-            sampleRoot.Measure(new Size(120, 80));
-            sampleRoot.Arrange(new Rect(0, 0, 120, 80));
-            sampleRoot.UpdateLayout();
-            var glowFrame = RenderBitmap(sampleRoot, 120, 80);
-            var glowVisible = false;
-            for (var y = 1; y <= 4; y++)
-            {
-                var pixel = ReadPixel(glowFrame, 60, y);
-                glowVisible |= pixel.B > pixel.R + 20;
-            }
-            True(glowVisible, "the enabled glow should tint the pin edge blue");
+            var shell = (FrameworkElement)sample.FindName("PinShell");
+            shell.Measure(new Size(128, 88));
+            shell.Arrange(new Rect(0, 0, 128, 88));
+            shell.UpdateLayout();
+            var frame = RenderBitmap(shell, 128, 88);
+            var stroke = ReadPixel(frame, 1, 44);
+            True(stroke.A >= 0x80 && stroke.B > stroke.R + 10,
+                "the enabled outline should draw a visible light blue stroke outside the image");
+            True(stroke.B > 240 && stroke.R is >= 90 and <= 200,
+                "the outer stroke should stay a soft blue rather than a saturated line");
+            var imagePixel = ReadPixel(frame, 10, 44);
+            True(imagePixel.R > 240 && imagePixel.G > 240 && imagePixel.B > 240,
+                "the outer stroke must not paint over the image");
 
-            PinWindow.SetGlowForAll(false);
-            sampleRoot.UpdateLayout();
-            var plainFrame = RenderBitmap(sampleRoot, 120, 80);
-            var plainEdge = true;
-            for (var y = 1; y <= 4; y++)
-            {
-                var pixel = ReadPixel(plainFrame, 60, y);
-                plainEdge &= pixel.R > 240 && pixel.G > 240 && pixel.B > 240;
-            }
-            True(plainEdge, "turning the glow off should leave a plain image edge");
+            PinWindow.SetOutlineForAll(false);
+            shell.UpdateLayout();
+            var plain = RenderBitmap(shell, 128, 88);
+            True(ReadPixel(plain, 1, 44).A == 0, "turning the outline off should leave the padding transparent");
+            True(ReadPixel(plain, 10, 44).R > 240, "the image should stay untouched when the outline is off");
         }
         finally
         {
-            PinWindow.SetGlowForAll(true);
+            PinWindow.SetOutlineForAll(true);
             sample.Close();
         }
 
-        static BitmapSource RenderBitmap(FrameworkElement root, int width, int height)
+        static BitmapSource RenderBitmap(FrameworkElement element, int width, int height)
         {
             var bitmap = new RenderTargetBitmap(width, height, 96, 96, PixelFormats.Pbgra32);
-            bitmap.Render(root);
+            bitmap.Render(element);
             return bitmap;
         }
     }
 
     private static void SettingsAndTrayChromeUseCleanLayout(HaloCap.App app)
     {
+        foreach (var style in new[] { "PrimaryButtonStyle", "SecondaryButtonStyle", "CloseButtonStyle", "ToggleSwitchStyle" })
+        {
+            var resource = (Style)app.FindResource(style);
+            True(resource.Setters.OfType<Setter>().Any(setter =>
+                    setter.Property == FrameworkElement.FocusVisualStyleProperty && setter.Value is null),
+                $"{style} should suppress the dashed focus rectangle");
+        }
+
         var settings = new SettingsWindow(HotkeyDefinition.Default, DefaultActionHotkeys(), false, ScreenshotImageFormat.Png,
             RadialMenuSize.Medium, string.Empty, true,
             (_, _) => null, _ => null, _ => null, _ => null, _ => null, _ => null);
@@ -2176,9 +2253,55 @@ internal static class Program
             settings.Close();
         }
 
-        var menu = new TrayMenu("v1.1.10", "Ctrl + Alt + D", autoStart: true, recording: false);
+        var menu = new TrayMenu("v1.2.4", "Ctrl + Alt + D", DefaultActionHotkeys(),
+            autoStart: true, recording: false, pinAvailable: true);
         True(!menu.StaysOpen, "the tray menu should close automatically when clicking outside");
         menu.ApplyTemplate();
+        var actionItems = menu.Items.OfType<MenuItem>()
+            .Where(item => AutomationProperties.GetAutomationId(item).StartsWith("tray.action.", StringComparison.Ordinal))
+            .ToList();
+        Equal(4, actionItems.Count);
+        Equal("截图", actionItems[0].Header as string);
+        Equal("文字识别", actionItems[1].Header as string);
+        Equal("录屏", actionItems[2].Header as string);
+        Equal("贴图", actionItems[3].Header as string);
+        Equal("Ctrl + Alt + A", actionItems[0].InputGestureText);
+        Equal("Ctrl + Alt + O", actionItems[1].InputGestureText);
+        Equal("Ctrl + Alt + R", actionItems[2].InputGestureText);
+        Equal("Ctrl + Alt + P", actionItems[3].InputGestureText);
+        True(actionItems.All(item => item.IsEnabled), "all four tray actions should be enabled by default");
+
+        var selected = new List<RadialAction>();
+        menu.ActionRequested += selected.Add;
+        actionItems[1].RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+        True(selected.Count == 1 && selected[0] == RadialAction.Ocr,
+            "choosing a tray action should raise exactly one action request");
+        True(!menu.IsOpen, "choosing an action should close the tray menu");
+
+        var recordingMenu = new TrayMenu("v1.2.4", "Ctrl + Alt + D", DefaultActionHotkeys(),
+            autoStart: true, recording: true, pinAvailable: true);
+        recordingMenu.ApplyTemplate();
+        var recordingItems = recordingMenu.Items.OfType<MenuItem>()
+            .Where(item => AutomationProperties.GetAutomationId(item).StartsWith("tray.action.", StringComparison.Ordinal))
+            .ToList();
+        Equal("停止录制", recordingItems[2].Header as string);
+        True(recordingItems[2].IsEnabled, "the record row should stop recording while it is running");
+        True(!recordingItems[0].IsEnabled && !recordingItems[1].IsEnabled && !recordingItems[3].IsEnabled,
+            "capture actions and pin should stay disabled while recording");
+        True(!recordingMenu.Items.OfType<MenuItem>()
+                .First(item => AutomationProperties.GetAutomationId(item) == "tray.item.autoStart").IsEnabled,
+            "auto-start should stay disabled while recording");
+
+        var emptyClipboardMenu = new TrayMenu("v1.2.4", "Ctrl + Alt + D", DefaultActionHotkeys(),
+            autoStart: false, recording: false, pinAvailable: false);
+        emptyClipboardMenu.ApplyTemplate();
+        var pinRow = emptyClipboardMenu.Items.OfType<MenuItem>()
+            .First(item => AutomationProperties.GetAutomationId(item) == "tray.action.pin");
+        True(!pinRow.IsEnabled, "pin should be disabled while the clipboard has no pinnable content");
+        True(emptyClipboardMenu.Items.OfType<MenuItem>()
+                .First(item => AutomationProperties.GetAutomationId(item) == "tray.action.screenshot").IsEnabled,
+            "an empty clipboard should not disable screenshots");
+
         var autoStart = menu.Items.OfType<MenuItem>()
             .First(item => AutomationProperties.GetAutomationId(item) == "tray.item.autoStart");
         True(autoStart.IsChecked, "the tray auto-start item should retain its checked state");

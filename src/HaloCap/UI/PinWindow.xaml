@@ -37,6 +37,7 @@
         </Style>
 
         <Style x:Key="PinMenuItemStyle" TargetType="MenuItem">
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
             <Setter Property="Foreground" Value="#FF1D1D1F" />
             <Setter Property="FontSize" Value="12.5" />
             <Setter Property="Template">
@@ -108,6 +109,7 @@
         </Style>
 
         <Style x:Key="PinToolButtonStyle" TargetType="Button">
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
             <Setter Property="Width" Value="30" />
             <Setter Property="Height" Value="30" />
             <Setter Property="Margin" Value="1,0" />
@@ -150,6 +152,7 @@
         </Style>
 
         <Style x:Key="PinColorSwatchStyle" TargetType="Button">
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
             <Setter Property="Width" Value="22" />
             <Setter Property="Height" Value="22" />
             <Setter Property="Margin" Value="1,0" />
@@ -179,6 +182,7 @@
         </Style>
 
         <Style x:Key="PinBarButtonStyle" TargetType="Button">
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
             <Setter Property="Background" Value="Transparent" />
             <Setter Property="Foreground" Value="#2A303B" />
             <Setter Property="FontSize" Value="11" />
@@ -233,11 +237,11 @@
                       InputGestureText="Ctrl+0"
                       Style="{StaticResource PinMenuItemStyle}"
                       Click="ResetMenuItem_Click" />
-            <MenuItem x:Name="GlowMenuItem"
-                      Header="发光描边"
+            <MenuItem x:Name="OutlineMenuItem"
+                      Header="外描边"
                       IsCheckable="True"
                       Style="{StaticResource PinMenuItemStyle}"
-                      Click="GlowMenuItem_Click" />
+                      Click="OutlineMenuItem_Click" />
             <Separator Style="{StaticResource PinSeparatorStyle}" />
             <MenuItem Header="关闭"
                       InputGestureText="Esc"
@@ -249,57 +253,68 @@
         </ContextMenu>
     </Window.ContextMenu>
 
-    <Grid x:Name="Root"
+    <Grid x:Name="PinShell"
           Background="Transparent"
-          Focusable="True"
-          MouseLeftButtonDown="Root_MouseLeftButtonDown"
-          PreviewMouseLeftButtonDown="Root_PreviewMouseLeftButtonDown"
-          PreviewMouseMove="Root_PreviewMouseMove"
-          PreviewMouseLeftButtonUp="Root_PreviewMouseLeftButtonUp">
-        <Image x:Name="PreviewImage"
-               Stretch="Fill"
-               RenderOptions.BitmapScalingMode="HighQuality"
-               SnapsToDevicePixels="True" />
+          MouseLeftButtonDown="Root_MouseLeftButtonDown">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
 
-        <local:AnnotationCanvas x:Name="AnnotationView"
-                                IsHitTestVisible="False"
-                                ClipToBounds="True" />
-
-        <Border BorderBrush="#40FFFFFF"
-                BorderThickness="1"
+        <Border x:Name="PinOutline"
+                Grid.Row="1"
+                Margin="0.75"
+                BorderBrush="#996FA8FF"
+                BorderThickness="1.5"
+                CornerRadius="5"
                 IsHitTestVisible="False" />
 
-        <Grid x:Name="GlowLayer" IsHitTestVisible="False">
-            <Border Margin="1"
-                    BorderBrush="#1A6CA8FF"
-                    BorderThickness="7"
-                    CornerRadius="7" />
-            <Border Margin="1"
-                    BorderBrush="#386CA8FF"
-                    BorderThickness="3.5"
-                    CornerRadius="4" />
-            <Border x:Name="GlowBorder"
-                    Margin="1"
-                    BorderBrush="#D06CA8FF"
-                    BorderThickness="1.5"
-                    CornerRadius="2">
-                <Border.Effect>
-                    <DropShadowEffect Color="#FF6CA8FF" BlurRadius="10" ShadowDepth="0" Opacity="0.9" />
-                </Border.Effect>
-            </Border>
-        </Grid>
+        <Border Grid.Row="1" Padding="4" Background="Transparent">
+            <Grid x:Name="Root"
+                  Background="Transparent"
+                  Focusable="True"
+                  PreviewMouseLeftButtonDown="Root_PreviewMouseLeftButtonDown"
+                  PreviewMouseMove="Root_PreviewMouseMove"
+                  PreviewMouseLeftButtonUp="Root_PreviewMouseLeftButtonUp">
+                <Image x:Name="PreviewImage"
+                       Stretch="Fill"
+                       RenderOptions.BitmapScalingMode="HighQuality"
+                       SnapsToDevicePixels="True" />
 
-        <Canvas x:Name="EditorLayer" ClipToBounds="True" />
+                <local:AnnotationCanvas x:Name="AnnotationView"
+                                        IsHitTestVisible="False"
+                                        ClipToBounds="True" />
+
+                <Canvas x:Name="EditorLayer" ClipToBounds="True" />
+
+                <Border x:Name="Hud"
+                        HorizontalAlignment="Center"
+                        VerticalAlignment="Bottom"
+                        Margin="0,0,0,10"
+                        Padding="10,5"
+                        CornerRadius="7"
+                        Background="#D910141C"
+                        BorderBrush="#2AFFFFFF"
+                        BorderThickness="1"
+                        Opacity="0"
+                        IsHitTestVisible="False">
+                    <TextBlock x:Name="HudText"
+                               FontSize="11"
+                               Foreground="#EAF0F8" />
+                </Border>
+            </Grid>
+        </Border>
 
         <Viewbox x:Name="AnnotationBarHost"
-                 HorizontalAlignment="Center"
+                 Grid.Row="2"
+                 HorizontalAlignment="Stretch"
                  VerticalAlignment="Top"
-                 Margin="8"
+                 Margin="4,6,4,4"
                  Stretch="Uniform"
                  StretchDirection="DownOnly"
-                 Visibility="Collapsed"
-                 Panel.ZIndex="10">
-            <StackPanel>
+                 Visibility="Collapsed">
+            <StackPanel x:Name="ToolbarStack">
             <Border x:Name="AnnotationBar"
                     HorizontalAlignment="Center"
                     Padding="4"
@@ -423,6 +438,17 @@
                             Click="AnnotationAction_Click">
                         <Viewbox Width="20" Height="20">
                             <Path Style="{StaticResource ToolbarIconStyle}" Data="{StaticResource ToolbarClearGeometry}" />
+                        </Viewbox>
+                    </Button>
+                    <Button x:Name="CloseEditButton"
+                            AutomationProperties.AutomationId="action.close"
+                            AutomationProperties.Name="关闭编辑"
+                            Style="{StaticResource PinToolButtonStyle}"
+                            Tag="Close"
+                            ToolTip="关闭编辑 (Esc)"
+                            Click="AnnotationAction_Click">
+                        <Viewbox Width="20" Height="20">
+                            <Path Style="{StaticResource ToolbarIconStyle}" Data="{StaticResource ToolbarCloseGeometry}" />
                         </Viewbox>
                     </Button>
                     <Button Style="{StaticResource PinToolButtonStyle}"
@@ -693,21 +719,5 @@
             </Border>
             </StackPanel>
         </Viewbox>
-
-        <Border x:Name="Hud"
-                HorizontalAlignment="Center"
-                VerticalAlignment="Bottom"
-                Margin="0,0,0,10"
-                Padding="10,5"
-                CornerRadius="7"
-                Background="#D910141C"
-                BorderBrush="#2AFFFFFF"
-                BorderThickness="1"
-                Opacity="0"
-                IsHitTestVisible="False">
-            <TextBlock x:Name="HudText"
-                       FontSize="11"
-                       Foreground="#EAF0F8" />
-        </Border>
     </Grid>
 </Window>

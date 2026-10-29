@@ -1808,13 +1808,13 @@ public partial class ScreenshotOverlayWindow : Window
             region = null;
         }
 
-        if (region is null)
-        {
-            ClearElementHover();
-            return;
-        }
+        ShowElementHoverOrFullScreen(region);
+    }
 
-        ShowElementHover(region.Value);
+    private void ShowElementHoverOrFullScreen(PhysicalRect? region)
+    {
+        // 没有识别到可见窗口时退回整屏，单击即可直接框选全屏。
+        ShowElementHover(region ?? MonitorLocalBounds);
     }
 
     private void ShowElementHover(PhysicalRect rect)

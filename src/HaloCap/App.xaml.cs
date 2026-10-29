@@ -106,7 +106,7 @@ public partial class App : Application
         {
             var capturedAction = action;
             var service = new HotkeyService();
-            service.Pressed += (_, _) => Defer(() => ToggleActionFromHotkey(capturedAction));
+            service.Pressed += (_, _) => Defer(() => TriggerAction(capturedAction));
             _actionHotkeyServices[capturedAction] = service;
 
             if (!service.TryChange(_settings.GetActionHotkey(capturedAction), out var actionError))
@@ -192,12 +192,14 @@ public partial class App : Application
         var menu = new TrayMenu(
             AppInfo.VersionLabel,
             hotkey,
+            GetActionHotkeys(),
             _autoStart.IsEnabled(),
-            _recording?.IsRecording == true);
+            _recording?.IsRecording == true,
+            _clipboardPin.CanPin);
 
         menu.OpenRequested += (_, _) => Defer(ShowRadialFromTray);
         menu.SettingsRequested += (_, _) => Defer(OpenSettings);
-        menu.StopRecordingRequested += (_, _) => Defer(StopRecordingFromTray);
+        menu.ActionRequested += action => Defer(() => TriggerAction(action, 170));
         menu.AutoStartToggleRequested += enabled => Defer(() => ToggleAutoStartFromTray(enabled));
         menu.ExitRequested += (_, _) => Defer(ExitApplication);
         menu.Closed += (_, _) =>
@@ -228,18 +230,9 @@ public partial class App : Application
             return;
         }
 
-        var actionHotkeys = new Dictionary<RadialAction, HotkeyDefinition>();
-        foreach (var action in ActionHotkeyOrder)
-        {
-            var registeredHotkey = _actionHotkeyServices.TryGetValue(action, out var service)
-                ? service.Current
-                : null;
-            actionHotkeys[action] = (registeredHotkey ?? _settings.GetActionHotkey(action)).Clone();
-        }
-
         var window = new SettingsWindow(
             _hotkeyService?.Current ?? _settings.Hotkey,
-            actionHotkeys,
+            GetActionHotkeys(),
             _autoStart.IsEnabled(),
             _settings.ScreenshotFormat,
             _settings.MenuSize,
@@ -263,6 +256,21 @@ public partial class App : Application
 
         window.Show();
         window.Activate();
+    }
+
+    private Dictionary<RadialAction, HotkeyDefinition> GetActionHotkeys()
+    {
+        var actionHotkeys = new Dictionary<RadialAction, HotkeyDefinition>();
+
+        foreach (var action in ActionHotkeyOrder)
+        {
+            var registeredHotkey = _actionHotkeyServices.TryGetValue(action, out var service)
+                ? service.Current
+                : null;
+            actionHotkeys[action] = (registeredHotkey ?? _settings.GetActionHotkey(action)).Clone();
+        }
+
+        return actionHotkeys;
     }
 
     private string? ApplyHotkeys(
@@ -538,10 +546,16 @@ public partial class App : Application
         _tray?.SetHotkeyText(current?.DisplayText ?? "未注册");
     }
 
-    private void ToggleActionFromHotkey(RadialAction action)
+    private void TriggerAction(RadialAction action, int delayMs = 0)
     {
         if (_isExiting || _settingsWindow is { IsCapturingHotkey: true })
         {
+            return;
+        }
+
+        if (action == RadialAction.Record && _recording?.IsRecording == true)
+        {
+            _ = StopRecordingAsync();
             return;
         }
 
@@ -565,7 +579,8 @@ public partial class App : Application
 
         var wasRadialOpen = _radial?.IsOpen == true;
         _radial?.HideMenu();
-        _ = StartCaptureAsync(ToCaptureMode(action), wasRadialOpen ? 170 : 0);
+        var wait = wasRadialOpen ? Math.Max(delayMs, 170) : delayMs;
+        _ = StartCaptureAsync(ToCaptureMode(action), wait);
     }
 
     private static CaptureSessionMode ToCaptureMode(RadialAction action) => action switch
@@ -632,11 +647,11 @@ public partial class App : Application
     private void CreatePin(BitmapSource image, PhysicalRect rect, double scale)
     {
         var pin = new PinWindow(image, rect, scale, _settings.ScreenshotFormat, _settings.PinGlowEnabled);
-        pin.GlowChanged += OnPinGlowChanged;
+        pin.OutlineChanged += OnPinOutlineChanged;
         pin.ShowPin();
     }
 
-    private void OnPinGlowChanged(bool enabled)
+    private void OnPinOutlineChanged(bool enabled)
     {
         if (_settings.PinGlowEnabled == enabled)
         {
@@ -651,7 +666,7 @@ public partial class App : Application
         }
         catch (Exception ex)
         {
-            Log.Error("保存贴图发光描边设置失败", ex);
+            Log.Error("保存贴图外描边设置失败", ex);
         }
     }
 
@@ -663,7 +678,6 @@ public partial class App : Application
             var contents = _clipboardPin.CreatePins(_settings.ConvertFilePathsToImages, monitor.Scale);
             if (contents.Count == 0)
             {
-                _tray?.ShowNotification("剪贴板为空", "没有可贴出的图像、颜色或文字。");
                 return;
             }
 
@@ -677,8 +691,8 @@ public partial class App : Application
                 var width = Math.Max(24, (int)Math.Round(content.Image.PixelWidth * fit));
                 var height = Math.Max(24, (int)Math.Round(content.Image.PixelHeight * fit));
                 var offset = (int)Math.Round(index * 18 * monitor.Scale);
-                var left = Math.Clamp(cursor.X - width / 2 + offset, work.Left, work.Right - width);
-                var top = Math.Clamp(cursor.Y - height / 2 + offset, work.Top, work.Bottom - height);
+                var left = cursor.X - (width / 2) + offset;
+                var top = cursor.Y - (height / 2) + offset;
                 CreatePin(content.Image, new PhysicalRect(left, top, width, height), monitor.Scale);
                 _clipboardPin.MarkPasted(content);
             }
@@ -811,7 +825,9 @@ public partial class App : Application
         }
     }
 
-    private async void StopRecordingFromTray()
+    private void StopRecordingFromTray() => _ = StopRecordingAsync();
+
+    private async Task StopRecordingAsync()
     {
         if (_recording is null || !_recording.IsRecording)
         {

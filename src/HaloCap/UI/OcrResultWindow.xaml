@@ -33,6 +33,7 @@
         <SolidColorBrush x:Key="OcrHairlineBrush" Color="#14000000" />
 
         <Style x:Key="LineButtonStyle" TargetType="Button">
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
             <Setter Property="HorizontalAlignment" Value="Stretch" />
             <Setter Property="HorizontalContentAlignment" Value="Stretch" />
             <Setter Property="Background" Value="Transparent" />
@@ -66,6 +67,7 @@
         </Style>
 
         <Style x:Key="OcrCloseButtonStyle" TargetType="Button">
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
             <Setter Property="Foreground" Value="{StaticResource OcrTextTertiaryBrush}" />
             <Setter Property="Background" Value="Transparent" />
             <Setter Property="Width" Value="28" />
@@ -93,6 +95,7 @@
         </Style>
 
         <Style x:Key="OcrSecondaryButtonStyle" TargetType="Button">
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
             <Setter Property="Foreground" Value="{StaticResource OcrTextPrimaryBrush}" />
             <Setter Property="Background" Value="#FFFFFFFF" />
             <Setter Property="BorderBrush" Value="#FFD6D6DB" />
@@ -128,6 +131,7 @@
         </Style>
 
         <Style x:Key="OcrPrimaryButtonStyle" TargetType="Button">
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
             <Setter Property="Foreground" Value="#FFFFFFFF" />
             <Setter Property="Background" Value="{StaticResource OcrAccentBrush}" />
             <Setter Property="FontSize" Value="12" />

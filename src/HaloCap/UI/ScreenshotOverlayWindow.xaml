@@ -19,6 +19,7 @@
         MouseWheel="Window_MouseWheel">
     <Window.Resources>
         <Style x:Key="OverlayButtonStyle" TargetType="Button">
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
             <Setter Property="Background" Value="Transparent" />
             <Setter Property="Foreground" Value="#2A303B" />
             <Setter Property="FontSize" Value="12" />
@@ -62,6 +63,7 @@
         </Style>
 
         <Style x:Key="AnnotationToolButtonStyle" TargetType="Button">
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
             <Setter Property="Width" Value="30" />
             <Setter Property="Height" Value="30" />
             <Setter Property="Margin" Value="1,0" />
@@ -109,6 +111,7 @@
                BasedOn="{StaticResource AnnotationToolButtonStyle}" />
 
         <Style x:Key="ColorSwatchStyle" TargetType="Button">
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
             <Setter Property="Width" Value="22" />
             <Setter Property="Height" Value="22" />
             <Setter Property="Margin" Value="1,0" />
@@ -137,6 +140,7 @@
             </Setter>
         </Style>
     <Style x:Key="OptionStepButtonStyle" TargetType="Button">
+        <Setter Property="FocusVisualStyle" Value="{x:Null}" />
             <Setter Property="Width" Value="26" />
             <Setter Property="Height" Value="26" />
             <Setter Property="Margin" Value="1,0" />

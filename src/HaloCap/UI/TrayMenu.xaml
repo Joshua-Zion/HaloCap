@@ -16,6 +16,7 @@
         <SolidColorBrush x:Key="TrayAccentBrush" Color="#FF007AFF" />
 
         <Style x:Key="TrayMenuItemStyle" TargetType="MenuItem">
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
             <Setter Property="Foreground" Value="{StaticResource TrayTextPrimaryBrush}" />
             <Setter Property="FontSize" Value="12.5" />
             <Setter Property="Template">

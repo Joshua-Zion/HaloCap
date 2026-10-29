@@ -15,6 +15,7 @@
         FontFamily="{StaticResource AppFont}">
     <Window.Resources>
         <Style x:Key="HudStopButtonStyle" TargetType="Button">
+            <Setter Property="FocusVisualStyle" Value="{x:Null}" />
             <Setter Property="Foreground" Value="#F0F4FA" />
             <Setter Property="Background" Value="#14FFFFFF" />
             <Setter Property="Cursor" Value="Hand" />

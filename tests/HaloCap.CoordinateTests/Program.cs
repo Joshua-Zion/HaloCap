@@ -1672,6 +1672,7 @@ internal static class Program
             Equal(300, composed!.PixelWidth);
             Equal(200, composed.PixelHeight);
             True(ReadPixel(composed, 10, 10) == Colors.Red, "left part should come from the first monitor");
+            True(ReadPixel(composed, 160, 10) == Colors.RoyalBlue, "composition should split at the physical monitor boundary");
             True(ReadPixel(composed, 290, 10) == Colors.RoyalBlue, "right part should come from the second monitor");
 
             session.UpdateSelection(new PhysicalRect(700, 100, 300, 200));
@@ -1724,6 +1725,45 @@ internal static class Program
             finally
             {
                 recordOverlay.Close();
+            }
+
+            var dpiMonitorA = new ScreenMonitor
+            {
+                Bounds = new PhysicalRect(0, 0, 600, 400),
+                WorkArea = new PhysicalRect(0, 0, 600, 400),
+                Scale = 1.5,
+                IsPrimary = true
+            };
+            var dpiMonitorB = new ScreenMonitor
+            {
+                Bounds = new PhysicalRect(600, 0, 600, 400),
+                WorkArea = new PhysicalRect(600, 0, 600, 400),
+                Scale = 1.5
+            };
+            using var dpiSession = (ScreenshotSession)Activator.CreateInstance(typeof(ScreenshotSession), flags, null,
+                new object[] { CaptureSessionMode.Screenshot, (Action<CaptureResult>)(_ => { }) }, CultureInfo.InvariantCulture)!;
+            var dpiA = new ScreenshotOverlayWindow(dpiSession, dpiMonitorA, CaptureSessionMode.Screenshot,
+                CreateDrawingBitmap(600, 400, System.Drawing.Color.Red));
+            var dpiB = new ScreenshotOverlayWindow(dpiSession, dpiMonitorB, CaptureSessionMode.Screenshot,
+                CreateDrawingBitmap(600, 400, System.Drawing.Color.RoyalBlue));
+            try
+            {
+                Arrange(dpiA, 600, 400);
+                Arrange(dpiB, 600, 400);
+                dpiSession.BeginSelection(dpiA, new PhysicalRect(450, 100, 300, 200));
+                dpiSession.CompleteSelection();
+                var dpiComposed = dpiSession.CreateSelectionBitmap(false);
+                True(dpiComposed is not null, "scaled cross-screen capture should compose a bitmap");
+                Equal(300, dpiComposed!.PixelWidth);
+                Equal(200, dpiComposed.PixelHeight);
+                True(ReadPixel(dpiComposed, 10, 10) == Colors.Red, "high-DPI composition should keep the left monitor pixels");
+                True(ReadPixel(dpiComposed, 160, 10) == Colors.RoyalBlue, "high-DPI composition should not stretch monitor portions");
+                True(ReadPixel(dpiComposed, 290, 10) == Colors.RoyalBlue, "high-DPI composition should keep the right monitor pixels");
+            }
+            finally
+            {
+                dpiA.Close();
+                dpiB.Close();
             }
         }
         finally

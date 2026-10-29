@@ -236,12 +236,14 @@ internal sealed class ScreenshotSession : IDisposable
             scale = 1.0;
         }
 
+        var dipWidth = _selectionVirtual.Width / scale;
+        var dipHeight = _selectionVirtual.Height / scale;
+
         var visual = new DrawingVisual();
         using (var context = visual.RenderOpen())
         {
             // 跨屏选区可能包含显示器之间的空隙，空隙按黑色输出。
-            context.DrawRectangle(Brushes.Black, null,
-                new Rect(0, 0, _selectionVirtual.Width, _selectionVirtual.Height));
+            context.DrawRectangle(Brushes.Black, null, new Rect(0, 0, dipWidth, dipHeight));
 
             foreach (var overlay in _overlays)
             {
@@ -259,10 +261,10 @@ internal sealed class ScreenshotSession : IDisposable
                 }
 
                 context.DrawImage(image, new Rect(
-                    local.Left - _selectionVirtual.Left,
-                    local.Top - _selectionVirtual.Top,
-                    local.Width,
-                    local.Height));
+                    (local.Left - _selectionVirtual.Left) / scale,
+                    (local.Top - _selectionVirtual.Top) / scale,
+                    local.Width / scale,
+                    local.Height / scale));
             }
         }
 

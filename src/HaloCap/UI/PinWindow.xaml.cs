@@ -37,6 +37,7 @@ public partial class PinWindow : Window
     private IntPtr _handle;
     private double _zoom = 1.0;
     private double _opacity = 1.0;
+    private bool _glowEnabled;
 
     private bool _annotating;
     private AnnotationTool _annotationTool = AnnotationTool.Pen;
@@ -63,7 +64,8 @@ public partial class PinWindow : Window
         BitmapSource image,
         PhysicalRect initialRect,
         double monitorScale,
-        ScreenshotImageFormat format)
+        ScreenshotImageFormat format,
+        bool glowEnabled = true)
     {
         InitializeComponent();
 
@@ -75,6 +77,11 @@ public partial class PinWindow : Window
         _format = format;
         _imageDipWidth = image.PixelWidth * 96.0 / (image.DpiX > 0.1 ? image.DpiX : 96.0);
         _imageDipHeight = image.PixelHeight * 96.0 / (image.DpiY > 0.1 ? image.DpiY : 96.0);
+
+        _glowEnabled = glowEnabled;
+        GlowLayer.Visibility = glowEnabled ? Visibility.Visible : Visibility.Collapsed;
+        GlowMenuItem.IsChecked = glowEnabled;
+        PinContextMenu.Opened += (_, _) => GlowMenuItem.IsChecked = _glowEnabled;
 
         PreviewImage.Source = _image;
         WindowStartupLocation = WindowStartupLocation.Manual;
@@ -106,7 +113,24 @@ public partial class PinWindow : Window
         UpdateHistoryVisuals();
     }
 
+    internal event Action<bool>? GlowChanged;
+
     internal static int OpenPinCount => OpenPins.Count;
+
+    internal static void SetGlowForAll(bool enabled)
+    {
+        foreach (var pin in OpenPins.ToArray())
+        {
+            pin.SetGlow(enabled);
+        }
+    }
+
+    private void SetGlow(bool enabled)
+    {
+        _glowEnabled = enabled;
+        GlowLayer.Visibility = enabled ? Visibility.Visible : Visibility.Collapsed;
+        GlowMenuItem.IsChecked = enabled;
+    }
 
     internal static void CloseAllPins()
     {
@@ -1601,6 +1625,13 @@ public partial class PinWindow : Window
     }
 
     private void CopyMenuItem_Click(object sender, RoutedEventArgs e) => CopyImage();    private void SaveMenuItem_Click(object sender, RoutedEventArgs e) => SaveImage();
+
+    private void GlowMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        var enabled = GlowMenuItem.IsChecked;
+        SetGlowForAll(enabled);
+        GlowChanged?.Invoke(enabled);
+    }
 
     private void ResetMenuItem_Click(object sender, RoutedEventArgs e) => ResetSizeAndOpacity();
 

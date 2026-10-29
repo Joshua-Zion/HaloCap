@@ -40,6 +40,8 @@ public sealed class AppSettings
 
     public bool ConvertFilePathsToImages { get; set; } = true;
 
+    public bool PinGlowEnabled { get; set; } = true;
+
     public HotkeyDefinition GetActionHotkey(RadialAction action) => action switch
     {
         RadialAction.Screenshot => ScreenshotHotkey,

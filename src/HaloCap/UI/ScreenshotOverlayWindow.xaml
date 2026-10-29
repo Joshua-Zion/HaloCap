@@ -28,19 +28,25 @@
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
-                        <Border x:Name="Host"
-                                Background="{TemplateBinding Background}"
-                                CornerRadius="8"
-                                Padding="{TemplateBinding Padding}"
-                                SnapsToDevicePixels="True">
-                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
-                        </Border>
+                        <Grid>
+                            <Border x:Name="Host"
+                                    Background="{TemplateBinding Background}"
+                                    CornerRadius="8"
+                                    Padding="{TemplateBinding Padding}"
+                                    SnapsToDevicePixels="True">
+                                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                            </Border>
+                            <Border x:Name="Hover"
+                                    Background="Transparent"
+                                    CornerRadius="8"
+                                    IsHitTestVisible="False" />
+                        </Grid>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Host" Property="Background" Value="#14000000" />
+                                <Setter TargetName="Hover" Property="Background" Value="#14000000" />
                             </Trigger>
                             <Trigger Property="IsPressed" Value="True">
-                                <Setter TargetName="Host" Property="Background" Value="#22000000" />
+                                <Setter TargetName="Hover" Property="Background" Value="#22000000" />
                             </Trigger>
                             <Trigger Property="IsEnabled" Value="False">
                                 <Setter Property="Opacity" Value="0.4" />
@@ -65,18 +71,24 @@
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
-                        <Border x:Name="Host"
-                                Background="{TemplateBinding Background}"
-                                CornerRadius="7"
-                                SnapsToDevicePixels="True">
-                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
-                        </Border>
+                        <Grid>
+                            <Border x:Name="Host"
+                                    Background="{TemplateBinding Background}"
+                                    CornerRadius="7"
+                                    SnapsToDevicePixels="True">
+                                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                            </Border>
+                            <Border x:Name="Hover"
+                                    Background="Transparent"
+                                    CornerRadius="7"
+                                    IsHitTestVisible="False" />
+                        </Grid>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Host" Property="Background" Value="#14000000" />
+                                <Setter TargetName="Hover" Property="Background" Value="#14000000" />
                             </Trigger>
                             <Trigger Property="IsPressed" Value="True">
-                                <Setter TargetName="Host" Property="Background" Value="#22000000" />
+                                <Setter TargetName="Hover" Property="Background" Value="#22000000" />
                             </Trigger>
                             <Trigger Property="IsEnabled" Value="False">
                                 <Setter Property="Opacity" Value="0.32" />
@@ -94,30 +106,7 @@
 
         <Style x:Key="CloseButtonStyle"
                TargetType="Button"
-               BasedOn="{StaticResource AnnotationToolButtonStyle}">
-            <Setter Property="Template">
-                <Setter.Value>
-                    <ControlTemplate TargetType="Button">
-                        <Border x:Name="Host"
-                                Background="{TemplateBinding Background}"
-                                CornerRadius="7"
-                                SnapsToDevicePixels="True">
-                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
-                        </Border>
-                        <ControlTemplate.Triggers>
-                            <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Host" Property="Background" Value="#E63D5AF5" />
-                                <Setter Property="Foreground" Value="#FFFFFFFF" />
-                            </Trigger>
-                            <Trigger Property="IsPressed" Value="True">
-                                <Setter TargetName="Host" Property="Background" Value="#CC2F49D6" />
-                                <Setter Property="Foreground" Value="#FFFFFFFF" />
-                            </Trigger>
-                        </ControlTemplate.Triggers>
-                    </ControlTemplate>
-                </Setter.Value>
-            </Setter>
-        </Style>
+               BasedOn="{StaticResource AnnotationToolButtonStyle}" />
 
         <Style x:Key="ColorSwatchStyle" TargetType="Button">
             <Setter Property="Width" Value="22" />
@@ -139,6 +128,9 @@
                             <Trigger Property="IsMouseOver" Value="True">
                                 <Setter TargetName="Ring" Property="Background" Value="#14000000" />
                             </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Ring" Property="Background" Value="#22000000" />
+                            </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
                 </Setter.Value>
@@ -156,18 +148,24 @@
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
-                        <Border x:Name="Host"
-                                Background="{TemplateBinding Background}"
-                                CornerRadius="7"
-                                SnapsToDevicePixels="True">
-                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
-                        </Border>
+                        <Grid>
+                            <Border x:Name="Host"
+                                    Background="{TemplateBinding Background}"
+                                    CornerRadius="7"
+                                    SnapsToDevicePixels="True">
+                                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                            </Border>
+                            <Border x:Name="Hover"
+                                    Background="Transparent"
+                                    CornerRadius="7"
+                                    IsHitTestVisible="False" />
+                        </Grid>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Host" Property="Background" Value="#14000000" />
+                                <Setter TargetName="Hover" Property="Background" Value="#14000000" />
                             </Trigger>
                             <Trigger Property="IsPressed" Value="True">
-                                <Setter TargetName="Host" Property="Background" Value="#22000000" />
+                                <Setter TargetName="Hover" Property="Background" Value="#22000000" />
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>

@@ -19,13 +19,15 @@
     <Window.Resources>
         <Style x:Key="PinMenuStyle" TargetType="ContextMenu">
             <Setter Property="SnapsToDevicePixels" Value="True" />
+            <Setter Property="HasDropShadow" Value="True" />
+            <Setter Property="FontFamily" Value="{StaticResource AppFont}" />
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="ContextMenu">
-                        <Border Background="#F2171C25"
-                                BorderBrush="#33FFFFFF"
+                        <Border Background="#FCFFFFFF"
+                                BorderBrush="#25000000"
                                 BorderThickness="1"
-                                CornerRadius="10"
+                                CornerRadius="12"
                                 Padding="6">
                             <StackPanel IsItemsHost="True" KeyboardNavigation.DirectionalNavigation="Cycle" />
                         </Border>
@@ -35,15 +37,16 @@
         </Style>
 
         <Style x:Key="PinMenuItemStyle" TargetType="MenuItem">
-            <Setter Property="Foreground" Value="#E7EDF6" />
-            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Foreground" Value="#FF1D1D1F" />
+            <Setter Property="FontSize" Value="12.5" />
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="MenuItem">
                         <Border x:Name="Host"
                                 Background="Transparent"
-                                CornerRadius="6"
-                                Padding="12,7">
+                                CornerRadius="7"
+                                Padding="10,7"
+                                SnapsToDevicePixels="True">
                             <Grid>
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="*" />
@@ -52,20 +55,41 @@
                                 <ContentPresenter ContentSource="Header"
                                                   RecognizesAccessKey="True"
                                                   VerticalAlignment="Center" />
-                                <TextBlock Grid.Column="1"
-                                           Text="{TemplateBinding InputGestureText}"
-                                           Foreground="#7D8797"
-                                           FontSize="10.5"
-                                           Margin="20,0,0,0"
-                                           VerticalAlignment="Center" />
+                                <StackPanel Grid.Column="1"
+                                            Orientation="Horizontal"
+                                            VerticalAlignment="Center"
+                                            Margin="20,0,0,0">
+                                    <TextBlock Text="{TemplateBinding InputGestureText}"
+                                               Foreground="#FF8E8E93"
+                                               FontSize="10.5"
+                                               Margin="0,0,6,0"
+                                               VerticalAlignment="Center" />
+                                    <Path x:Name="CheckGlyph"
+                                          Width="14"
+                                          Height="14"
+                                          Data="M3 8.5 6.2 11.7 12.8 4.6"
+                                          Stroke="#FF007AFF"
+                                          StrokeThickness="1.7"
+                                          StrokeStartLineCap="Round"
+                                          StrokeEndLineCap="Round"
+                                          StrokeLineJoin="Round"
+                                          VerticalAlignment="Center"
+                                          Visibility="Collapsed" />
+                                </StackPanel>
                             </Grid>
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsHighlighted" Value="True">
-                                <Setter TargetName="Host" Property="Background" Value="#1CFFFFFF" />
+                                <Setter TargetName="Host" Property="Background" Value="#FFF0F5FC" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Host" Property="Background" Value="#FFE6EFFB" />
+                            </Trigger>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter TargetName="CheckGlyph" Property="Visibility" Value="Visible" />
                             </Trigger>
                             <Trigger Property="IsEnabled" Value="False">
-                                <Setter Property="Opacity" Value="0.4" />
+                                <Setter Property="Opacity" Value="0.36" />
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -77,7 +101,7 @@
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Separator">
-                        <Border Height="1" Background="#1FFFFFFF" Margin="8,5" />
+                        <Border Height="1" Background="#14000000" Margin="8,4" />
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
@@ -93,14 +117,23 @@
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
-                        <Border x:Name="Host"
-                                Background="{TemplateBinding Background}"
-                                CornerRadius="7">
-                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
-                        </Border>
+                        <Grid>
+                            <Border x:Name="Host"
+                                    Background="{TemplateBinding Background}"
+                                    CornerRadius="7">
+                                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                            </Border>
+                            <Border x:Name="Hover"
+                                    Background="Transparent"
+                                    CornerRadius="7"
+                                    IsHitTestVisible="False" />
+                        </Grid>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Host" Property="Background" Value="#14000000" />
+                                <Setter TargetName="Hover" Property="Background" Value="#14000000" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Hover" Property="Background" Value="#22000000" />
                             </Trigger>
                             <Trigger Property="IsEnabled" Value="False">
                                 <Setter Property="Opacity" Value="0.32" />
@@ -136,6 +169,9 @@
                             <Trigger Property="IsMouseOver" Value="True">
                                 <Setter TargetName="Ring" Property="Background" Value="#14000000" />
                             </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Ring" Property="Background" Value="#22000000" />
+                            </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
                 </Setter.Value>
@@ -151,15 +187,24 @@
             <Setter Property="Template">
                 <Setter.Value>
                     <ControlTemplate TargetType="Button">
-                        <Border x:Name="Host"
-                                Background="{TemplateBinding Background}"
-                                CornerRadius="7"
-                                Padding="{TemplateBinding Padding}">
-                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
-                        </Border>
+                        <Grid>
+                            <Border x:Name="Host"
+                                    Background="{TemplateBinding Background}"
+                                    CornerRadius="7"
+                                    Padding="{TemplateBinding Padding}">
+                                <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                            </Border>
+                            <Border x:Name="Hover"
+                                    Background="Transparent"
+                                    CornerRadius="7"
+                                    IsHitTestVisible="False" />
+                        </Grid>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Host" Property="Background" Value="#14000000" />
+                                <Setter TargetName="Hover" Property="Background" Value="#14000000" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Hover" Property="Background" Value="#22000000" />
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -169,7 +214,7 @@
     </Window.Resources>
 
     <Window.ContextMenu>
-        <ContextMenu Style="{StaticResource PinMenuStyle}">
+        <ContextMenu x:Name="PinContextMenu" Style="{StaticResource PinMenuStyle}">
             <MenuItem Header="标注"
                       InputGestureText="Space"
                       Style="{StaticResource PinMenuItemStyle}"
@@ -188,6 +233,11 @@
                       InputGestureText="Ctrl+0"
                       Style="{StaticResource PinMenuItemStyle}"
                       Click="ResetMenuItem_Click" />
+            <MenuItem x:Name="GlowMenuItem"
+                      Header="发光描边"
+                      IsCheckable="True"
+                      Style="{StaticResource PinMenuItemStyle}"
+                      Click="GlowMenuItem_Click" />
             <Separator Style="{StaticResource PinSeparatorStyle}" />
             <MenuItem Header="关闭"
                       InputGestureText="Esc"
@@ -218,6 +268,26 @@
         <Border BorderBrush="#40FFFFFF"
                 BorderThickness="1"
                 IsHitTestVisible="False" />
+
+        <Grid x:Name="GlowLayer" IsHitTestVisible="False">
+            <Border Margin="1"
+                    BorderBrush="#1A6CA8FF"
+                    BorderThickness="7"
+                    CornerRadius="7" />
+            <Border Margin="1"
+                    BorderBrush="#386CA8FF"
+                    BorderThickness="3.5"
+                    CornerRadius="4" />
+            <Border x:Name="GlowBorder"
+                    Margin="1"
+                    BorderBrush="#D06CA8FF"
+                    BorderThickness="1.5"
+                    CornerRadius="2">
+                <Border.Effect>
+                    <DropShadowEffect Color="#FF6CA8FF" BlurRadius="10" ShadowDepth="0" Opacity="0.9" />
+                </Border.Effect>
+            </Border>
+        </Grid>
 
         <Canvas x:Name="EditorLayer" ClipToBounds="True" />
 

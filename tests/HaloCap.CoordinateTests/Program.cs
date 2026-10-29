@@ -1285,6 +1285,9 @@ internal static class Program
             True(((FrameworkElement)pin.FindName("PinColorGroup")).Visibility == Visibility.Collapsed, "mosaic should hide color options");
             True(((FrameworkElement)pin.FindName("PinColorSeparator")).Visibility == Visibility.Collapsed, "mosaic should hide the color separator");
 
+            ToolbarHoverTintsPreserveActiveBackgrounds();
+            PinGlowAndLightMenuBehaveConsistently(pin);
+
             // Reuse this Application and STA without showing windows or pumping startup callbacks.
             foreach (var initialConversion in new[] { new AppSettings().ConvertFilePathsToImages, false })
             {
@@ -1924,6 +1927,168 @@ internal static class Program
         using var graphics = System.Drawing.Graphics.FromImage(bitmap);
         graphics.Clear(color);
         return bitmap;
+    }
+
+    private static void ToolbarHoverTintsPreserveActiveBackgrounds()
+    {
+        const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
+        var monitor = new ScreenMonitor
+        {
+            Bounds = new PhysicalRect(0, 0, 600, 400),
+            WorkArea = new PhysicalRect(0, 0, 600, 400),
+            Scale = 1.0
+        };
+        using var session = (ScreenshotSession)Activator.CreateInstance(typeof(ScreenshotSession), flags, null,
+            new object[] { CaptureSessionMode.Screenshot, (Action<CaptureResult>)(_ => { }) }, CultureInfo.InvariantCulture)!;
+        var overlay = new ScreenshotOverlayWindow(session, monitor, CaptureSessionMode.Screenshot, null);
+        try
+        {
+            var toolStyle = (Style)overlay.Resources["AnnotationToolButtonStyle"];
+            AssertHoverTint(toolStyle, "screenshot tool");
+            AssertHoverTint((Style)overlay.Resources["OverlayButtonStyle"], "screenshot action");
+            AssertHoverTint((Style)overlay.Resources["OptionStepButtonStyle"], "screenshot step");
+            AssertHoverTint((Style)overlay.Resources["ColorSwatchStyle"], "screenshot color swatch", "Ring");
+            True(ReferenceEquals(((Style)overlay.Resources["AnnotationOptionButtonStyle"]).BasedOn, toolStyle),
+                "screenshot option buttons should reuse the tool hover");
+            var closeStyle = (Style)overlay.Resources["CloseButtonStyle"];
+            True(ReferenceEquals(closeStyle.BasedOn, toolStyle),
+                "the close button should reuse the same tool hover");
+            True(closeStyle.Setters.OfType<Setter>().All(setter => setter.Property != Control.TemplateProperty),
+                "the close button should not override the shared hover template");
+        }
+        finally
+        {
+            overlay.Close();
+        }
+
+        var pin = new PinWindow(CreateSolidBitmap(80, 60, Colors.White),
+            new PhysicalRect(0, 0, 80, 60), 1, ScreenshotImageFormat.Png);
+        try
+        {
+            var pinToolStyle = (Style)pin.Resources["PinToolButtonStyle"];
+            AssertHoverTint(pinToolStyle, "pin tool");
+            AssertHoverTint((Style)pin.Resources["PinBarButtonStyle"], "pin bar");
+            AssertHoverTint((Style)pin.Resources["PinColorSwatchStyle"], "pin color swatch", "Ring");
+            True(ReferenceEquals(((Style)pin.Resources["PinOptionButtonStyle"]).BasedOn, pinToolStyle),
+                "pin option buttons should reuse the tool hover");
+        }
+        finally
+        {
+            pin.Close();
+        }
+    }
+
+    private static void AssertHoverTint(Style style, string name, string target = "Hover")
+    {
+        var template = style.Setters.OfType<Setter>()
+            .Where(setter => setter.Property == Control.TemplateProperty)
+            .Select(setter => setter.Value)
+            .OfType<ControlTemplate>()
+            .FirstOrDefault();
+        True(template is not null, $"{name} should define a control template");
+        var hover = template!.Triggers.OfType<Trigger>()
+            .FirstOrDefault(trigger => trigger.Property == UIElement.IsMouseOverProperty);
+        True(hover is not null, $"{name} should define a hover trigger");
+        var background = hover!.Setters.OfType<Setter>()
+            .FirstOrDefault(setter => setter.Property == Border.BackgroundProperty);
+        True(background?.TargetName == target, $"{name} hover should tint {target}");
+        True(background!.Value is SolidColorBrush brush &&
+             brush.Color == Color.FromArgb(0x14, 0, 0, 0),
+            $"{name} hover should use the shared translucent black tint");
+        True(hover.Setters.OfType<Setter>().All(setter =>
+                setter.Property != Control.ForegroundProperty && setter.TargetName != "Host"),
+            $"{name} hover should not replace the active fill or icon color");
+    }
+
+    private static void PinGlowAndLightMenuBehaveConsistently(PinWindow pin)
+    {
+        const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
+        var glowLayer = (FrameworkElement)pin.FindName("GlowLayer");
+        True(glowLayer.Visibility == Visibility.Visible, "pins should show the glow outline by default");
+        True(new AppSettings().PinGlowEnabled, "the pin glow setting should default to enabled");
+
+        var menu = pin.ContextMenu;
+        True(menu is not null, "pins should keep a context menu");
+        var menuStyle = (Style)pin.Resources["PinMenuStyle"];
+        var menuTemplate = menuStyle.Setters.OfType<Setter>()
+            .Where(setter => setter.Property == Control.TemplateProperty)
+            .Select(setter => setter.Value)
+            .OfType<ControlTemplate>()
+            .First();
+        var menuRoot = (Border)menuTemplate.LoadContent();
+        var menuBackground = (SolidColorBrush)menuRoot.Background;
+        True(menuBackground.Color.A >= 0xF0 &&
+             menuBackground.Color.R >= 0xF5 &&
+             menuBackground.Color.G >= 0xF5 &&
+             menuBackground.Color.B >= 0xF5,
+            "the pin menu should use the light HaloCap surface");
+
+        var glowItem = menu!.Items.OfType<MenuItem>()
+            .First(item => item.Header as string == "发光描边");
+        True(glowItem.IsChecked, "the glow menu item should start checked");
+        var foreground = (SolidColorBrush)glowItem.Foreground;
+        True(foreground.Color.R < 0x40 && foreground.Color.G < 0x40 && foreground.Color.B < 0x40,
+            "pin menu text should be dark on the light surface");
+
+        glowItem.ApplyTemplate();
+        glowItem.Measure(new Size(220, 34));
+        glowItem.Arrange(new Rect(0, 0, 220, 34));
+        glowItem.UpdateLayout();
+        var check = (System.Windows.Shapes.Path?)glowItem.Template.FindName("CheckGlyph", glowItem);
+        True(check is { Visibility: Visibility.Visible },
+            "the enabled glow state should show a check glyph");
+
+        var fired = new List<bool>();
+        pin.GlowChanged += fired.Add;
+        glowItem.IsChecked = false;
+        typeof(PinWindow).GetMethod("GlowMenuItem_Click", flags)!
+            .Invoke(pin, new object[] { glowItem, new RoutedEventArgs() });
+        True(glowLayer.Visibility == Visibility.Collapsed, "turning off the glow should hide the outline");
+        True(fired.Count == 1 && !fired[0], "the glow toggle should notify the app to persist it");
+        glowItem.UpdateLayout();
+        True(check is not null && check.Visibility == Visibility.Collapsed,
+            "the unchecked glow item should hide the check glyph");
+
+        var sample = new PinWindow(CreateSolidBitmap(120, 80, Colors.White),
+            new PhysicalRect(0, 0, 120, 80), 1, ScreenshotImageFormat.Png);
+        try
+        {
+            var sampleRoot = (FrameworkElement)sample.FindName("Root");
+            sampleRoot.Measure(new Size(120, 80));
+            sampleRoot.Arrange(new Rect(0, 0, 120, 80));
+            sampleRoot.UpdateLayout();
+            var glowFrame = RenderBitmap(sampleRoot, 120, 80);
+            var glowVisible = false;
+            for (var y = 1; y <= 4; y++)
+            {
+                var pixel = ReadPixel(glowFrame, 60, y);
+                glowVisible |= pixel.B > pixel.R + 20;
+            }
+            True(glowVisible, "the enabled glow should tint the pin edge blue");
+
+            PinWindow.SetGlowForAll(false);
+            sampleRoot.UpdateLayout();
+            var plainFrame = RenderBitmap(sampleRoot, 120, 80);
+            var plainEdge = true;
+            for (var y = 1; y <= 4; y++)
+            {
+                var pixel = ReadPixel(plainFrame, 60, y);
+                plainEdge &= pixel.R > 240 && pixel.G > 240 && pixel.B > 240;
+            }
+            True(plainEdge, "turning the glow off should leave a plain image edge");
+        }
+        finally
+        {
+            PinWindow.SetGlowForAll(true);
+            sample.Close();
+        }
+
+        static BitmapSource RenderBitmap(FrameworkElement root, int width, int height)
+        {
+            var bitmap = new RenderTargetBitmap(width, height, 96, 96, PixelFormats.Pbgra32);
+            bitmap.Render(root);
+            return bitmap;
+        }
     }
 
     private static void SettingsAndTrayChromeUseCleanLayout(HaloCap.App app)

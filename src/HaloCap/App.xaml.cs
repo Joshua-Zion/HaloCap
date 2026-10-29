@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using HaloCap.Diagnostics;
 using HaloCap.Interop;
@@ -628,6 +629,32 @@ public partial class App : Application
         }
     }
 
+    private void CreatePin(BitmapSource image, PhysicalRect rect, double scale)
+    {
+        var pin = new PinWindow(image, rect, scale, _settings.ScreenshotFormat, _settings.PinGlowEnabled);
+        pin.GlowChanged += OnPinGlowChanged;
+        pin.ShowPin();
+    }
+
+    private void OnPinGlowChanged(bool enabled)
+    {
+        if (_settings.PinGlowEnabled == enabled)
+        {
+            return;
+        }
+
+        _settings.PinGlowEnabled = enabled;
+
+        try
+        {
+            SettingsStore.Save(_settings);
+        }
+        catch (Exception ex)
+        {
+            Log.Error("保存贴图发光描边设置失败", ex);
+        }
+    }
+
     private void PinFromClipboard()
     {
         try
@@ -652,8 +679,7 @@ public partial class App : Application
                 var offset = (int)Math.Round(index * 18 * monitor.Scale);
                 var left = Math.Clamp(cursor.X - width / 2 + offset, work.Left, work.Right - width);
                 var top = Math.Clamp(cursor.Y - height / 2 + offset, work.Top, work.Bottom - height);
-                var pin = new PinWindow(content.Image, new PhysicalRect(left, top, width, height), monitor.Scale, _settings.ScreenshotFormat);
-                pin.ShowPin();
+                CreatePin(content.Image, new PhysicalRect(left, top, width, height), monitor.Scale);
                 _clipboardPin.MarkPasted(content);
             }
         }
@@ -726,12 +752,7 @@ public partial class App : Application
                 {
                     if (result.Monitor is not null)
                     {
-                        var pin = new PinWindow(
-                            image,
-                            result.PhysicalRect,
-                            result.Monitor.Scale,
-                            _settings.ScreenshotFormat);
-                        pin.ShowPin();
+                        CreatePin(image, result.PhysicalRect, result.Monitor.Scale);
                     }
 
                     break;

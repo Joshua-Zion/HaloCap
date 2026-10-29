@@ -223,6 +223,25 @@ internal sealed class ScreenshotSession : IDisposable
         }
     }
 
+    internal bool CanPinSelection =>
+        _mode == CaptureSessionMode.Screenshot &&
+        !_completing &&
+        !_disposed &&
+        _hasSelection &&
+        _selectionComplete &&
+        _selectionHost is { HasSelection: true };
+
+    internal bool TryPinSelection()
+    {
+        if (!CanPinSelection)
+        {
+            return false;
+        }
+
+        _selectionHost!.RequestExternalAction(CaptureCommand.Pin);
+        return true;
+    }
+
     internal BitmapSource? CreateSelectionBitmap(bool includeAnnotations)
     {
         if (!_hasSelection || _selectionVirtual.Width <= 0 || _selectionVirtual.Height <= 0)

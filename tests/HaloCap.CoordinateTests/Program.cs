@@ -1664,7 +1664,29 @@ internal static class Program
 
             Equal(1200, session.DesktopBounds.Width);
             session.BeginSelection(overlayA, new PhysicalRect(450, 100, 300, 200));
+            True(!session.CanPinSelection,
+                "the pin hotkey should wait until the screenshot selection is complete");
             session.CompleteSelection();
+            True(session.CanPinSelection,
+                "a completed screenshot selection should accept the pin hotkey");
+
+            var mirrorDimTop = (FrameworkElement)overlayB.FindName("DimTop");
+            var mirrorDimBottom = (FrameworkElement)overlayB.FindName("DimBottom");
+            var mirrorDimLeft = (FrameworkElement)overlayB.FindName("DimLeft");
+            var mirrorDimRight = (FrameworkElement)overlayB.FindName("DimRight");
+            Equal(100.0, mirrorDimTop.Height, 0.01);
+            Equal(300.0, Canvas.GetTop(mirrorDimBottom), 0.01);
+            Equal(100.0, mirrorDimBottom.Height, 0.01);
+            True(mirrorDimLeft.Visibility == Visibility.Collapsed,
+                "the dim mask should leave the mirrored selection edge open");
+            Equal(150.0, Canvas.GetLeft(mirrorDimRight), 0.01);
+            Equal(450.0, mirrorDimRight.Width, 0.01);
+
+            var hostDimRight = (FrameworkElement)overlayA.FindName("DimRight");
+            var hostDimLeft = (FrameworkElement)overlayA.FindName("DimLeft");
+            Equal(450.0, hostDimLeft.Width, 0.01);
+            True(hostDimRight.Visibility == Visibility.Collapsed,
+                "the dim mask hole should line up with the selection on the host monitor");
 
             True(session.IsCrossMonitorSelection, "selection spanning two monitors should be cross-screen");
             Equal(150, overlayA.LocalSelection.Width);
@@ -1731,6 +1753,10 @@ internal static class Program
                 var recordSpan = (PhysicalRect)normalize.Invoke(recordOverlay,
                     new object[] { new PhysicalRect(500, 100, 0, 0), new PhysicalRect(700, 150, 0, 0) })!;
                 True(recordSpan.Right <= 600, "record selections must stay on a single monitor");
+                recordSession.BeginSelection(recordOverlay, new PhysicalRect(100, 100, 200, 100));
+                recordSession.CompleteSelection();
+                True(!recordSession.CanPinSelection,
+                    "only screenshot selections should react to the pin hotkey");
             }
             finally
             {
@@ -1804,6 +1830,19 @@ internal static class Program
                 Equal(66.6667, Canvas.GetTop(border), 0.01);
                 Equal(200.0, border.Width, 0.01);
                 Equal(100.0, border.Height, 0.01);
+
+                var offsetDimTop = (FrameworkElement)offsetOverlay.FindName("DimTop");
+                var offsetDimBottom = (FrameworkElement)offsetOverlay.FindName("DimBottom");
+                var offsetDimLeft = (FrameworkElement)offsetOverlay.FindName("DimLeft");
+                var offsetDimRight = (FrameworkElement)offsetOverlay.FindName("DimRight");
+                Equal(66.6667, offsetDimTop.Height, 0.01);
+                Equal(66.6667, offsetDimLeft.Width, 0.01);
+                Equal(66.6667, Canvas.GetTop(offsetDimLeft), 0.01);
+                Equal(100.0, offsetDimLeft.Height, 0.01);
+                Equal(266.6667, Canvas.GetLeft(offsetDimRight), 0.01);
+                Equal(333.3333, offsetDimRight.Width, 0.01);
+                Equal(166.6667, Canvas.GetTop(offsetDimBottom), 0.01);
+                Equal(233.3333, offsetDimBottom.Height, 0.01);
 
                 var annotation = (FrameworkElement)offsetOverlay.FindName("AnnotationView");
                 Equal(66.6667,

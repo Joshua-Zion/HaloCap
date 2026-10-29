@@ -1,11 +1,15 @@
 using System;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
 using System.Windows.Input;
+using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Shapes;
 using System.Windows.Threading;
+using HaloCap.Diagnostics;
+using HaloCap.Interop;
 
 namespace HaloCap.UI;
 
@@ -14,6 +18,10 @@ public partial class TrayMenu : ContextMenu
     private static readonly Brush IconBrush = UiColors.Brush("#6E6E73");
     private static readonly Brush RecordingBrush = UiColors.Brush("#E5484D");
     private static readonly Brush RecordingTextBrush = UiColors.Brush("#D70015");
+
+    private NativeMethods.LowLevelProc? _mouseProc;
+    private IntPtr _mouseHook;
+    private IntPtr _popupHandle;
 
     public TrayMenu(string versionLabel, string hotkeyDisplay, bool autoStart, bool recording)
     {
@@ -24,9 +32,15 @@ public partial class TrayMenu : ContextMenu
         // 点击菜单外部或托盘区域收起时自动关闭，避免菜单长期停留。
         StaysOpen = false;
 
-        Opened += (_, _) => Dispatcher.BeginInvoke(
-            DispatcherPriority.Input,
-            new Action(() => Keyboard.Focus(this)));
+        Opened += (_, _) =>
+        {
+            _popupHandle = (PresentationSource.FromVisual(this) as HwndSource)?.Handle ?? IntPtr.Zero;
+            InstallDismissHook();
+            Dispatcher.BeginInvoke(
+                DispatcherPriority.Input,
+                new Action(() => Keyboard.Focus(this)));
+        };
+        Closed += (_, _) => UninstallDismissHook();
         PreviewKeyDown += (_, e) =>
         {
             if (e.Key == Key.Escape)
@@ -143,6 +157,77 @@ public partial class TrayMenu : ContextMenu
 
     private Separator CreateSeparator() =>
         new() { Style = (Style)FindResource("TrayMenuSeparatorStyle") };
+
+    private void InstallDismissHook()
+    {
+        if (_mouseHook != IntPtr.Zero)
+        {
+            return;
+        }
+
+        _mouseProc = MouseHookProc;
+        _mouseHook = NativeMethods.SetWindowsHookEx(
+            NativeMethods.WH_MOUSE_LL,
+            _mouseProc,
+            NativeMethods.GetModuleHandle(null),
+            0);
+
+        if (_mouseHook == IntPtr.Zero)
+        {
+            Log.Error($"安装托盘菜单关闭钩子失败，错误码 {Marshal.GetLastWin32Error()}");
+        }
+    }
+
+    private void UninstallDismissHook()
+    {
+        if (_mouseHook != IntPtr.Zero)
+        {
+            NativeMethods.UnhookWindowsHookEx(_mouseHook);
+            _mouseHook = IntPtr.Zero;
+        }
+
+        _mouseProc = null;
+        _popupHandle = IntPtr.Zero;
+    }
+
+    private IntPtr MouseHookProc(int nCode, IntPtr wParam, IntPtr lParam)
+    {
+        if (nCode >= 0)
+        {
+            try
+            {
+                var message = wParam.ToInt32();
+
+                if (message is NativeMethods.WM_LBUTTONDOWN
+                    or NativeMethods.WM_RBUTTONDOWN
+                    or NativeMethods.WM_MBUTTONDOWN)
+                {
+                    if (_popupHandle == IntPtr.Zero)
+                    {
+                        _popupHandle = (PresentationSource.FromVisual(this) as HwndSource)?.Handle
+                                       ?? IntPtr.Zero;
+                    }
+
+                    var data = Marshal.PtrToStructure<NativeMethods.MSLLHOOKSTRUCT>(lParam);
+                    var target = NativeMethods.WindowFromPoint(
+                        new NativeMethods.POINT(data.pt.X, data.pt.Y));
+
+                    if (_popupHandle != IntPtr.Zero && target != _popupHandle)
+                    {
+                        Dispatcher.BeginInvoke(
+                            DispatcherPriority.Input,
+                            new Action(() => IsOpen = false));
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Error("托盘菜单关闭钩子回调异常", ex);
+            }
+        }
+
+        return NativeMethods.CallNextHookEx(_mouseHook, nCode, wParam, lParam);
+    }
 
     private static Viewbox CreateIcon(string geometry, bool filled, Brush brush)
     {

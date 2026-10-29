@@ -1168,6 +1168,17 @@ public partial class ScreenshotOverlayWindow : Window
         _session.RequestAction(this, command);
     }
 
+    internal void RequestExternalAction(CaptureCommand command)
+    {
+        if (_closed || !_hasSelection || !IsSelectionHost)
+        {
+            return;
+        }
+
+        CommitTextEditor();
+        _session.RequestAction(this, command);
+    }
+
     private void RequestDefaultAction()
     {
         var command = _mode switch
@@ -1251,7 +1262,8 @@ public partial class ScreenshotOverlayWindow : Window
         var virtualRight = virtualLeft + virtualWidth;
         var virtualBottom = virtualTop + virtualHeight;
 
-        var localPx = ScreenGeometry.Intersect(virtualPx, MonitorLocalBounds);
+        // 虚拟桌面坐标不能直接和本显示器的本地边界求交，否则带偏移的多屏会把遮罩开洞放到别处。
+        var localPx = ScreenGeometry.Intersect(_selectionPx, MonitorLocalBounds);
         var left = localPx.Left / _mapScaleX;
         var top = localPx.Top / _mapScaleY;
         var selectionWidth = Math.Max(0, localPx.Width / _mapScaleX);

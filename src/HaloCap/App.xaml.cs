@@ -539,7 +539,18 @@ public partial class App : Application
 
     private void ToggleActionFromHotkey(RadialAction action)
     {
-        if (_isExiting || IsBusy || _settingsWindow is { IsCapturingHotkey: true })
+        if (_isExiting || _settingsWindow is { IsCapturingHotkey: true })
+        {
+            return;
+        }
+
+        // 截图选区完成后，贴图快捷键直接贴出当前选区，而不是重新打开一个选区。
+        if (action == RadialAction.Pin && _screenshotSession?.TryPinSelection() == true)
+        {
+            return;
+        }
+
+        if (IsBusy)
         {
             return;
         }

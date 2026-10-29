@@ -47,6 +47,7 @@ internal static class NativeMethods
 
     public const int WH_KEYBOARD_LL = 13;
     public const int WH_MOUSE_LL = 14;
+    public const int WM_MBUTTONDOWN = 0x0207;
 
     public const uint GA_ROOT = 2;
     public const int DWMWA_EXTENDED_FRAME_BOUNDS = 9;
@@ -190,6 +191,9 @@ internal static class NativeMethods
 
     [DllImport("user32.dll")]
     public static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr WindowFromPoint(POINT point);
 
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]

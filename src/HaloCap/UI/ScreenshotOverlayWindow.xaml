@@ -317,12 +317,12 @@
                 Margin="0,26,0,0"
                 Padding="13,9"
                 CornerRadius="10"
-                Background="#E612161E"
-                BorderBrush="#2AFFFFFF"
+                Background="#F7FFFFFF"
+                BorderBrush="#1F000000"
                 BorderThickness="1"
                 IsHitTestVisible="False">
             <Border.Effect>
-                <DropShadowEffect Color="#FF000000" BlurRadius="18" ShadowDepth="4" Opacity="0.45" />
+                <DropShadowEffect Color="#FF000000" BlurRadius="18" ShadowDepth="3" Opacity="0.2" />
             </Border.Effect>
             <StackPanel Orientation="Horizontal">
                 <Ellipse x:Name="HintDot"
@@ -333,7 +333,7 @@
                          Margin="0,0,9,0" />
                 <TextBlock x:Name="HintText"
                            FontSize="11.5"
-                           Foreground="#D8E0EC"
+                           Foreground="#FF3C4250"
                            VerticalAlignment="Center" />
             </StackPanel>
         </Border>
@@ -343,15 +343,15 @@
                 VerticalAlignment="Top"
                 Padding="8,4"
                 CornerRadius="6"
-                Background="#E610141C"
-                BorderBrush="#38FFFFFF"
+                Background="#F2FFFFFF"
+                BorderBrush="#1F000000"
                 BorderThickness="1"
                 Visibility="Collapsed"
                 IsHitTestVisible="False">
             <TextBlock x:Name="SizeText"
                        FontFamily="Consolas, Microsoft YaHei UI"
                        FontSize="11"
-                       Foreground="#ECF2FA" />
+                       Foreground="#FF3C4250" />
         </Border>
 
         <Border x:Name="Toolbar"

@@ -372,7 +372,7 @@ public partial class ScreenshotOverlayWindow : Window
         {
             case CaptureSessionMode.Record:
                 accent = Color.FromRgb(0xFF, 0x7A, 0x7A);
-                HintText.Text = "拖动或单击选择录屏区域 · 方向键微调 · Enter 开始录制 · Esc 取消";
+                HintText.Text = "拖动框选或单击窗口 · Enter 开始录制 · Esc 取消";
                 ToolGroup.Visibility = Visibility.Collapsed;
                 HistorySeparator.Visibility = Visibility.Collapsed;
                 HistoryGroup.Visibility = Visibility.Collapsed;
@@ -385,17 +385,17 @@ public partial class ScreenshotOverlayWindow : Window
 
             case CaptureSessionMode.Ocr:
                 accent = Color.FromRgb(0xB0, 0x8C, 0xFF);
-                HintText.Text = "拖动或单击选择识别区域 · 松开后立即识别 · Esc 取消";
+                HintText.Text = "拖动框选或单击窗口 · 松开即识别 · Esc 取消";
                 break;
 
             case CaptureSessionMode.Pin:
                 accent = Color.FromRgb(0xF5, 0xB9, 0x63);
-                HintText.Text = "拖动或单击选择贴图区域 · 松开后立即贴图 · Esc 取消";
+                HintText.Text = "拖动框选或单击窗口 · 松开即贴图 · Esc 取消";
                 break;
 
             default:
                 accent = Color.FromRgb(0x7C, 0xA8, 0xFF);
-                HintText.Text = "拖动框选或单击窗口 · 工具 R E A P T H M N X · Shift+R/E 填充 · Enter 复制 · Esc 取消";
+                HintText.Text = "拖动框选或单击窗口 · Enter 复制 · Esc 取消";
                 ToolGroup.Visibility = Visibility.Visible;
                 HistorySeparator.Visibility = Visibility.Visible;
                 HistoryGroup.Visibility = Visibility.Visible;
@@ -698,16 +698,17 @@ public partial class ScreenshotOverlayWindow : Window
         if (_mode == CaptureSessionMode.Ocr)
         {
             _session.RequestAction(this, CaptureCommand.Ocr);
+            return;
         }
-        else if (_mode == CaptureSessionMode.Pin)
+
+        if (_mode == CaptureSessionMode.Pin)
         {
             _session.RequestAction(this, CaptureCommand.Pin);
+            return;
         }
-        else
-        {
-            ShowToolbar();
-            Keyboard.Focus(Root);
-        }
+
+        ShowToolbar();
+        Keyboard.Focus(Root);
     }
 
     private void Root_MouseLeave(object sender, MouseEventArgs e)
@@ -1088,10 +1089,27 @@ public partial class ScreenshotOverlayWindow : Window
         selectionHeight = Math.Max(0, bottom - top);
 
         DimFull.Visibility = Visibility.Collapsed;
-        UpdateDimRect(DimTop, 0, 0, width, top);
-        UpdateDimRect(DimBottom, 0, bottom, width, Math.Max(0, height - bottom));
-        UpdateDimRect(DimLeft, 0, top, left, selectionHeight);
-        UpdateDimRect(DimRight, right, top, Math.Max(0, width - right), selectionHeight);
+
+        // 录屏模式没有初始遮罩：按下鼠标但还没拉出可用选区时保持实时画面，
+        // 选区可用后再压暗四周，与截图模式的选区观感一致。
+        var showOutsideDim = UsesIdleMask ||
+                             _hasSelection ||
+                             ScreenGeometry.IsUsableSelection(_selectionPx);
+
+        if (showOutsideDim)
+        {
+            UpdateDimRect(DimTop, 0, 0, width, top);
+            UpdateDimRect(DimBottom, 0, bottom, width, Math.Max(0, height - bottom));
+            UpdateDimRect(DimLeft, 0, top, left, selectionHeight);
+            UpdateDimRect(DimRight, right, top, Math.Max(0, width - right), selectionHeight);
+        }
+        else
+        {
+            DimTop.Visibility = Visibility.Collapsed;
+            DimBottom.Visibility = Visibility.Collapsed;
+            DimLeft.Visibility = Visibility.Collapsed;
+            DimRight.Visibility = Visibility.Collapsed;
+        }
 
         SelectionBorder.Visibility = Visibility.Visible;
         SelectionBorder.Width = selectionWidth;

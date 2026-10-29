@@ -1193,6 +1193,8 @@ internal static class Program
             var app = new HaloCap.App();
             app.InitializeComponent();
             CaptureOverlayPreviewKeepsMouseSurface();
+            CaptureSelectionHintsStayLightAndConcise();
+            RecordSelectionDimsAfterUsableDrag();
             SettingsAndTrayChromeUseCleanLayout(app);
             var names = new[]
             {
@@ -1536,6 +1538,84 @@ internal static class Program
                     overlay.Close();
                 }
             }
+        }
+    }
+
+    private static void CaptureSelectionHintsStayLightAndConcise()
+    {
+        const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
+        foreach (var mode in new[] { CaptureSessionMode.Screenshot, CaptureSessionMode.Ocr, CaptureSessionMode.Record })
+        {
+            using var session = (ScreenshotSession)Activator.CreateInstance(typeof(ScreenshotSession), flags, null,
+                new object[] { mode, (Action<CaptureResult>)(_ => { }) }, CultureInfo.InvariantCulture)!;
+            var monitor = new ScreenMonitor
+            {
+                Bounds = new PhysicalRect(0, 0, 600, 400),
+                WorkArea = new PhysicalRect(0, 0, 600, 400),
+                Scale = 1.0
+            };
+            var overlay = new ScreenshotOverlayWindow(session, monitor, mode, null);
+            try
+            {
+                var chip = (Border)overlay.FindName("HintChip");
+                var background = ((SolidColorBrush)chip.Background).Color;
+                True(background.A >= 0xE0 && background.R >= 0xF0 && background.G >= 0xF0 && background.B >= 0xF0,
+                    $"{mode} hint chip should use a light surface");
+
+                var text = (TextBlock)overlay.FindName("HintText");
+                var foreground = ((SolidColorBrush)text.Foreground).Color;
+                True(foreground.R < 0x60 && foreground.G < 0x60 && foreground.B < 0x60,
+                    $"{mode} hint text should be dark on the light chip");
+                True(text.Text.Length <= 32 && text.Text.Contains("Esc 取消") && !text.Text.Contains("工具"),
+                    $"{mode} hint should stay short and actionable");
+            }
+            finally
+            {
+                overlay.Close();
+            }
+        }
+    }
+
+    private static void RecordSelectionDimsAfterUsableDrag()
+    {
+        const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
+        var type = typeof(ScreenshotOverlayWindow);
+        using var session = (ScreenshotSession)Activator.CreateInstance(typeof(ScreenshotSession), flags, null,
+            new object[] { CaptureSessionMode.Record, (Action<CaptureResult>)(_ => { }) }, CultureInfo.InvariantCulture)!;
+        var monitor = new ScreenMonitor
+        {
+            Bounds = new PhysicalRect(0, 0, 600, 400),
+            WorkArea = new PhysicalRect(0, 0, 600, 400),
+            Scale = 1.0
+        };
+        var overlay = new ScreenshotOverlayWindow(session, monitor, CaptureSessionMode.Record, null);
+        try
+        {
+            var root = (FrameworkElement)overlay.Content;
+            root.Measure(new Size(600, 400));
+            root.Arrange(new Rect(0, 0, 600, 400));
+            root.UpdateLayout();
+            type.GetMethod("RefreshMapping", flags)!.Invoke(overlay, null);
+
+            var updateSelection = type.GetMethod("UpdateSelectionVisual", flags)!;
+            var selectionField = type.GetField("_selectionPx", flags)!;
+            type.GetField("_hasSelection", flags)!.SetValue(overlay, false);
+            var dragKindType = type.GetNestedType("DragKind", BindingFlags.NonPublic)!;
+            type.GetField("_dragKind", flags)!.SetValue(overlay, Enum.Parse(dragKindType, "Create"));
+
+            selectionField.SetValue(overlay, new PhysicalRect(80, 80, 2, 2));
+            updateSelection.Invoke(overlay, new object[] { true });
+            True(((FrameworkElement)overlay.FindName("DimTop")).Visibility == Visibility.Collapsed,
+                "record mode should keep the live screen undimmed until the drag is usable");
+
+            selectionField.SetValue(overlay, new PhysicalRect(80, 80, 300, 200));
+            updateSelection.Invoke(overlay, new object[] { true });
+            True(((FrameworkElement)overlay.FindName("DimTop")).Visibility == Visibility.Visible,
+                "record mode should dim outside a usable selection like screenshot");
+        }
+        finally
+        {
+            overlay.Close();
         }
     }
 

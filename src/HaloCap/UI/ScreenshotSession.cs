@@ -28,6 +28,8 @@ internal sealed class ScreenshotSession : IDisposable
     private ScreenshotOverlayWindow? _selectionHost;
     private bool _completing;
     private bool _disposed;
+    private DispatcherTimer? _revealFallbackTimer;
+    private DispatcherTimer? _revealWarmupTimer;
 
     private ScreenshotSession(CaptureSessionMode mode, Action<CaptureResult> completed)
     {
@@ -420,24 +422,44 @@ internal sealed class ScreenshotSession : IDisposable
                 }
             }
 
-            foreach (var overlay in _overlays.ToArray())
-            {
-                overlay.PrepareAndShow();
-            }
-
             var cursorMonitor = MonitorService.GetMonitorAtCursor();
             var active = _overlays.FirstOrDefault(o => o.Monitor.Handle == cursorMonitor.Handle)
                          ?? _overlays.FirstOrDefault(o => o.Monitor.IsPrimary)
                          ?? _overlays[0];
 
             _activeOverlay = active;
-            active.ActivateForSelection();
 
-            // 所有显示器在同一帧直接显示，避免淡入或逐屏启动时一边已压暗、另一边还是实时画面。
-            active.Dispatcher.BeginInvoke(
-                DispatcherPriority.ApplicationIdle,
-                new Action(() =>
+            var pendingFirstFrames = new HashSet<ScreenshotOverlayWindow>(_overlays);
+            var revealStarted = false;
+
+            void StartReveal()
+            {
+                if (revealStarted || _disposed)
                 {
+                    return;
+                }
+
+                revealStarted = true;
+                _revealFallbackTimer?.Stop();
+                _revealFallbackTimer = null;
+
+                // 所有显示器先以近乎透明的透明度预合成一帧，等冻结画面和候选框都就绪后
+                // 再在同一帧一起完全显示，避免逐屏启动或第一帧空白造成的闪烁。
+                foreach (var overlay in _overlays.ToArray())
+                {
+                    overlay.PrepareReveal();
+                }
+
+                var warmup = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(80) };
+                warmup.Tick += (_, _) =>
+                {
+                    warmup.Stop();
+
+                    if (ReferenceEquals(_revealWarmupTimer, warmup))
+                    {
+                        _revealWarmupTimer = null;
+                    }
+
                     if (_disposed)
                     {
                         return;
@@ -445,9 +467,46 @@ internal sealed class ScreenshotSession : IDisposable
 
                     foreach (var overlay in _overlays.ToArray())
                     {
-                        overlay.RevealOverlay();
+                        overlay.CommitReveal();
                     }
-                }));
+                };
+
+                _revealWarmupTimer = warmup;
+                warmup.Start();
+            }
+
+            foreach (var overlay in _overlays.ToArray())
+            {
+                var pending = overlay;
+                pending.ContentRendered += (_, _) =>
+                {
+                    if (!pendingFirstFrames.Remove(pending))
+                    {
+                        return;
+                    }
+
+                    if (pendingFirstFrames.Count == 0)
+                    {
+                        StartReveal();
+                    }
+                };
+
+                overlay.PrepareAndShow();
+            }
+
+            active.ActivateForSelection();
+
+            if (!revealStarted)
+            {
+                _revealFallbackTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(300) };
+                _revealFallbackTimer.Tick += (_, _) =>
+                {
+                    _revealFallbackTimer?.Stop();
+                    _revealFallbackTimer = null;
+                    StartReveal();
+                };
+                _revealFallbackTimer.Start();
+            }
         }
         catch
         {
@@ -493,6 +552,11 @@ internal sealed class ScreenshotSession : IDisposable
 
     public void Dispose()
     {
+        _revealFallbackTimer?.Stop();
+        _revealFallbackTimer = null;
+        _revealWarmupTimer?.Stop();
+        _revealWarmupTimer = null;
+
         if (_disposed)
         {
             _completing = true;

@@ -1537,7 +1537,9 @@ internal static class Program
                     Equal("Done", doneButton.Tag as string ?? string.Empty);
                     True(overlay.Opacity == 0,
                         "the overlay must stay transparent until its first frame has rendered");
-                    type.GetMethod("RevealOverlay", flags)!.Invoke(overlay, null);
+                    type.GetMethod("PrepareReveal", flags)!.Invoke(overlay, null);
+                    Equal(0.01, overlay.Opacity, 0.0001);
+                    type.GetMethod("CommitReveal", flags)!.Invoke(overlay, null);
                     Equal(1.0, overlay.Opacity, 0.0001);
                     var root = (Grid)overlay.FindName("Root");
                     root.Measure(new Size(600, 400));
@@ -1750,6 +1752,12 @@ internal static class Program
                  ((FrameworkElement)overlay.FindName("ElementBorder")).Visibility == Visibility.Visible,
                 "the overlay should return to idle or hover, never a bare dot");
 
+            typeof(ScreenshotOverlayWindow).GetField("_lastElementProbeTick", flags)!
+                .SetValue(overlay, Environment.TickCount64);
+            typeof(ScreenshotOverlayWindow).GetMethod("ResetToIdle", flags)!.Invoke(overlay, null);
+            True(((FrameworkElement)overlay.FindName("ElementBorder")).Visibility == Visibility.Visible,
+                "reset must force a fresh probe so the first frame already has the window candidate");
+
             session.BeginSelection(
                 overlay,
                 ScreenGeometry.ToVirtual(new PhysicalRect(20, 20, 100, 80), monitor.Bounds));
@@ -1759,7 +1767,9 @@ internal static class Program
             overlay.ActivateForSelection();
             True((bool)typeof(ScreenshotOverlayWindow).GetField("_activationPending", flags)!.GetValue(overlay)!,
                 "focus should wait until the overlay is actually on screen");
-            typeof(ScreenshotOverlayWindow).GetMethod("RevealOverlay", flags)!.Invoke(overlay, null);
+            typeof(ScreenshotOverlayWindow).GetMethod("PrepareReveal", flags)!.Invoke(overlay, null);
+            Equal(0.01, overlay.Opacity, 0.0001);
+            typeof(ScreenshotOverlayWindow).GetMethod("CommitReveal", flags)!.Invoke(overlay, null);
             Equal(1.0, overlay.Opacity, 0.0001);
             True((bool)typeof(ScreenshotOverlayWindow).GetField("_revealCompleted", flags)!.GetValue(overlay)!,
                 "the overlay should be fully visible before focus is taken");

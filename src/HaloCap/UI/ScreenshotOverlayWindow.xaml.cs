@@ -77,7 +77,7 @@ public partial class ScreenshotOverlayWindow : Window
     private bool _activeDim;
     private bool _initialHoverLogged;
     private readonly DispatcherTimer _idleHoverTimer;
-    private readonly DispatcherTimer _revealSettleTimer;
+    private readonly DispatcherTimer _activationTimer;
     private bool _revealCompleted;
     private bool _activationPending;
 
@@ -152,8 +152,8 @@ public partial class ScreenshotOverlayWindow : Window
         _idleHoverTimer.Start();
 
         // 遮罩上屏后再抢焦点，否则透明或半透明阶段的前台窗口会先失活，屏幕像是闪了一下。
-        _revealSettleTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(40) };
-        _revealSettleTimer.Tick += (_, _) => OnRevealSettled();
+        _activationTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(40) };
+        _activationTimer.Tick += (_, _) => OnActivationElapsed();
 
         SourceInitialized += (_, _) =>
         {
@@ -189,7 +189,7 @@ public partial class ScreenshotOverlayWindow : Window
         {
             _toolHudTimer.Stop();
             _idleHoverTimer.Stop();
-            _revealSettleTimer.Stop();
+            _activationTimer.Stop();
 
             if (Mouse.Captured == Root)
             {
@@ -394,7 +394,7 @@ public partial class ScreenshotOverlayWindow : Window
             }));
     }
 
-    internal void RevealOverlay()
+    internal void PrepareReveal()
     {
         if (_revealed || _closed)
         {
@@ -406,39 +406,50 @@ public partial class ScreenshotOverlayWindow : Window
         RefreshMapping();
         Root.UpdateLayout();
         _revealed = true;
-        _revealCompleted = true;
 
-        // 先把候选窗口和遮罩开洞算好，再直接显示，避免第一帧之后再改变整屏明暗。
+        // 强制重新探测一次候选，避免刚重置遮罩时的探测节流让第一帧只有遮罩没有窗口高亮。
         if (!_session.HasSelection)
         {
-            PositionCrosshairFromCursor();
+            PositionCrosshairFromCursor(forceProbe: true);
         }
 
-        // 选区要即时出现：轻遮罩直接上屏，不再做淡入，既没有跨帧亮度变化也不拖慢启动。
+        // 用近乎透明的透明度先合成一帧（肉眼不可见），让冻结画面、候选框和放大镜都进入
+        // 合成表面后再完全显示；否则直接切到不透明会先闪出空白或实时桌面。
         BeginAnimation(OpacityProperty, null);
-        Opacity = 1;
-
-        _revealSettleTimer.Stop();
-        _revealSettleTimer.Start();
+        Opacity = 0.01;
     }
 
-    private void OnRevealSettled()
+    internal void CommitReveal()
     {
-        _revealSettleTimer.Stop();
+        if (_closed || !_revealed || _revealCompleted)
+        {
+            return;
+        }
+
+        Opacity = 1;
+        _revealCompleted = true;
+
+        _activationTimer.Stop();
+        _activationTimer.Start();
+    }
+
+    private void OnActivationElapsed()
+    {
+        _activationTimer.Stop();
 
         if (_closed)
         {
             return;
         }
 
-        // 首帧时布局尚未就绪、没能算出候选时，上屏后补一次。
+        // 极端情况下预热帧仍没算出候选时，上屏后补一次。
         if (!_session.HasSelection &&
             !_hasSelection &&
             !_dragging &&
             !_annotating &&
             ElementBorder.Visibility != Visibility.Visible)
         {
-            PositionCrosshairFromCursor();
+            PositionCrosshairFromCursor(forceProbe: true);
         }
 
         TryActivateForInput();
@@ -452,7 +463,7 @@ public partial class ScreenshotOverlayWindow : Window
         }
 
         _activationPending = true;
-        PositionCrosshairFromCursor();
+        PositionCrosshairFromCursor(forceProbe: true);
 
         if (_revealCompleted)
         {
@@ -1396,7 +1407,7 @@ public partial class ScreenshotOverlayWindow : Window
         _clickElementPx = default;
         HintChip.Visibility = Visibility.Visible;
 
-        PositionCrosshairFromCursor();
+        PositionCrosshairFromCursor(forceProbe: true);
     }
 
     private void UpdateSelectionVisual(bool showSize)
@@ -1720,7 +1731,7 @@ public partial class ScreenshotOverlayWindow : Window
         CrossHorizontal.Visibility = Visibility.Collapsed;
     }
 
-    private void PositionCrosshairFromCursor()
+    private void PositionCrosshairFromCursor(bool forceProbe = false)
     {
         if (_closed || _hasSelection || _dragging || _annotating)
         {
@@ -1738,7 +1749,7 @@ public partial class ScreenshotOverlayWindow : Window
 
         UpdateCrosshair(point);
         UpdateMagnifier(point);
-        UpdateElementHover(point);
+        UpdateElementHover(point, forceProbe);
     }
 
     private void IdleHoverTick()
@@ -2070,7 +2081,7 @@ public partial class ScreenshotOverlayWindow : Window
             _magnifierSample[centerIndex]);
     }
 
-    private void UpdateElementHover(Point point)
+    private void UpdateElementHover(Point point, bool force = false)
     {
         if (_hasSelection || _dragging || _annotating)
         {
@@ -2091,7 +2102,8 @@ public partial class ScreenshotOverlayWindow : Window
         var screenY = _monitor.Bounds.Top + (int)Math.Round(point.Y * _mapScaleY);
         var now = Environment.TickCount64;
 
-        if (now - _lastElementProbeTick < ElementProbeIntervalMs &&
+        if (!force &&
+            now - _lastElementProbeTick < ElementProbeIntervalMs &&
             Math.Abs(screenX - _lastProbeX) < 2 &&
             Math.Abs(screenY - _lastProbeY) < 2)
         {

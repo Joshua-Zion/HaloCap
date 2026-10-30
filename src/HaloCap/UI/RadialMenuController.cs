@@ -83,6 +83,8 @@ internal sealed class RadialMenuController : IDisposable
 
     public event Action<RadialAction>? ActionSelected;
 
+    public event Action? Hidden;
+
     public bool IsOpen => _isOpen;
 
     public Func<bool>? PinAvailabilityProvider { get; set; }
@@ -190,6 +192,8 @@ internal sealed class RadialMenuController : IDisposable
         {
             _window.PlayHideAnimation();
         }
+
+        Hidden?.Invoke();
     }
 
     private void ShowMenu()

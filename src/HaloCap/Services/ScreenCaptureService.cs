@@ -3,6 +3,7 @@ using System.Drawing;
 using System.Drawing.Imaging;
 using System.Windows;
 using System.Windows.Interop;
+using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using HaloCap.Diagnostics;
 using HaloCap.Interop;
@@ -49,45 +50,34 @@ internal static class ScreenCaptureService
 
     public static BitmapSource ToBitmapSource(Bitmap bitmap, double dpi)
     {
-        var handle = bitmap.GetHbitmap();
-        BitmapSource source;
+        var effectiveDpi = dpi > 1 ? dpi : 96.0;
+        var data = bitmap.LockBits(
+            new Rectangle(0, 0, bitmap.Width, bitmap.Height),
+            ImageLockMode.ReadOnly,
+            DrawingPixelFormat.Format32bppArgb);
 
         try
         {
-            source = Imaging.CreateBitmapSourceFromHBitmap(
-                handle,
-                IntPtr.Zero,
-                Int32Rect.Empty,
-                BitmapSizeOptions.FromEmptyOptions());
-        }
-        finally
-        {
-            NativeMethods.DeleteObject(handle);
-        }
+            // 直接从锁定内存创建一次位图，避免 HBITMAP + 中间字节数组 + 二次拷贝，
+            // 4K 双屏下每次冻结画面可少占用数十 MB 峰值内存。
+            var source = BitmapSource.Create(
+                bitmap.Width,
+                bitmap.Height,
+                effectiveDpi,
+                effectiveDpi,
+                PixelFormats.Bgr32,
+                null,
+                data.Scan0,
+                data.Stride * bitmap.Height,
+                data.Stride);
 
-        if (dpi <= 1 || Math.Abs(dpi - source.DpiX) < 0.5)
-        {
             source.Freeze();
             return source;
         }
-
-        var bytesPerPixel = Math.Max(1, (source.Format.BitsPerPixel + 7) / 8);
-        var stride = source.PixelWidth * bytesPerPixel;
-        var pixels = new byte[stride * source.PixelHeight];
-        source.CopyPixels(pixels, stride, 0);
-
-        var adjusted = BitmapSource.Create(
-            source.PixelWidth,
-            source.PixelHeight,
-            dpi,
-            dpi,
-            source.Format,
-            source.Palette,
-            pixels,
-            stride);
-
-        adjusted.Freeze();
-        return adjusted;
+        finally
+        {
+            bitmap.UnlockBits(data);
+        }
     }
 
     public static BitmapSource FromMonitor(ScreenMonitor monitor) => ToBitmapSource(Capture(monitor.Bounds));

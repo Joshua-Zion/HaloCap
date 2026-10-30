@@ -227,8 +227,8 @@ public partial class SettingsWindow : Window
         }
 
         HotkeyHint.Text = singleKeys.Count > 0
-            ? $"{string.Join("、", singleKeys)} 使用单键，会独占该键；点击对应按键可重新设置。"
-            : "单击按键区域后按下新的组合键；单键会独占该键，Esc 取消";
+            ? $"{string.Join("、", singleKeys)} 使用单键，会独占该键并优先于输入法；点击对应按键可重新设置。"
+            : "单击按键区域后按下新的组合键；单键会独占该键并优先于输入法，Esc 取消";
     }
 
     private void OnPreviewKeyDown(object sender, KeyEventArgs e)

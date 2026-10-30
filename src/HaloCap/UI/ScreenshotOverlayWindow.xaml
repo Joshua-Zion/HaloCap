@@ -878,6 +878,8 @@
                          Width="6"
                          Height="6"
                          Fill="#FF2F7CF6"
+                         Stroke="#33000000"
+                         StrokeThickness="1"
                          VerticalAlignment="Center"
                          Margin="0,0,7,0" />
                 <TextBlock x:Name="ToolHudText"

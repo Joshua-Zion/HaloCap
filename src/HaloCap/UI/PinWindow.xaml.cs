@@ -76,6 +76,9 @@ public partial class PinWindow : Window
     {
         InitializeComponent();
 
+        // 贴图的单键标注快捷键要先于输入法拿到按键；只有编辑文字时再启用 IME。
+        InputMethod.SetIsInputMethodEnabled(this, false);
+
         _image = image;
         _initialRect = initialRect.Width > 0 && initialRect.Height > 0
             ? initialRect
@@ -1659,6 +1662,8 @@ public partial class PinWindow : Window
 
         _textEditor = box;
         _textPoint = imagePoint;
+        InputMethod.SetIsInputMethodEnabled(this, true);
+        InputMethod.SetIsInputMethodEnabled(box, true);
         box.Focus();
     }
 
@@ -1690,6 +1695,7 @@ public partial class PinWindow : Window
         _textEditor = null;
         var text = box.Text.Trim();
         EditorLayer.Children.Remove(box);
+        InputMethod.SetIsInputMethodEnabled(this, false);
 
         if (text.Length == 0)
         {
@@ -1724,6 +1730,7 @@ public partial class PinWindow : Window
 
         _textEditor = null;
         EditorLayer.Children.Remove(box);
+        InputMethod.SetIsInputMethodEnabled(this, false);
     }
 
     private Point ToImagePoint(Point displayPoint)

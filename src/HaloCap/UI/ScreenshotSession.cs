@@ -58,6 +58,40 @@ internal sealed class ScreenshotSession : IDisposable
 
     internal ScreenshotOverlayWindow? ActiveOverlay => _activeOverlay;
 
+    internal bool TryGetColorAtCursor(out Color color)
+    {
+        color = default;
+
+        if (!NativeMethods.GetCursorPos(out var cursor))
+        {
+            return false;
+        }
+
+        var overlay = _overlays.FirstOrDefault(o =>
+            cursor.X >= o.Monitor.Bounds.Left &&
+            cursor.X < o.Monitor.Bounds.Right &&
+            cursor.Y >= o.Monitor.Bounds.Top &&
+            cursor.Y < o.Monitor.Bounds.Bottom);
+
+        if (overlay is not null && overlay.TryGetScreenPixel(cursor.X, cursor.Y, out color))
+        {
+            return true;
+        }
+
+        try
+        {
+            using var bitmap = ScreenCaptureService.Capture(new PhysicalRect(cursor.X, cursor.Y, 1, 1));
+            var pixel = bitmap.GetPixel(0, 0);
+            color = Color.FromRgb(pixel.R, pixel.G, pixel.B);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Log.Error("读取光标颜色失败", ex);
+            return false;
+        }
+    }
+
     internal void RegisterOverlay(ScreenshotOverlayWindow overlay)
     {
         if (_overlays.Contains(overlay))

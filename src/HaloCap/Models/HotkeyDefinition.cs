@@ -29,6 +29,9 @@ public sealed class HotkeyDefinition
     public bool IsSingleKey => Modifiers == ModifierKeys.None;
 
     [JsonIgnore]
+    public bool IsTypingSingleKey => IsSingleKey && IsTypingKey(Key);
+
+    [JsonIgnore]
     public bool IsValid =>
         Key != Key.None &&
         !IsModifierKey(Key) &&
@@ -62,6 +65,14 @@ public sealed class HotkeyDefinition
                (code >= (int)Key.D0 && code <= (int)Key.D9) ||
                (code >= (int)Key.NumPad0 && code <= (int)Key.NumPad9) ||
                key is Key.Insert or Key.Home or Key.End or Key.PageUp or Key.PageDown or Key.Snapshot;
+    }
+
+    public static bool IsTypingKey(Key key)
+    {
+        var code = (int)key;
+        return (code >= (int)Key.A && code <= (int)Key.Z) ||
+               (code >= (int)Key.D0 && code <= (int)Key.D9) ||
+               (code >= (int)Key.NumPad0 && code <= (int)Key.NumPad9);
     }
 
     public static string Format(ModifierKeys modifiers, Key key)

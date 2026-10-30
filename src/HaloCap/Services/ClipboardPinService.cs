@@ -29,6 +29,11 @@ internal sealed class ClipboardPinService
 
     public bool CanPin => ReadClipboard() is { HasContent: true };
 
+    public void ReleaseCache()
+    {
+        _snapshot = null;
+    }
+
     public IReadOnlyList<ClipboardPinContent> CreatePins(bool convertFilePathsToImages, double scale)
     {
         var snapshot = ReadClipboard();

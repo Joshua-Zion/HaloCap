@@ -41,8 +41,8 @@ public partial class ScreenshotOverlayWindow : Window
     private readonly ScreenshotSession _session;
     private readonly ScreenMonitor _monitor;
     private readonly CaptureSessionMode _mode;
-    private readonly DrawingBitmap? _frozenBitmap;
-    private readonly BitmapSource? _frozenSource;
+    private DrawingBitmap? _frozenBitmap;
+    private BitmapSource? _frozenSource;
     private readonly List<AnnotationStroke> _strokes = new();
     private readonly List<List<AnnotationStroke>> _undoStack = new();
     private readonly List<List<AnnotationStroke>> _redoStack = new();
@@ -76,6 +76,8 @@ public partial class ScreenshotOverlayWindow : Window
     private bool _syntheticPressLogged;
     private bool _activeDim;
     private bool _initialHoverLogged;
+    private bool _copyRgbColor;
+    private Brush? _modeAccentBrush;
     private readonly DispatcherTimer _idleHoverTimer;
     private readonly DispatcherTimer _activationTimer;
     private bool _revealCompleted;
@@ -110,6 +112,9 @@ public partial class ScreenshotOverlayWindow : Window
         DrawingBitmap? frozenBitmap)
     {
         InitializeComponent();
+
+        // 选区内的单键快捷键必须先于输入法拿到按键；只有文字工具编辑时才临时启用 IME。
+        InputMethod.SetIsInputMethodEnabled(this, false);
 
         // 先在完全透明状态下完成首帧渲染，再一次性显示；分层窗口若带着未合成的首帧出现，
         // 会先透出未变暗的实时桌面再变暗，看起来就是一次闪屏。
@@ -198,8 +203,12 @@ public partial class ScreenshotOverlayWindow : Window
 
             _source?.RemoveHook(OverlayWndProc);
             _source = null;
-            _frozenBitmap?.Dispose();
-            FrozenImage.Source = null;
+
+            // WPF 位图的像素不在托管堆里，关窗后必须主动断开引用，否则取消几次选区
+            // 就会累积数百 MB 的冻结画面，后台常驻内存迟迟不降。
+            ReleaseFrozenBuffers();
+            ClearAnnotations();
+
             _session.UnregisterOverlay(this);
         };
 
@@ -525,6 +534,31 @@ public partial class ScreenshotOverlayWindow : Window
     internal BitmapSource? CreateSelectionBitmap(bool includeAnnotations) =>
         _hasSelection ? CreateLocalSelectionBitmap(includeAnnotations) : null;
 
+    internal bool TryGetScreenPixel(int screenX, int screenY, out Color color)
+    {
+        color = default;
+
+        if (_closed || _frozenBitmap is null)
+        {
+            return false;
+        }
+
+        var localX = screenX - _monitor.Bounds.Left;
+        var localY = screenY - _monitor.Bounds.Top;
+
+        if (localX < 0 ||
+            localY < 0 ||
+            localX >= _frozenBitmap.Width ||
+            localY >= _frozenBitmap.Height)
+        {
+            return false;
+        }
+
+        var pixel = _frozenBitmap.GetPixel(localX, localY);
+        color = Color.FromRgb(pixel.R, pixel.G, pixel.B);
+        return true;
+    }
+
     internal BitmapSource ComposeAnnotations(BitmapSource image)
     {
         if (_strokes.Count == 0)
@@ -555,6 +589,10 @@ public partial class ScreenshotOverlayWindow : Window
 
         _closed = true;
         CancelTextEditor();
+        ReleaseFrozenBuffers();
+        _idleHoverTimer.Stop();
+        _activationTimer.Stop();
+        _toolHudTimer.Stop();
 
         try
         {
@@ -569,6 +607,19 @@ public partial class ScreenshotOverlayWindow : Window
         }
 
         Close();
+    }
+
+    private void ReleaseFrozenBuffers()
+    {
+        _frozenBitmap?.Dispose();
+        _frozenBitmap = null;
+        _frozenSource = null;
+        FrozenImage.Source = null;
+        MagnifierImage.Source = null;
+        _magnifierSource = null;
+        _magnifierBitmap = null;
+        _magnifierSample = Array.Empty<byte>();
+        _magnifierFrame = Array.Empty<byte>();
     }
 
     private void ConfigureWindowBounds()
@@ -693,6 +744,7 @@ public partial class ScreenshotOverlayWindow : Window
 
         var brush = new SolidColorBrush(accent);
         brush.Freeze();
+        _modeAccentBrush = brush;
         SelectionBorder.BorderBrush = brush;
         ElementBorder.Stroke = brush;
         MagnifierPixelRing.Stroke = brush;
@@ -1093,9 +1145,58 @@ public partial class ScreenshotOverlayWindow : Window
         _session.CancelAll();
     }
 
+    private bool TryHandleColorCopy(KeyEventArgs e)
+    {
+        if (e.Key != Key.C)
+        {
+            return false;
+        }
+
+        var modifiers = Keyboard.Modifiers;
+
+        if ((modifiers & (ModifierKeys.Control | ModifierKeys.Alt | ModifierKeys.Windows)) != 0)
+        {
+            return false;
+        }
+
+        e.Handled = true;
+
+        if ((modifiers & ModifierKeys.Shift) != 0)
+        {
+            _copyRgbColor = !_copyRgbColor;
+        }
+
+        if (!_session.TryGetColorAtCursor(out var color))
+        {
+            ShowToolHud("无法读取光标下的颜色");
+            return true;
+        }
+
+        var text = ColorClipboardFormatter.Format(color, _copyRgbColor);
+
+        try
+        {
+            Clipboard.SetText(text);
+            Log.Info($"复制颜色：{text}");
+            ShowToolHud($"已复制 {text}", color);
+        }
+        catch (Exception ex)
+        {
+            Log.Error("复制颜色失败", ex);
+            ShowToolHud("复制颜色失败");
+        }
+
+        return true;
+    }
+
     private void Window_KeyDown(object sender, KeyEventArgs e)
     {
         if (_closed || _textEditor is not null)
+        {
+            return;
+        }
+
+        if (TryHandleColorCopy(e))
         {
             return;
         }
@@ -3046,8 +3147,19 @@ public partial class ScreenshotOverlayWindow : Window
         UpdateToolOptionVisuals();
     }
 
-    private void ShowToolHud(string text)
+    private void ShowToolHud(string text, Color? swatch = null)
     {
+        if (swatch is { } color)
+        {
+            var dot = new SolidColorBrush(color);
+            dot.Freeze();
+            ToolHudDot.Fill = dot;
+        }
+        else if (_modeAccentBrush is not null)
+        {
+            ToolHudDot.Fill = _modeAccentBrush;
+        }
+
         ToolHudText.Text = text;
         ToolHud.Visibility = Visibility.Visible;
         ToolHud.BeginAnimation(OpacityProperty, null);
@@ -3056,7 +3168,6 @@ public partial class ScreenshotOverlayWindow : Window
         _toolHudTimer.Start();
         PositionToolHud();
     }
-
     private void PositionToolHud()
     {
         var size = MeasureWithoutMargin(ToolHud);
@@ -3304,6 +3415,8 @@ public partial class ScreenshotOverlayWindow : Window
 
         _textEditor = box;
         _textPoint = selectionPoint;
+        InputMethod.SetIsInputMethodEnabled(this, true);
+        InputMethod.SetIsInputMethodEnabled(box, true);
         box.Focus();
     }
 
@@ -3335,6 +3448,7 @@ public partial class ScreenshotOverlayWindow : Window
         _textEditor = null;
         var text = box.Text.Trim();
         EditorLayer.Children.Remove(box);
+        InputMethod.SetIsInputMethodEnabled(this, false);
 
         if (text.Length == 0)
         {
@@ -3369,6 +3483,7 @@ public partial class ScreenshotOverlayWindow : Window
 
         _textEditor = null;
         EditorLayer.Children.Remove(box);
+        InputMethod.SetIsInputMethodEnabled(this, false);
     }
 
     private bool IsWithinTextEditor(object? source)

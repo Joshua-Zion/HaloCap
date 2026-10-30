@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
+using System.Runtime;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Media.Imaging;
@@ -18,6 +20,7 @@ public partial class App : Application
 {
     private const string DisplayName = AppInfo.DisplayName;
     private const int RadialActionDelayMs = 60;
+    private const long MemoryTrimThresholdBytes = 220L * 1024 * 1024;
 
     private static readonly RadialAction[] ActionHotkeyOrder =
     {
@@ -30,6 +33,7 @@ public partial class App : Application
     private readonly AutoStartService _autoStart = new();
     private readonly ClipboardPinService _clipboardPin = new();
     private readonly Dictionary<RadialAction, HotkeyService> _actionHotkeyServices = new();
+    private SingleKeyHotkeyHook? _singleKeyHotkeyHook;
     private SingleInstanceService? _singleInstance;
     private HotkeyService? _hotkeyService;
     private TrayIconService? _tray;
@@ -39,6 +43,7 @@ public partial class App : Application
     private ScreenshotSession? _screenshotSession;
     private SettingsWindow? _settingsWindow;
     private AppSettings _settings = new();
+    private DispatcherTimer? _memoryTrimTimer;
     private bool _captureStarting;
     private bool _isDialogOpen;
     private bool _isExiting;
@@ -83,6 +88,7 @@ public partial class App : Application
             PinAvailabilityProvider = () => _clipboardPin.CanPin
         };
         _radial.ActionSelected += OnActionSelected;
+        _radial.Hidden += () => _clipboardPin.ReleaseCache();
 
         _tray = new TrayIconService();
         _tray.MenuRequested += (_, _) => Defer(ShowTrayMenu);
@@ -124,6 +130,12 @@ public partial class App : Application
         _singleInstance!.ActivationRequested += (_, _) =>
             Dispatcher.BeginInvoke(DispatcherPriority.Input, new Action(ShowRadialFromTray));
         _singleInstance.StartListening();
+
+        _singleKeyHotkeyHook = new SingleKeyHotkeyHook
+        {
+            CanHandle = () => !_isExiting && _settingsWindow is not { IsCapturingHotkey: true }
+        };
+        UpdateSingleKeyHotkeyHook();
 
         if (!registered)
         {
@@ -388,6 +400,37 @@ public partial class App : Application
         var current = _hotkeyService?.Current;
         _radial?.UpdateHotkey(current ?? _settings.Hotkey, current is not null);
         UpdateHotkeyUi();
+        UpdateSingleKeyHotkeyHook();
+    }
+
+    private void UpdateSingleKeyHotkeyHook()
+    {
+        if (_singleKeyHotkeyHook is null)
+        {
+            return;
+        }
+
+        var actions = new Dictionary<int, Action>();
+        var radial = _hotkeyService?.Current;
+
+        if (radial is { IsTypingSingleKey: true })
+        {
+            actions[radial.VirtualKey] = () => Defer(ToggleRadialFromHotkey);
+        }
+
+        foreach (var action in ActionHotkeyOrder)
+        {
+            if (!_actionHotkeyServices.TryGetValue(action, out var service) ||
+                service.Current is not { IsTypingSingleKey: true } hotkey)
+            {
+                continue;
+            }
+
+            var capturedAction = action;
+            actions[hotkey.VirtualKey] = () => Defer(() => TriggerAction(capturedAction, 0));
+        }
+
+        _singleKeyHotkeyHook.Update(actions);
     }
 
     private static bool SameHotkey(HotkeyDefinition first, HotkeyDefinition second) =>
@@ -704,11 +747,73 @@ public partial class App : Application
             Log.Error("剪贴板贴图失败", ex);
             _tray?.ShowNotification("贴图失败", "无法读取剪贴板，请复制内容后重试。", Forms.ToolTipIcon.Warning);
         }
+        finally
+        {
+            _clipboardPin.ReleaseCache();
+        }
+    }
+
+    private void ScheduleMemoryTrim()
+    {
+        if (_isExiting)
+        {
+            return;
+        }
+
+        _memoryTrimTimer?.Stop();
+
+        var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1200) };
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+
+            if (ReferenceEquals(_memoryTrimTimer, timer))
+            {
+                _memoryTrimTimer = null;
+            }
+
+            if (_isExiting)
+            {
+                return;
+            }
+
+            if (IsBusy || _radial?.IsOpen == true)
+            {
+                ScheduleMemoryTrim();
+                return;
+            }
+
+            TrimMemory();
+        };
+
+        _memoryTrimTimer = timer;
+        timer.Start();
+    }
+
+    private void TrimMemory()
+    {
+        _clipboardPin.ReleaseCache();
+
+        var process = Process.GetCurrentProcess();
+        if (process.PrivateMemorySize64 < MemoryTrimThresholdBytes)
+        {
+            return;
+        }
+
+        // WPF 位图的像素不参与托管堆压力统计，取消多次截图后不会自动 GC；
+        // 在空闲时做一次压缩回收，把冻结画面和旧的合成图真正还给系统。
+        GCSettings.LargeObjectHeapCompactionMode = GCLargeObjectHeapCompactionMode.CompactOnce;
+        GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true, compacting: true);
+        GC.WaitForPendingFinalizers();
+        GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true, compacting: true);
+
+        Log.Info($"已回收截图缓存，当前私有内存 {Math.Round(Process.GetCurrentProcess().PrivateMemorySize64 / 1024.0 / 1024.0)} MB");
     }
 
     private async void HandleCaptureCompleted(CaptureResult result)
     {
         _screenshotSession = null;
+        ScheduleMemoryTrim();
 
         if (_isExiting || result.Command == CaptureCommand.Cancel)
         {
@@ -946,6 +1051,10 @@ public partial class App : Application
         _trayMenu = null;
         _radial?.Dispose();
         _radial = null;
+        _singleKeyHotkeyHook?.Dispose();
+        _singleKeyHotkeyHook = null;
+        _memoryTrimTimer?.Stop();
+        _memoryTrimTimer = null;
         _tray?.Dispose();
         _tray = null;
         _hotkeyService?.Dispose();

@@ -48,6 +48,8 @@ internal static class Program
             ("Bare modifier key is rejected", BareModifierKeyIsRejected),
             ("Combination hotkey stays valid", CombinationHotkeyIsValid),
             ("Single key display has no plus sign", SingleKeyDisplayIsPlain),
+            ("Typing single keys are classified", TypingSingleKeysAreClassified),
+            ("Color clipboard formatter matches hex and rgb", ColorClipboardFormatterMatches),
             ("Radial size presets map to window sizes", RadialSizePresetsMapToWindowSizes),
             ("MoveWithin keeps selection inside", MoveWithinKeepsSelectionInside),
             ("MoveWithin preserves size", MoveWithinPreservesSize),
@@ -274,6 +276,27 @@ internal static class Program
     {
         Equal("F8", new HotkeyDefinition(ModifierKeys.None, Key.F8).DisplayText);
         Equal("5", new HotkeyDefinition(ModifierKeys.None, Key.D5).DisplayText);
+    }
+
+    private static void TypingSingleKeysAreClassified()
+    {
+        True(new HotkeyDefinition(ModifierKeys.None, Key.C).IsTypingSingleKey,
+            "letter single keys must go through the low-level hook");
+        True(new HotkeyDefinition(ModifierKeys.None, Key.D9).IsTypingSingleKey,
+            "digit single keys must go through the low-level hook");
+        True(new HotkeyDefinition(ModifierKeys.None, Key.NumPad9).IsTypingSingleKey,
+            "numpad single keys must go through the low-level hook");
+        True(!new HotkeyDefinition(ModifierKeys.None, Key.F1).IsTypingSingleKey,
+            "function keys should stay on RegisterHotKey");
+        True(!new HotkeyDefinition(ModifierKeys.Control, Key.C).IsTypingSingleKey,
+            "modified shortcuts are not typing keys");
+    }
+
+    private static void ColorClipboardFormatterMatches()
+    {
+        var color = Color.FromRgb(0x12, 0xAB, 0xFF);
+        Equal("#12ABFF", ColorClipboardFormatter.Format(color, false));
+        Equal("rgb(18, 171, 255)", ColorClipboardFormatter.Format(color, true));
     }
 
     private static void RadialSizePresetsMapToWindowSizes()
@@ -1197,6 +1220,9 @@ internal static class Program
             CaptureSelectionHintsStayLightAndConcise();
             CaptureSelectionFallsBackToFullScreen();
             CaptureStartupKeepsHoverCandidateAndClearsDots();
+            CaptureOverlayReleasesFrozenBuffers();
+            OverlaySamplesFrozenPixel();
+            ScreenCaptureConversionPreservesPixelsAndDpi();
             RecordSelectionDimsLikeOtherModes();
             CrossScreenSelectionSharesStateAndComposesCapture();
             SettingsAndTrayChromeUseCleanLayout(app);
@@ -1778,6 +1804,86 @@ internal static class Program
         {
             overlay.Close();
         }
+    }
+
+    private static void CaptureOverlayReleasesFrozenBuffers()
+    {
+        const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
+        var type = typeof(ScreenshotOverlayWindow);
+        var monitor = new ScreenMonitor
+        {
+            Bounds = new PhysicalRect(0, 0, 120, 80),
+            WorkArea = new PhysicalRect(0, 0, 120, 80),
+            Scale = 1.0
+        };
+
+        using var session = (ScreenshotSession)Activator.CreateInstance(typeof(ScreenshotSession), flags, null,
+            new object[] { CaptureSessionMode.Screenshot, (Action<CaptureResult>)(_ => { }) }, CultureInfo.InvariantCulture)!;
+        var bitmap = CreateDrawingBitmap(120, 80, System.Drawing.Color.Red);
+        var overlay = new ScreenshotOverlayWindow(session, monitor, CaptureSessionMode.Screenshot, bitmap);
+
+        True(type.GetField("_frozenSource", flags)!.GetValue(overlay) is not null,
+            "the overlay should keep a frozen source while alive");
+        True(type.GetField("_frozenBitmap", flags)!.GetValue(overlay) is not null,
+            "the overlay should keep a frozen bitmap while alive");
+        True(!InputMethod.GetIsInputMethodEnabled(overlay),
+            "the overlay should disable IME so single-key shortcuts win over composition");
+        var image = (Image)overlay.FindName("FrozenImage");
+        True(image.Source is not null, "the frozen image should be shown");
+
+        overlay.CloseOverlay();
+
+        True(type.GetField("_frozenSource", flags)!.GetValue(overlay) is null,
+            "closing the overlay must drop the frozen source");
+        True(type.GetField("_frozenBitmap", flags)!.GetValue(overlay) is null,
+            "closing the overlay must drop the frozen bitmap");
+        True(image.Source is null, "closing the overlay must clear the image visual");
+    }
+
+    private static void OverlaySamplesFrozenPixel()
+    {
+        const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
+        var monitor = new ScreenMonitor
+        {
+            Bounds = new PhysicalRect(0, 0, 20, 20),
+            WorkArea = new PhysicalRect(0, 0, 20, 20),
+            Scale = 1.0
+        };
+
+        using var session = (ScreenshotSession)Activator.CreateInstance(typeof(ScreenshotSession), flags, null,
+            new object[] { CaptureSessionMode.Screenshot, (Action<CaptureResult>)(_ => { }) }, CultureInfo.InvariantCulture)!;
+        var bitmap = CreateDrawingBitmap(20, 20, System.Drawing.Color.FromArgb(255, 12, 34, 56));
+        var overlay = new ScreenshotOverlayWindow(session, monitor, CaptureSessionMode.Screenshot, bitmap);
+        try
+        {
+            True(overlay.TryGetScreenPixel(7, 9, out var color), "sampling a frozen pixel should succeed");
+            True(color.R == 12 && color.G == 34 && color.B == 56,
+                "the sampled color should come from the frozen pixel");
+            True(!overlay.TryGetScreenPixel(20, 0, out _), "out-of-bitmap pixels must be rejected");
+        }
+        finally
+        {
+            overlay.CloseOverlay();
+        }
+    }
+
+    private static void ScreenCaptureConversionPreservesPixelsAndDpi()
+    {
+        using var bitmap = CreateDrawingBitmap(10, 8, System.Drawing.Color.FromArgb(255, 18, 52, 86));
+        var source = ScreenCaptureService.ToBitmapSource(bitmap);
+        Equal(10, source.PixelWidth);
+        Equal(8, source.PixelHeight);
+        Equal(96.0, source.DpiX, 0.01);
+        var pixel = ReadPixel(source, 5, 4);
+        True(pixel.R == 18 && pixel.G == 52 && pixel.B == 86, "conversion must preserve pixels");
+
+        var scaled = ScreenCaptureService.ToBitmapSource(bitmap, 144);
+        Equal(144.0, scaled.DpiX, 0.01);
+        Equal(144.0, scaled.DpiY, 0.01);
+        var scaledPixel = ReadPixel(scaled, 1, 1);
+        True(scaledPixel.R == 18 && scaledPixel.G == 52 && scaledPixel.B == 86,
+            "scaled conversion must preserve pixels");
+        True(source.IsFrozen && scaled.IsFrozen, "capture bitmaps should be frozen for cross-thread use");
     }
 
     private static void RecordSelectionDimsLikeOtherModes()

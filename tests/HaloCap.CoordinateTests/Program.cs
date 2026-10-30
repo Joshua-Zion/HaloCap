@@ -84,6 +84,14 @@ internal static class Program
             ("Clipboard file batches enforce count and predecode byte budgets", ClipboardFileBatchesEnforceBudgets),
             ("Clipboard rendering bounds pixels and DPI stay consistent", ClipboardRenderingPreservesBoundsPixelsAndDpi),
             ("Clipboard file conversion settings default true and round trip false", ClipboardFileConversionSettingsRoundTrip),
+            ("OCR settings default to the native engine", OcrSettingsDefaultAndNormalize),
+            ("OCR native image prepare resizes and composites", OcrImagePrepareResizesAndComposites),
+            ("OCR result window exposes engines and search", OcrResultWindowExposesControls),
+            ("OCR result window searches and switches views", OcrResultWindowSearchesAndSwitchesViews),
+            ("OCR settings window binds and saves OCR values", OcrSettingsWindowBindsAndSaves),
+            ("OCR native engine recognizes a rendered text image", OcrNativeEngineRecognizesRenderedText),
+            ("OCR model engine recognizes a rendered text image", OcrModelEngineRecognizesRenderedText),
+            ("OCR model engine handles a dark background", OcrModelEngineHandlesDarkBackground),
             ("WPF chrome, clipboard actions and capture hover render correctly", ToolbarVectorIconsPreserveBoundsAndColors)
         };
 
@@ -1375,6 +1383,7 @@ internal static class Program
 
             ToolbarHoverTintsPreserveActiveBackgrounds();
             PinOutlineAndLightMenuBehaveConsistently(pin);
+            PinOcrUsesOriginalImage();
 
             void ArrangeShell()
             {
@@ -2583,6 +2592,446 @@ internal static class Program
             "the auto-start icon should remain visible when checked");
         True(!HasText(menu, "本地处理 · 无网络请求"), "tray menu should no longer show the bottom-left description");
         True(HasText(menu, "Esc 关闭"), "tray menu should keep the escape hint");
+    }
+
+    private static void OcrSettingsDefaultAndNormalize()
+    {
+        var defaults = new AppSettings().Ocr;
+        True(defaults.Engine == OcrEngineKind.Native, "OCR should default to the native engine");
+        True(!defaults.AutoCopy, "OCR should not auto copy by default");
+        True(defaults.PinOcrEnabled, "pin OCR should be enabled by default");
+
+        var settings = new OcrSettings { Engine = (OcrEngineKind)99 };
+        settings.Normalize();
+        True(settings.Engine == OcrEngineKind.Native, "invalid engines should fall back to native");
+
+        var clone = settings.Clone();
+        True(clone.ValueEquals(settings), "a clone should compare equal");
+        clone.AutoCopy = true;
+        True(!settings.ValueEquals(clone), "value equality should include toggles");
+    }
+
+    private static void OcrImagePrepareResizesAndComposites()
+    {
+        RunSta(() =>
+        {
+            var translucent = new byte[] { 0, 0, 255, 128 };
+            OcrImageProcessor.CompositeOverWhite(translucent);
+            Equal(127, translucent[0]);
+            Equal(127, translucent[1]);
+            Equal(255, translucent[2]);
+            Equal(255, translucent[3]);
+
+            var source = CreateSolidBitmap(100, 50, Colors.White);
+            var prepared = OcrImageProcessor.Prepare(source, 40);
+            Equal(40, prepared.Width);
+            Equal(20, prepared.Height);
+            Equal(40 * 20 * 4, prepared.Pixels.Length);
+
+            var dark = new byte[] { 10, 10, 10, 255 };
+            True(OcrImageProcessor.InvertIfDark(dark), "dark images should be inverted for the model engine");
+            Equal(245, dark[0]);
+            Equal(245, dark[1]);
+            Equal(245, dark[2]);
+            Equal(255, dark[3]);
+
+            var light = new byte[] { 240, 240, 240, 255 };
+            True(!OcrImageProcessor.InvertIfDark(light), "light images should stay unchanged");
+            Equal(240, light[0]);
+
+            var pixels = new byte[2 * 2 * 4];
+            SetBgra(pixels, 0, 0, 0, 255, 255);
+            SetBgra(pixels, 4, 255, 0, 0, 255);
+            SetBgra(pixels, 8, 0, 255, 0, 255);
+            SetBgra(pixels, 12, 255, 255, 255, 255);
+
+            var resized = OcrImageProcessor.ResizeBilinear(pixels, 2, 2, 4, 4);
+            Equal(4 * 4 * 4, resized.Length);
+            Equal(0, resized[0]);
+            Equal(0, resized[1]);
+            Equal(255, resized[2]);
+            Equal(255, resized[12]);
+            Equal(0, resized[13]);
+            Equal(0, resized[14]);
+        });
+    }
+
+    private static void OcrResultWindowExposesControls()
+    {
+        RunSta(() =>
+        {
+            var monitor = new ScreenMonitor
+            {
+                Bounds = new PhysicalRect(0, 0, 1920, 1080),
+                WorkArea = new PhysicalRect(0, 0, 1920, 1040),
+                Scale = 1.0
+            };
+            var window = new OcrResultWindow(
+                CreateSolidBitmap(40, 30, Colors.White),
+                new PhysicalRect(20, 20, 40, 30),
+                monitor,
+                new OcrService(),
+                new OcrSettings { Engine = OcrEngineKind.Model },
+                OcrImageSource.Selection);
+
+            try
+            {
+                var textBox = (TextBox)window.FindName("ResultTextBox");
+                True(textBox.IsReadOnly, "OCR result text should be selectable but read-only");
+                True(textBox.AcceptsReturn, "OCR result text should preserve line breaks");
+                True(textBox.IsInactiveSelectionHighlightEnabled,
+                    "search matches should stay visible while the search box has focus");
+                True(((RadioButton)window.FindName("ModelEngineRadio")).IsChecked == true,
+                    "the result window should reflect the configured OCR engine");
+                True(((FrameworkElement)window.FindName("SearchBar")).Visibility == Visibility.Collapsed,
+                    "search should start collapsed");
+                True(((FrameworkElement)window.FindName("ThumbnailCard")).Visibility == Visibility.Collapsed,
+                    "the thumbnail should start collapsed");
+                True(((Button)window.FindName("RetryButton")).IsEnabled == false,
+                    "retry should stay disabled before the first result");
+            }
+            finally
+            {
+                window.Close();
+            }
+        });
+    }
+
+    private static void OcrResultWindowSearchesAndSwitchesViews()
+    {
+        RunSta(() =>
+        {
+            const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
+            var monitor = new ScreenMonitor
+            {
+                Bounds = new PhysicalRect(0, 0, 1920, 1080),
+                WorkArea = new PhysicalRect(0, 0, 1920, 1040),
+                Scale = 1.0
+            };
+            var window = new OcrResultWindow(
+                CreateSolidBitmap(60, 40, Colors.White),
+                new PhysicalRect(20, 20, 60, 40),
+                monitor,
+                new OcrService(),
+                new OcrSettings { Engine = OcrEngineKind.Native },
+                OcrImageSource.Selection);
+
+            try
+            {
+                var lines = new[] { "Alpha Beta", "Gamma" };
+                var outcome = new OcrOutcome
+                {
+                    Status = OcrStatus.Success,
+                    Lines = lines,
+                    Text = string.Join(Environment.NewLine, lines),
+                    EngineLabel = "PP-OCRv6 tiny",
+                    Engine = OcrEngineKind.Model,
+                    ElapsedMilliseconds = 42
+                };
+
+                typeof(OcrResultWindow).GetMethod("ApplyOutcome", flags)!
+                    .Invoke(window, new object[] { outcome });
+
+                True(((TextBox)window.FindName("ResultTextBox")).Text == outcome.Text,
+                    "the result window should show the recognized lines");
+                True(((TextBlock)window.FindName("EngineText")).Text == "PP-OCRv6 tiny",
+                    "the result window should show the engine that produced the result");
+                True(((Button)window.FindName("CopyAllButton")).IsEnabled,
+                    "copy all should become available after a successful result");
+
+                typeof(OcrResultWindow).GetMethod("OpenSearch", flags)!.Invoke(window, null);
+                var searchBox = (TextBox)window.FindName("SearchBox");
+                searchBox.Text = "a";
+                Equal("1/5", ((TextBlock)window.FindName("SearchStatusText")).Text);
+                typeof(OcrResultWindow).GetMethod("NavigateSearch", flags)!
+                    .Invoke(window, new object[] { true });
+                Equal("2/5", ((TextBlock)window.FindName("SearchStatusText")).Text);
+
+                for (var index = 0; index < 4; index++)
+                {
+                    typeof(OcrResultWindow).GetMethod("NavigateSearch", flags)!
+                        .Invoke(window, new object[] { true });
+                }
+
+                Equal("1/5", ((TextBlock)window.FindName("SearchStatusText")).Text);
+
+                ((Button)window.FindName("ViewToggleButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                True(((FrameworkElement)window.FindName("LinesCard")).Visibility == Visibility.Visible,
+                    "the line view should become visible");
+                Equal(2, ((StackPanel)window.FindName("LinesPanel")).Children.Count);
+                True(((Button)window.FindName("ViewToggleButton")).Content as string == "文本",
+                    "the toggle should offer switching back to text");
+
+                var thumbnail = (ToggleButton)window.FindName("ThumbnailButton");
+                thumbnail.IsChecked = true;
+                True(((FrameworkElement)window.FindName("ThumbnailCard")).Visibility == Visibility.Visible,
+                    "the thumbnail card should follow its toggle");
+
+                var root = (Grid)window.FindName("Root");
+                root.Measure(new Size(560, double.PositiveInfinity));
+                True(root.DesiredSize.Height <= 660,
+                    $"the full result window should fit within its max height, got {root.DesiredSize.Height:0.#}");
+
+                var failedOutcome = new OcrOutcome
+                {
+                    Status = OcrStatus.Failed,
+                    Message = "test failure",
+                    Engine = OcrEngineKind.Native,
+                    EngineLabel = "Windows 原生"
+                };
+                typeof(OcrResultWindow).GetMethod("ApplyOutcome", flags)!
+                    .Invoke(window, new object[] { failedOutcome });
+                True(((FrameworkElement)window.FindName("EmptyState")).Visibility == Visibility.Visible,
+                    "failed OCR should show the empty state");
+                True(((Button)window.FindName("EmptyRetryButton")).Visibility == Visibility.Visible,
+                    "failed OCR should offer switching to the other engine");
+                True(((Button)window.FindName("RetryButton")).IsEnabled,
+                    "retry should be available after a failed result");
+
+                root.Measure(new Size(560, double.PositiveInfinity));
+                True(root.DesiredSize.Height <= 660,
+                    $"the failed result window should fit within its max height, got {root.DesiredSize.Height:0.#}");
+            }
+            finally
+            {
+                window.Close();
+            }
+        });
+    }
+
+    private static void OcrSettingsWindowBindsAndSaves()
+    {
+        RunSta(() =>
+        {
+            OcrSettings? applied = null;
+            var initial = new OcrSettings
+            {
+                Engine = OcrEngineKind.Model,
+                AutoCopy = true,
+                PinOcrEnabled = false
+            };
+
+            var window = new SettingsWindow(
+                HotkeyDefinition.Default,
+                DefaultActionHotkeys(),
+                autoStartEnabled: false,
+                ScreenshotImageFormat.Png,
+                RadialMenuSize.Medium,
+                string.Empty,
+                convertFilePathsToImages: true,
+                (_, _) => null,
+                _ => null,
+                _ => null,
+                _ => null,
+                _ => null,
+                _ => null,
+                initial,
+                settings =>
+                {
+                    applied = settings;
+                    return null;
+                });
+
+            try
+            {
+                True(((RadioButton)window.FindName("OcrModelRadio")).IsChecked == true,
+                    "the settings window should show the current OCR engine");
+                True(((ToggleButton)window.FindName("OcrAutoCopyToggle")).IsChecked == true,
+                    "the settings window should show auto copy");
+                True(((ToggleButton)window.FindName("PinOcrToggle")).IsChecked == false,
+                    "the settings window should show pin OCR availability");
+
+                ((RadioButton)window.FindName("NavOcr")).IsChecked = true;
+                True(((FrameworkElement)window.FindName("OcrPane")).Visibility == Visibility.Visible,
+                    "selecting the OCR navigation item should show the OCR pane");
+
+                ((RadioButton)window.FindName("OcrNativeRadio")).IsChecked = true;
+                ((ToggleButton)window.FindName("PinOcrToggle")).IsChecked = true;
+                ((Button)window.FindName("SaveButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+
+                True(applied is not null, "saving settings should hand the OCR values back to the app");
+                True(applied!.Engine == OcrEngineKind.Native, "the new engine should be saved");
+                True(applied.PinOcrEnabled, "the new pin OCR flag should be saved");
+                True(applied.AutoCopy, "OCR toggles should round trip");
+            }
+            finally
+            {
+                window.Close();
+            }
+        });
+    }
+
+    private static void PinOcrUsesOriginalImage()
+    {
+        {
+            var image = CreateSolidBitmap(80, 60, Colors.White);
+            var pin = new PinWindow(
+                image,
+                new PhysicalRect(20, 30, 80, 60),
+                1.0,
+                ScreenshotImageFormat.Png,
+                outlineEnabled: true,
+                ocrEnabled: true);
+            var disabled = new PinWindow(
+                CreateSolidBitmap(40, 30, Colors.White),
+                new PhysicalRect(0, 0, 40, 30),
+                1.0,
+                ScreenshotImageFormat.Png,
+                outlineEnabled: true,
+                ocrEnabled: false);
+
+            try
+            {
+                True(((FrameworkElement)pin.FindName("OcrMenuItem")).Visibility == Visibility.Visible,
+                    "pin OCR should be visible when enabled");
+                var fired = 0;
+                pin.OcrRequested += _ => fired++;
+                typeof(PinWindow)
+                    .GetMethod("RequestOcr", BindingFlags.Instance | BindingFlags.NonPublic)!
+                    .Invoke(pin, null);
+
+                Equal(1, fired);
+                True(ReferenceEquals(image, pin.OcrImage),
+                    "pin OCR should use the original image instead of a composited annotation image");
+
+                True(((FrameworkElement)disabled.FindName("OcrMenuItem")).Visibility == Visibility.Collapsed,
+                    "pin OCR should hide when disabled");
+                var disabledFired = 0;
+                disabled.OcrRequested += _ => disabledFired++;
+                typeof(PinWindow)
+                    .GetMethod("RequestOcr", BindingFlags.Instance | BindingFlags.NonPublic)!
+                    .Invoke(disabled, null);
+                Equal(0, disabledFired);
+            }
+            finally
+            {
+                pin.Close();
+                disabled.Close();
+            }
+        }
+    }
+
+    private static void OcrNativeEngineRecognizesRenderedText()
+    {
+        RunSta(() =>
+        {
+            var image = RenderOcrText("HaloCap 2026");
+            using var service = new OcrService();
+            var outcome = service.RecognizeAsync(
+                    image,
+                    new OcrSettings { Engine = OcrEngineKind.Native },
+                    OcrEngineKind.Native)
+                .GetAwaiter()
+                .GetResult();
+
+            if (outcome.Status == OcrStatus.NoLanguage)
+            {
+                Console.WriteLine("      skipped: no Windows OCR language installed");
+                return;
+            }
+
+            True(outcome.Status != OcrStatus.Failed,
+                "native OCR failed: " + outcome.Message);
+            True(outcome.Engine == OcrEngineKind.Native && outcome.EngineLabel == "Windows 原生",
+                "native OCR should report the native engine");
+            True(outcome.Status == OcrStatus.Success,
+                "native OCR should recognize rendered text, status=" + outcome.Status + " message=" + outcome.Message);
+            True(outcome.Text.Contains("2026", StringComparison.Ordinal),
+                "native OCR should contain the rendered digits, got: " +
+                outcome.Text.Replace(Environment.NewLine, " / "));
+            Console.WriteLine($"      native OCR in {outcome.ElapsedMilliseconds} ms");
+        });
+    }
+
+    private static void OcrModelEngineRecognizesRenderedText()
+    {
+        RunSta(() =>
+        {
+            var image = RenderOcrText("HaloCap 2026 你好世界");
+            using var service = new OcrService();
+            var outcome = service.RecognizeAsync(
+                    image,
+                    new OcrSettings { Engine = OcrEngineKind.Model },
+                    OcrEngineKind.Model)
+                .GetAwaiter()
+                .GetResult();
+
+            True(outcome.Status != OcrStatus.Failed,
+                "model OCR failed: " + outcome.Message);
+            True(outcome.Engine == OcrEngineKind.Model &&
+                 outcome.EngineLabel.StartsWith("PP-OCRv6", StringComparison.Ordinal),
+                "model OCR should report the bundled model");
+            True(outcome.Status == OcrStatus.Success &&
+                 outcome.Lines.Count > 0,
+                "model OCR should recognize rendered text, status=" + outcome.Status + " message=" + outcome.Message);
+            Console.WriteLine($"      model OCR in {outcome.ElapsedMilliseconds} ms: " +
+                              outcome.Text.Replace(Environment.NewLine, " / "));
+            True(outcome.Text.Contains("2026", StringComparison.Ordinal) ||
+                 outcome.Text.Contains("Halo", StringComparison.OrdinalIgnoreCase),
+                "model OCR should contain the rendered text, got: " +
+                outcome.Text.Replace(Environment.NewLine, " / "));
+        });
+    }
+
+    private static void OcrModelEngineHandlesDarkBackground()
+    {
+        RunSta(() =>
+        {
+            var background = new SolidColorBrush(Color.FromRgb(0x1E, 0x1E, 0x1E));
+            background.Freeze();
+            var image = RenderOcrText("HaloCap 2026 你好世界", background, Brushes.White);
+            using var service = new OcrService();
+            var outcome = service.RecognizeAsync(
+                    image,
+                    new OcrSettings { Engine = OcrEngineKind.Model },
+                    OcrEngineKind.Model)
+                .GetAwaiter()
+                .GetResult();
+
+            True(outcome.Status == OcrStatus.Success,
+                "model OCR should handle dark backgrounds, status=" + outcome.Status + " message=" + outcome.Message);
+            True(outcome.Text.Contains("2026", StringComparison.Ordinal) ||
+                 outcome.Text.Contains("Halo", StringComparison.OrdinalIgnoreCase),
+                "dark background OCR should contain the rendered text, got: " +
+                outcome.Text.Replace(Environment.NewLine, " / "));
+        });
+    }
+
+    private static void SetBgra(byte[] pixels, int offset, byte blue, byte green, byte red, byte alpha)
+    {
+        pixels[offset] = blue;
+        pixels[offset + 1] = green;
+        pixels[offset + 2] = red;
+        pixels[offset + 3] = alpha;
+    }
+
+    private static BitmapSource RenderOcrText(
+        string text,
+        Brush? background = null,
+        Brush? foreground = null)
+    {
+        var formatted = new FormattedText(
+            text,
+            CultureInfo.InvariantCulture,
+            FlowDirection.LeftToRight,
+            new Typeface("Segoe UI"),
+            48,
+            foreground ?? Brushes.Black,
+            1.0);
+        var width = (int)Math.Ceiling(formatted.WidthIncludingTrailingWhitespace) + 60;
+        var height = 120;
+        var visual = new DrawingVisual();
+
+        using (var context = visual.RenderOpen())
+        {
+            context.DrawRectangle(background ?? Brushes.White, null, new Rect(0, 0, width, height));
+            context.DrawText(formatted, new Point(30, 28));
+        }
+
+        var bitmap = new RenderTargetBitmap(width, height, 96, 96, PixelFormats.Pbgra32);
+        bitmap.Render(visual);
+        bitmap.Freeze();
+        return bitmap;
     }
 
     private static Dictionary<RadialAction, HotkeyDefinition> DefaultActionHotkeys()

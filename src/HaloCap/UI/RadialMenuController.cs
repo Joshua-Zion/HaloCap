@@ -35,6 +35,8 @@ internal sealed class RadialMenuController : IDisposable
     private bool _hotkeyRegistered;
     private bool _isOpen;
     private bool _disposed;
+    private bool _showCommitted;
+    private DispatcherTimer? _showFallbackTimer;
     private int _showGeneration;
     private POINT _centerPx;
     private double _pixelScale = 1.0;
@@ -179,6 +181,9 @@ internal sealed class RadialMenuController : IDisposable
         }
 
         _isOpen = false;
+        _showCommitted = false;
+        _showFallbackTimer?.Stop();
+        _showFallbackTimer = null;
         _draggingCenter = false;
         _showGeneration++;
         _hovered = null;
@@ -203,30 +208,103 @@ internal sealed class RadialMenuController : IDisposable
             return;
         }
 
-        RefreshActionAvailability();
-        var cursor = GetCursorPoint();
-        _isOpen = true;
-        _draggingCenter = false;
-        var generation = ++_showGeneration;
+        try
+        {
+            var cursor = GetCursorPoint();
+            _isOpen = true;
+            _showCommitted = false;
+            _draggingCenter = false;
+            var generation = ++_showGeneration;
 
-        _window.EnsureShownInvisible();
-        PlaceWindow(cursor);
+            _window.EnsureShownInvisible();
+            PlaceWindow(cursor);
+            ScheduleShowCommit(cursor, generation);
+        }
+        catch (Exception ex)
+        {
+            Log.Error("展开光圈失败", ex);
+            ResetShowState();
+        }
+    }
+
+    private void ScheduleShowCommit(POINT cursor, int generation)
+    {
+        _showFallbackTimer?.Stop();
+        _showFallbackTimer = null;
 
         // 等 WPF 处理完跨屏 DPI 变化后再最终定位，此时窗口仍完全透明。
         _dispatcher.BeginInvoke(
             DispatcherPriority.Loaded,
-            new Action(() =>
-            {
-                if (_disposed || !_isOpen || generation != _showGeneration)
-                {
-                    return;
-                }
+            new Action(() => CommitShow(cursor, generation)));
 
-                PlaceWindow(cursor);
-                _window.SetHover(null);
-                _hooks.Install();
-                _window.PlayShowAnimation();
-            }));
+        // 某些跨屏 DPI 切换或窗口管理器状态下 Loaded 回调可能迟迟不执行，
+        // 导致窗口已创建但始终透明；这里用一个短兜底确保光圈一定会显示并安装输入钩子。
+        var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(180) };
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+
+            if (ReferenceEquals(_showFallbackTimer, timer))
+            {
+                _showFallbackTimer = null;
+            }
+
+            CommitShow(cursor, generation);
+        };
+        _showFallbackTimer = timer;
+        timer.Start();
+    }
+
+    private void CommitShow(POINT cursor, int generation)
+    {
+        if (_disposed || !_isOpen || _showCommitted || generation != _showGeneration)
+        {
+            return;
+        }
+
+        _showCommitted = true;
+        _showFallbackTimer?.Stop();
+        _showFallbackTimer = null;
+
+        try
+        {
+            PlaceWindow(cursor);
+            _window.SetHover(null);
+            _hooks.Install();
+            _window.PlayShowAnimation();
+
+            // 剪贴板状态可能涉及跨进程访问，放到首帧之后刷新，避免拖慢光圈出现。
+            _dispatcher.BeginInvoke(
+                DispatcherPriority.Background,
+                new Action(RefreshActionAvailability));
+        }
+        catch (Exception ex)
+        {
+            Log.Error("显示光圈失败", ex);
+            ResetShowState();
+        }
+    }
+
+    private void ResetShowState()
+    {
+        _showFallbackTimer?.Stop();
+        _showFallbackTimer = null;
+        _showCommitted = false;
+        _isOpen = false;
+        _draggingCenter = false;
+        _showGeneration++;
+        _hooks.Uninstall();
+
+        try
+        {
+            _window.HideImmediately();
+        }
+        catch
+        {
+            // 窗口可能正在销毁。
+        }
+
+        Hidden?.Invoke();
     }
 
     private void PlaceWindow(POINT cursor)
@@ -646,6 +724,9 @@ internal sealed class RadialMenuController : IDisposable
 
         _disposed = true;
         _isOpen = false;
+        _showCommitted = false;
+        _showFallbackTimer?.Stop();
+        _showFallbackTimer = null;
         _showGeneration++;
         _hooks.Dispose();
         if (_clipboardListenerRegistered)

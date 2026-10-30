@@ -16,11 +16,16 @@ namespace HaloCap.UI;
 
 internal sealed class ScreenshotSession : IDisposable
 {
+    private const int MonitorCaptureTimeoutMs = 900;
+
     private readonly CaptureSessionMode _mode;
     private readonly Action<CaptureResult> _completed;
     private readonly IntPtr _previousForeground;
+    private readonly Dispatcher _dispatcher;
+    private readonly long _startedAt = Environment.TickCount64;
     private readonly List<ScreenshotOverlayWindow> _overlays = new();
     private ScreenshotOverlayWindow? _activeOverlay;
+    private bool _unexpectedCloseScheduled;
     private PhysicalRect _desktopBounds;
     private PhysicalRect _selectionVirtual;
     private bool _hasSelection;
@@ -36,15 +41,47 @@ internal sealed class ScreenshotSession : IDisposable
         _mode = mode;
         _completed = completed;
         _previousForeground = NativeMethods.GetForegroundWindow();
+        _dispatcher = Dispatcher.CurrentDispatcher;
     }
 
-    internal static ScreenshotSession Start(CaptureSessionMode mode, Action<CaptureResult> completed)
+    internal static async Task<ScreenshotSession> StartAsync(
+        CaptureSessionMode mode,
+        Action<CaptureResult> completed)
     {
         var monitors = MonitorService.GetMonitors();
         var session = new ScreenshotSession(mode, completed);
-        session.CreateOverlays(monitors);
-        return session;
+
+        try
+        {
+            // GDI 捕获放到后台并行执行，避免多屏或休眠显示器阻塞 UI 线程和全局热键。
+            var captures = await CaptureMonitorsAsync(monitors).ConfigureAwait(true);
+            session.CreateOverlays(monitors, captures);
+            return session;
+        }
+        catch
+        {
+            session.Dispose();
+            throw;
+        }
     }
+
+    internal bool IsAlive =>
+        !_disposed && _overlays.Any(overlay => overlay.IsOverlayVisible);
+
+    internal bool HasForegroundOverlay
+    {
+        get
+        {
+            var foreground = NativeMethods.GetForegroundWindow();
+            return foreground != IntPtr.Zero &&
+                   _overlays.Any(overlay => overlay.OverlayHandle == foreground);
+        }
+    }
+
+    internal bool IsForegroundStale =>
+        IsAlive &&
+        Environment.TickCount64 - _startedAt > 800 &&
+        !HasForegroundOverlay;
 
     internal PhysicalRect DesktopBounds => _desktopBounds;
 
@@ -114,6 +151,28 @@ internal sealed class ScreenshotSession : IDisposable
         }
 
         RecalculateDesktopBounds();
+
+        if (_overlays.Count == 0 &&
+            !_completing &&
+            !_disposed &&
+            !_unexpectedCloseScheduled)
+        {
+            // 显示器切换、窗口管理器或异常关闭可能让遮罩全部消失；此时必须结束会话，
+            // 否则 App 会把热键一直当成“正在截图”而不再响应。
+            _unexpectedCloseScheduled = true;
+            _dispatcher.BeginInvoke(
+                DispatcherPriority.Normal,
+                new Action(() =>
+                {
+                    _unexpectedCloseScheduled = false;
+
+                    if (!_completing && !_disposed && _overlays.Count == 0)
+                    {
+                        Log.Error("选区遮罩已被系统关闭，取消当前选区会话");
+                        CancelAll();
+                    }
+                }));
+        }
     }
 
     private void RecalculateDesktopBounds()
@@ -428,23 +487,57 @@ internal sealed class ScreenshotSession : IDisposable
         Complete(new CaptureResult { Command = CaptureCommand.Cancel });
     }
 
-    private void CreateOverlays(IReadOnlyList<ScreenMonitor> monitors)
+    private static async Task<DrawingBitmap?[]> CaptureMonitorsAsync(
+        IReadOnlyList<ScreenMonitor> monitors)
+    {
+        var tasks = monitors.Select(CaptureMonitorAsync).ToArray();
+        return await Task.WhenAll(tasks).ConfigureAwait(true);
+    }
+
+    private static async Task<DrawingBitmap?> CaptureMonitorAsync(ScreenMonitor monitor)
+    {
+        var task = Task.Run(() => ScreenCaptureService.Capture(monitor.Bounds));
+        var completed = await Task.WhenAny(task, Task.Delay(MonitorCaptureTimeoutMs)).ConfigureAwait(false);
+
+        if (completed == task)
+        {
+            try
+            {
+                return await task.ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"预捕获显示器 {monitor} 失败，将使用实时捕获", ex);
+                return null;
+            }
+        }
+
+        Log.Error($"预捕获显示器 {monitor} 超时，将使用实时捕获");
+        _ = task.ContinueWith(t =>
+        {
+            if (t.Status == TaskStatus.RanToCompletion)
+            {
+                t.Result.Dispose();
+            }
+            else
+            {
+                _ = t.Exception;
+            }
+        }, TaskScheduler.Default);
+
+        return null;
+    }
+
+    private void CreateOverlays(
+        IReadOnlyList<ScreenMonitor> monitors,
+        IReadOnlyList<DrawingBitmap?> frozenBitmaps)
     {
         try
         {
-            foreach (var monitor in monitors)
+            for (var index = 0; index < monitors.Count; index++)
             {
-                DrawingBitmap? frozen = null;
-
-                try
-                {
-                    frozen = ScreenCaptureService.Capture(monitor.Bounds);
-                }
-                catch (Exception ex)
-                {
-                    Log.Error($"预捕获显示器 {monitor} 失败，将使用实时捕获", ex);
-                }
-
+                var monitor = monitors[index];
+                var frozen = index < frozenBitmaps.Count ? frozenBitmaps[index] : null;
                 ScreenshotOverlayWindow overlay;
 
                 try
@@ -570,6 +663,7 @@ internal sealed class ScreenshotSession : IDisposable
         _selectionHost = null;
         _hasSelection = false;
         _selectionComplete = false;
+        _unexpectedCloseScheduled = false;
     }
 
     private void Complete(CaptureResult result)

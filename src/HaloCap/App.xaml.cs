@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
+using Microsoft.Win32;
 using HaloCap.Diagnostics;
 using HaloCap.Interop;
 using HaloCap.Models;
@@ -32,6 +33,7 @@ public partial class App : Application
 
     private readonly AutoStartService _autoStart = new();
     private readonly ClipboardPinService _clipboardPin = new();
+    private readonly OcrService _ocr = new();
     private readonly Dictionary<RadialAction, HotkeyService> _actionHotkeyServices = new();
     private SingleKeyHotkeyHook? _singleKeyHotkeyHook;
     private CaptureTypedKeyHook? _captureTypedKeyHook;
@@ -45,6 +47,11 @@ public partial class App : Application
     private SettingsWindow? _settingsWindow;
     private AppSettings _settings = new();
     private DispatcherTimer? _memoryTrimTimer;
+    private DispatcherTimer? _inputHealthTimer;
+    private long _inputHealthLastTick;
+    private long _inputHookLastRefresh;
+    private long _captureStartedAt;
+    private int _captureGeneration;
     private bool _captureStarting;
     private bool _isDialogOpen;
     private bool _isExiting;
@@ -83,6 +90,7 @@ public partial class App : Application
     private void InitializeServices()
     {
         _settings = SettingsStore.Load();
+        _settings.Ocr ??= new OcrSettings();
 
         _radial = new RadialMenuController(_settings.Hotkey, _settings.MenuSize)
         {
@@ -138,6 +146,10 @@ public partial class App : Application
         };
         UpdateSingleKeyHotkeyHook();
 
+        SystemEvents.DisplaySettingsChanged += OnEnvironmentChanged;
+        SystemEvents.PowerModeChanged += OnPowerModeChanged;
+        StartInputHealthMonitor();
+
         if (!registered)
         {
             _tray.ShowNotification(
@@ -168,8 +180,11 @@ public partial class App : Application
         _screenshotSession is not null ||
         _recording is { IsRecording: true };
 
-    private bool CanToggleRadial() =>
-        !_isExiting && !IsBusy && _settingsWindow is not { IsCapturingHotkey: true };
+    private bool CanToggleRadial()
+    {
+        TryRecoverCaptureState(cancelIdleSelection: true);
+        return !_isExiting && !IsBusy && _settingsWindow is not { IsCapturingHotkey: true };
+    }
 
     private bool CanShowTrayMenu() => !_isExiting && !_isDialogOpen;
 
@@ -185,12 +200,196 @@ public partial class App : Application
 
     private void ShowRadialFromTray()
     {
+        TryRecoverCaptureState(cancelIdleSelection: true);
+
         if (_isExiting || IsBusy)
         {
             return;
         }
 
         _radial?.ShowFromTray();
+    }
+
+    private void StartInputHealthMonitor()
+    {
+        _inputHealthLastTick = Environment.TickCount64;
+        _inputHookLastRefresh = _inputHealthLastTick;
+        _inputHealthTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(1) };
+        _inputHealthTimer.Tick += (_, _) =>
+        {
+            var now = Environment.TickCount64;
+            var gap = now - _inputHealthLastTick;
+            _inputHealthLastTick = now;
+
+            if (_isExiting)
+            {
+                return;
+            }
+
+            // Windows 会在低级键盘钩子回调超时后静默移除钩子。UI 卡顿或系统休眠
+            // 都可能触发，因此定期重建一次；成本远低于全局热键永久失效。
+            var stalled = gap >= 1800;
+            var refresh = now - _inputHookLastRefresh >= 5000;
+
+            if (!stalled && !refresh)
+            {
+                return;
+            }
+
+            _inputHookLastRefresh = now;
+            _singleKeyHotkeyHook?.Reinstall();
+
+            if (_screenshotSession is not null)
+            {
+                _captureTypedKeyHook?.Reinstall();
+            }
+
+            if (stalled)
+            {
+                Log.Info($"界面停顿 {gap}ms，已检查并重建输入钩子");
+            }
+        };
+        _inputHealthTimer.Start();
+    }
+
+    private void OnEnvironmentChanged(object? sender, EventArgs e) => ScheduleEnvironmentReset();
+
+    private void OnPowerModeChanged(object? sender, PowerModeChangedEventArgs e)
+    {
+        if (e.Mode == PowerModes.Resume)
+        {
+            ScheduleEnvironmentReset();
+        }
+    }
+
+    private void ScheduleEnvironmentReset()
+    {
+        if (_isExiting)
+        {
+            return;
+        }
+
+        Dispatcher.BeginInvoke(
+            DispatcherPriority.Input,
+            new Action(ResetAfterEnvironmentChange));
+    }
+
+    private void ResetAfterEnvironmentChange()
+    {
+        if (_isExiting)
+        {
+            return;
+        }
+
+        _captureGeneration++;
+        _captureStarting = false;
+        _captureStartedAt = 0;
+
+        if (_screenshotSession is { } session)
+        {
+            _screenshotSession = null;
+            _captureTypedKeyHook?.Uninstall();
+
+            try
+            {
+                session.Dispose();
+            }
+            catch (Exception ex)
+            {
+                Log.Error("显示环境变化后关闭选区失败", ex);
+            }
+        }
+
+        try
+        {
+            _radial?.HideMenu(immediate: true);
+        }
+        catch (Exception ex)
+        {
+            Log.Error("显示环境变化后关闭光圈失败", ex);
+        }
+
+        _singleKeyHotkeyHook?.Reinstall();
+        ReRegisterHotkeys();
+        Log.Info("显示或电源环境变化，已重置选区与输入状态");
+    }
+
+    private void ReRegisterHotkeys()
+    {
+        if (_hotkeyService?.Current is not null &&
+            !_hotkeyService.ReRegister(out var radialError))
+        {
+            Log.Error("重新注册光圈快捷键失败：" + radialError);
+        }
+
+        foreach (var pair in _actionHotkeyServices)
+        {
+            if (pair.Value.Current is not null &&
+                !pair.Value.ReRegister(out var actionError))
+            {
+                Log.Error($"重新注册{pair.Key}快捷键失败：{actionError}");
+            }
+        }
+    }
+
+    private void TryRecoverCaptureState(bool cancelIdleSelection)
+    {
+        if (_isExiting)
+        {
+            return;
+        }
+
+        if (_screenshotSession is { IsAlive: false } deadSession)
+        {
+            ClearCaptureSession(deadSession, "清理已关闭但未结束的选区会话");
+            return;
+        }
+
+        if (cancelIdleSelection && _screenshotSession is { HasSelection: false } idleSession)
+        {
+            ClearCaptureSession(idleSession, "热键触发时取消尚未开始框选的选区");
+            return;
+        }
+
+        if (cancelIdleSelection && _screenshotSession is { HasSelection: true } inactiveSession &&
+            inactiveSession.IsForegroundStale)
+        {
+            ClearCaptureSession(inactiveSession, "选区已失去前台，热键触发时重置");
+            return;
+        }
+
+        if (_captureStarting &&
+            _captureStartedAt != 0 &&
+            Environment.TickCount64 - _captureStartedAt > 5000)
+        {
+            _captureGeneration++;
+            _captureStarting = false;
+            _captureStartedAt = 0;
+            Log.Error("选区启动超时，已重置忙碌状态");
+        }
+    }
+
+    private void ClearCaptureSession(ScreenshotSession session, string reason)
+    {
+        if (!ReferenceEquals(_screenshotSession, session))
+        {
+            return;
+        }
+
+        _screenshotSession = null;
+        _captureGeneration++;
+        _captureTypedKeyHook?.Uninstall();
+
+        try
+        {
+            session.Dispose();
+        }
+        catch (Exception ex)
+        {
+            Log.Error("结束选区会话失败", ex);
+        }
+
+        Log.Info(reason);
     }
 
     private void ShowTrayMenu()
@@ -257,7 +456,9 @@ public partial class App : Application
             ApplyScreenshotFormat,
             ApplyMenuSize,
             ApplyRecordingDirectory,
-            ApplyConvertFilePathsToImages);
+            ApplyConvertFilePathsToImages,
+            _settings.Ocr.Clone(),
+            ApplyOcrSettings);
 
         _settingsWindow = window;
         window.Closed += (_, _) =>
@@ -570,6 +771,41 @@ public partial class App : Application
         }
     }
 
+    private string? ApplyOcrSettings(OcrSettings settings)
+    {
+        settings.Normalize();
+
+        if (_settings.Ocr.ValueEquals(settings))
+        {
+            PinWindow.SetOcrEnabledForAll(settings.PinOcrEnabled);
+            return null;
+        }
+
+        var previous = _settings.Ocr;
+        var engineChanged = previous.Engine != settings.Engine;
+        _settings.Ocr = settings.Clone();
+
+        try
+        {
+            SettingsStore.Save(_settings);
+
+            if (engineChanged)
+            {
+                _ocr.ClearEngineCache();
+            }
+
+            PinWindow.SetOcrEnabledForAll(_settings.Ocr.PinOcrEnabled);
+            return null;
+        }
+        catch (Exception ex)
+        {
+            _settings.Ocr = previous;
+            PinWindow.SetOcrEnabledForAll(previous.PinOcrEnabled);
+            Log.Error("保存文字识别设置失败", ex);
+            return "无法保存文字识别设置：" + ex.Message;
+        }
+    }
+
     private void ToggleAutoStartFromTray(bool enabled)
     {
         var error = ApplyAutoStart(enabled);
@@ -597,6 +833,8 @@ public partial class App : Application
         {
             return;
         }
+
+        TryRecoverCaptureState(cancelIdleSelection: true);
 
         if (action == RadialAction.Record && _recording?.IsRecording == true)
         {
@@ -638,7 +876,14 @@ public partial class App : Application
 
     private async void OnActionSelected(RadialAction action)
     {
-        if (_isExiting || IsBusy)
+        if (_isExiting)
+        {
+            return;
+        }
+
+        TryRecoverCaptureState(cancelIdleSelection: true);
+
+        if (IsBusy)
         {
             return;
         }
@@ -655,12 +900,17 @@ public partial class App : Application
 
     private async Task StartCaptureAsync(CaptureSessionMode mode, int delayMs)
     {
+        TryRecoverCaptureState(cancelIdleSelection: true);
+
         if (_isExiting || IsBusy)
         {
             return;
         }
 
+        var generation = ++_captureGeneration;
+        var started = Stopwatch.GetTimestamp();
         _captureStarting = true;
+        _captureStartedAt = Environment.TickCount64;
 
         try
         {
@@ -669,12 +919,20 @@ public partial class App : Application
                 await Task.Delay(delayMs);
             }
 
-            if (_isExiting)
+            if (_isExiting || generation != _captureGeneration)
             {
                 return;
             }
 
-            _screenshotSession = ScreenshotSession.Start(mode, HandleCaptureCompleted);
+            var session = await ScreenshotSession.StartAsync(mode, HandleCaptureCompleted);
+
+            if (_isExiting || generation != _captureGeneration)
+            {
+                session.Dispose();
+                return;
+            }
+
+            _screenshotSession = session;
 
             _captureTypedKeyHook ??= new CaptureTypedKeyHook
             {
@@ -683,6 +941,8 @@ public partial class App : Application
             _captureTypedKeyHook.KeyDown = virtualKey =>
                 _screenshotSession?.TryHandleTypedKey(virtualKey) == true;
             _captureTypedKeyHook.Install();
+
+            Log.Info($"选区已打开，用时 {Math.Round((Stopwatch.GetTimestamp() - started) * 1000.0 / Stopwatch.Frequency)} ms");
         }
         catch (Exception ex)
         {
@@ -694,15 +954,60 @@ public partial class App : Application
         }
         finally
         {
-            _captureStarting = false;
+            if (generation == _captureGeneration)
+            {
+                _captureStarting = false;
+                _captureStartedAt = 0;
+            }
         }
     }
 
     private void CreatePin(BitmapSource image, PhysicalRect rect, double scale)
     {
-        var pin = new PinWindow(image, rect, scale, _settings.ScreenshotFormat, _settings.PinGlowEnabled);
+        var pin = new PinWindow(
+            image,
+            rect,
+            scale,
+            _settings.ScreenshotFormat,
+            _settings.PinGlowEnabled,
+            _settings.Ocr.PinOcrEnabled);
         pin.OutlineChanged += OnPinOutlineChanged;
+        pin.OcrRequested += OnPinOcrRequested;
         pin.ShowPin();
+    }
+
+    private void OnPinOcrRequested(PinWindow pin)
+    {
+        if (_isExiting || !_settings.Ocr.PinOcrEnabled)
+        {
+            return;
+        }
+
+        ShowOcrResult(pin.OcrImage, pin.OcrAnchor, pin.OcrMonitor, OcrImageSource.Pin);
+    }
+
+    private void ShowOcrResult(
+        BitmapSource image,
+        PhysicalRect anchor,
+        ScreenMonitor monitor,
+        OcrImageSource source)
+    {
+        try
+        {
+            var window = new OcrResultWindow(
+                image,
+                anchor,
+                monitor,
+                _ocr,
+                _settings.Ocr.Clone(),
+                source);
+            window.Show();
+        }
+        catch (Exception ex)
+        {
+            Log.Error("打开文字识别结果窗口失败", ex);
+            _tray?.ShowNotification("文字识别未打开", ex.Message, Forms.ToolTipIcon.Warning);
+        }
     }
 
     private void OnPinOutlineChanged(bool enabled)
@@ -823,6 +1128,8 @@ public partial class App : Application
     {
         _captureTypedKeyHook?.Uninstall();
         _screenshotSession = null;
+        _captureStartedAt = 0;
+        _singleKeyHotkeyHook?.Reinstall();
         ScheduleMemoryTrim();
 
         if (_isExiting || result.Command == CaptureCommand.Cancel)
@@ -892,8 +1199,7 @@ public partial class App : Application
                 case CaptureCommand.Ocr:
                 {
                     var monitor = result.Monitor ?? MonitorService.GetMonitorAtCursor();
-                    var window = new OcrResultWindow(image, result.PhysicalRect, monitor);
-                    window.Show();
+                    ShowOcrResult(image, result.PhysicalRect, monitor, OcrImageSource.Selection);
                     break;
                 }
             }
@@ -912,13 +1218,15 @@ public partial class App : Application
             return;
         }
 
+        var generation = ++_captureGeneration;
         _captureStarting = true;
+        _captureStartedAt = Environment.TickCount64;
 
         try
         {
             await Task.Delay(140);
 
-            if (_isExiting)
+            if (_isExiting || generation != _captureGeneration)
             {
                 return;
             }
@@ -938,7 +1246,11 @@ public partial class App : Application
         }
         finally
         {
-            _captureStarting = false;
+            if (generation == _captureGeneration)
+            {
+                _captureStarting = false;
+                _captureStartedAt = 0;
+            }
         }
     }
 
@@ -1004,6 +1316,20 @@ public partial class App : Application
     protected override void OnExit(ExitEventArgs e)
     {
         _isExiting = true;
+        _captureGeneration++;
+
+        try
+        {
+            SystemEvents.DisplaySettingsChanged -= OnEnvironmentChanged;
+            SystemEvents.PowerModeChanged -= OnPowerModeChanged;
+        }
+        catch (Exception ex)
+        {
+            Log.Error("取消显示环境监听失败", ex);
+        }
+
+        _inputHealthTimer?.Stop();
+        _inputHealthTimer = null;
 
         try
         {
@@ -1044,6 +1370,15 @@ public partial class App : Application
         catch (Exception ex)
         {
             Log.Error("关闭全部 OCR 窗口失败", ex);
+        }
+
+        try
+        {
+            _ocr.Dispose();
+        }
+        catch (Exception ex)
+        {
+            Log.Error("释放 OCR 引擎失败", ex);
         }
 
         try

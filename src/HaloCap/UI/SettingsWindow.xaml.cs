@@ -27,13 +27,17 @@ public partial class SettingsWindow : Window
     private readonly Func<RadialMenuSize, string?> _applyMenuSize;
     private readonly Func<string, string?> _applyRecordingDirectory;
     private readonly Func<bool, string?> _applyConvertFilePathsToImages;
+    private readonly Func<OcrSettings, string?>? _applyOcrSettings;
+    private readonly OcrSettings _ocrSettings;
     private readonly Dictionary<HotkeySlot, HotkeyDefinition> _hotkeys = new();
     private readonly Dictionary<HotkeySlot, Button> _hotkeyButtons = new();
     private readonly Dictionary<HotkeySlot, TextBlock> _hotkeyValues = new();
     private HotkeySlot? _capturingSlot;
     private ScreenshotImageFormat _format;
     private RadialMenuSize _menuSize;
+    private OcrEngineKind _ocrEngine;
     private bool _autoStartEnabled;
+    private bool _suppressOcrUi;
 
     internal bool IsCapturingHotkey => _capturingSlot is not null;
 
@@ -50,7 +54,9 @@ public partial class SettingsWindow : Window
         Func<ScreenshotImageFormat, string?> applyScreenshotFormat,
         Func<RadialMenuSize, string?> applyMenuSize,
         Func<string, string?> applyRecordingDirectory,
-        Func<bool, string?> applyConvertFilePathsToImages)
+        Func<bool, string?> applyConvertFilePathsToImages,
+        OcrSettings? ocrSettings = null,
+        Func<OcrSettings, string?>? applyOcrSettings = null)
     {
         InitializeComponent();
 
@@ -78,6 +84,10 @@ public partial class SettingsWindow : Window
         _applyMenuSize = applyMenuSize;
         _applyRecordingDirectory = applyRecordingDirectory;
         _applyConvertFilePathsToImages = applyConvertFilePathsToImages;
+        _applyOcrSettings = applyOcrSettings;
+        _ocrSettings = (ocrSettings ?? new OcrSettings()).Clone();
+        _ocrSettings.Normalize();
+        _ocrEngine = _ocrSettings.Engine;
         _autoStartEnabled = autoStartEnabled;
         _format = screenshotFormat;
         _menuSize = menuSize;
@@ -96,6 +106,13 @@ public partial class SettingsWindow : Window
         SmallSizeRadio.IsChecked = menuSize == RadialMenuSize.Small;
         MediumSizeRadio.IsChecked = menuSize == RadialMenuSize.Medium;
         LargeSizeRadio.IsChecked = menuSize == RadialMenuSize.Large;
+
+        _suppressOcrUi = true;
+        OcrNativeRadio.IsChecked = _ocrEngine == OcrEngineKind.Native;
+        OcrModelRadio.IsChecked = _ocrEngine == OcrEngineKind.Model;
+        OcrAutoCopyToggle.IsChecked = _ocrSettings.AutoCopy;
+        PinOcrToggle.IsChecked = _ocrSettings.PinOcrEnabled;
+        _suppressOcrUi = false;
 
         AutoStartToggle.Checked += AutoStartToggle_Changed;
         AutoStartToggle.Unchecked += AutoStartToggle_Changed;
@@ -144,6 +161,7 @@ public partial class SettingsWindow : Window
 
         GeneralPane.Visibility = key == "general" ? Visibility.Visible : Visibility.Collapsed;
         CapturePane.Visibility = key == "capture" ? Visibility.Visible : Visibility.Collapsed;
+        OcrPane.Visibility = key == "ocr" ? Visibility.Visible : Visibility.Collapsed;
         RecordingPane.Visibility = key == "recording" ? Visibility.Visible : Visibility.Collapsed;
         AboutPane.Visibility = key == "about" ? Visibility.Visible : Visibility.Collapsed;
         SaveBar.Visibility = key == "about" ? Visibility.Collapsed : Visibility.Visible;
@@ -313,6 +331,26 @@ public partial class SettingsWindow : Window
         ClearError();
     }
 
+    private void OcrEngineRadio_Checked(object sender, RoutedEventArgs e)
+    {
+        if (_suppressOcrUi ||
+            sender is not RadioButton { Tag: string tag } ||
+            !Enum.TryParse<OcrEngineKind>(tag, out var engine))
+        {
+            return;
+        }
+
+        _ocrEngine = engine;
+        ClearError();
+    }
+
+    private OcrSettings BuildOcrSettings() => new()
+    {
+        Engine = _ocrEngine,
+        AutoCopy = OcrAutoCopyToggle.IsChecked == true,
+        PinOcrEnabled = PinOcrToggle.IsChecked == true
+    };
+
     private void RecordingDirectoryBox_TextChanged(object sender, TextChangedEventArgs e)
     {
         ClearError();
@@ -371,6 +409,7 @@ public partial class SettingsWindow : Window
 
         try
         {
+            var ocrSettings = BuildOcrSettings();
             var actionHotkeys = new Dictionary<RadialAction, HotkeyDefinition>
             {
                 [RadialAction.Screenshot] = _hotkeys[HotkeySlot.Screenshot].Clone(),
@@ -419,6 +458,17 @@ public partial class SettingsWindow : Window
             {
                 ShowError("其他设置已更新；" + convertFilePathsToImagesError + " 请修正后重试。");
                 return;
+            }
+
+            if (_applyOcrSettings is not null)
+            {
+                var ocrError = _applyOcrSettings(ocrSettings);
+
+                if (!string.IsNullOrEmpty(ocrError))
+                {
+                    ShowError("其他设置已更新；" + ocrError + " 请修正后重试。");
+                    return;
+                }
             }
 
             Close();

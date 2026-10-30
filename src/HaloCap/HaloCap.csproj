@@ -16,10 +16,29 @@
     <Product>HaloCap 光圈</Product>
     <AssemblyTitle>HaloCap 光圈</AssemblyTitle>
     <Description>在光标处呼出光圈菜单的 Windows 效率工具</Description>
-    <Version>1.3.1</Version>
-    <FileVersion>1.3.1</FileVersion>
-    <InformationalVersion>1.3.1</InformationalVersion>
+    <Version>1.4.0</Version>
+    <FileVersion>1.4.0</FileVersion>
+    <InformationalVersion>1.4.0</InformationalVersion>
     <NeutralLanguage>zh-CN</NeutralLanguage>
   </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="RapidOcrNet" Version="4.2.0" ExcludeAssets="build" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Assets\OcrModel\ppocrv6_tiny_det.onnx"
+                      LogicalName="HaloCap.OcrModel.det.onnx" />
+    <EmbeddedResource Include="Assets\OcrModel\ppocrv5_textline_cls.onnx"
+                      LogicalName="HaloCap.OcrModel.cls.onnx" />
+    <EmbeddedResource Include="Assets\OcrModel\ppocrv6_tiny_rec.onnx"
+                      LogicalName="HaloCap.OcrModel.rec.onnx" />
+    <EmbeddedResource Include="Assets\OcrModel\ppocrv6_tiny_dict.txt"
+                      LogicalName="HaloCap.OcrModel.dict.txt" />
+  </ItemGroup>
+
+  <Target Name="RemoveOnnxRuntimeImportLibraries" AfterTargets="Publish">
+    <Delete Files="$(PublishDir)onnxruntime.lib;$(PublishDir)onnxruntime_providers_shared.lib" />
+  </Target>
 
 </Project>

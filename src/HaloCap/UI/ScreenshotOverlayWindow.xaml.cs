@@ -218,6 +218,11 @@ public partial class ScreenshotOverlayWindow : Window
 
     internal bool HasSelection => _hasSelection;
 
+    internal bool IsOverlayVisible => !_closed && IsVisible;
+
+    internal IntPtr OverlayHandle =>
+        _handle != IntPtr.Zero ? _handle : new WindowInteropHelper(this).Handle;
+
     internal bool IsSelectionHost => ReferenceEquals(_session.SelectionHost, this);
 
     internal PhysicalRect LocalSelection =>

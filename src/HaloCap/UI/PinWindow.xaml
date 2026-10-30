@@ -224,6 +224,11 @@
                       InputGestureText="Space"
                       Style="{StaticResource PinMenuItemStyle}"
                       Click="AnnotateMenuItem_Click" />
+            <MenuItem x:Name="OcrMenuItem"
+                      Header="识别文字"
+                      InputGestureText="O"
+                      Style="{StaticResource PinMenuItemStyle}"
+                      Click="OcrMenuItem_Click" />
             <Separator Style="{StaticResource PinSeparatorStyle}" />
             <MenuItem Header="复制图片"
                       InputGestureText="Ctrl+C"

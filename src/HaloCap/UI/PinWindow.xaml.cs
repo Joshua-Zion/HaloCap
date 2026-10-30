@@ -41,6 +41,7 @@ public partial class PinWindow : Window
     private double _opacity = 1.0;
     private bool _outlineEnabled;
     private bool _draggingWindow;
+    private bool _ocrEnabled;
     private NativeMethods.POINT _dragStartCursor;
     private NativeMethods.RECT _dragStartWindowRect;
     private PhysicalRect _dragStartImageRect;
@@ -72,7 +73,8 @@ public partial class PinWindow : Window
         PhysicalRect initialRect,
         double monitorScale,
         ScreenshotImageFormat format,
-        bool outlineEnabled = true)
+        bool outlineEnabled = true,
+        bool ocrEnabled = true)
     {
         InitializeComponent();
 
@@ -87,8 +89,10 @@ public partial class PinWindow : Window
         _imageDipHeight = image.PixelHeight * 96.0 / (image.DpiY > 0.1 ? image.DpiY : 96.0);
 
         _outlineEnabled = outlineEnabled;
+        _ocrEnabled = ocrEnabled;
         PinOutline.Visibility = outlineEnabled ? Visibility.Visible : Visibility.Collapsed;
         OutlineMenuItem.IsChecked = outlineEnabled;
+        OcrMenuItem.Visibility = ocrEnabled ? Visibility.Visible : Visibility.Collapsed;
         PinContextMenu.Opened += (_, _) => OutlineMenuItem.IsChecked = _outlineEnabled;
 
         PreviewImage.Source = _image;
@@ -123,6 +127,16 @@ public partial class PinWindow : Window
 
     internal event Action<bool>? OutlineChanged;
 
+    internal event Action<PinWindow>? OcrRequested;
+
+    internal BitmapSource OcrImage => _image;
+
+    internal PhysicalRect OcrAnchor => _imageRect;
+
+    internal ScreenMonitor OcrMonitor => MonitorService.GetMonitorAt(
+        _imageRect.Left + (_imageRect.Width / 2),
+        _imageRect.Top + (_imageRect.Height / 2));
+
     internal static int OpenPinCount => OpenPins.Count;
 
     internal static void SetOutlineForAll(bool enabled)
@@ -133,11 +147,25 @@ public partial class PinWindow : Window
         }
     }
 
+    internal static void SetOcrEnabledForAll(bool enabled)
+    {
+        foreach (var pin in OpenPins.ToArray())
+        {
+            pin.SetOcrEnabled(enabled);
+        }
+    }
+
     private void SetOutline(bool enabled)
     {
         _outlineEnabled = enabled;
         PinOutline.Visibility = enabled ? Visibility.Visible : Visibility.Collapsed;
         OutlineMenuItem.IsChecked = enabled;
+    }
+
+    private void SetOcrEnabled(bool enabled)
+    {
+        _ocrEnabled = enabled;
+        OcrMenuItem.Visibility = enabled ? Visibility.Visible : Visibility.Collapsed;
     }
 
     internal static void CloseAllPins()
@@ -525,6 +553,13 @@ public partial class PinWindow : Window
                 Close();
             }
 
+            return;
+        }
+
+        if (!_annotating && e.Key == Key.O && Keyboard.Modifiers == ModifierKeys.None)
+        {
+            e.Handled = true;
+            RequestOcr();
             return;
         }
 
@@ -1324,6 +1359,18 @@ public partial class PinWindow : Window
     private void AnnotateMenuItem_Click(object sender, RoutedEventArgs e)
     {
         SetAnnotationMode(!_annotating);
+    }
+
+    private void OcrMenuItem_Click(object sender, RoutedEventArgs e) => RequestOcr();
+
+    private void RequestOcr()
+    {
+        if (!_ocrEnabled)
+        {
+            return;
+        }
+
+        OcrRequested?.Invoke(this);
     }
 
     private void UpdateAnnotationToolVisuals()

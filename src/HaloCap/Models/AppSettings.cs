@@ -42,6 +42,8 @@ public sealed class AppSettings
 
     public bool PinGlowEnabled { get; set; } = true;
 
+    public OcrSettings Ocr { get; set; } = new();
+
     public HotkeyDefinition GetActionHotkey(RadialAction action) => action switch
     {
         RadialAction.Screenshot => ScreenshotHotkey,

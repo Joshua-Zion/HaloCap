@@ -50,6 +50,8 @@ internal sealed class SingleKeyHotkeyHook : IDisposable
             return;
         }
 
+        // 更新快捷键时强制重建，顺便修复可能已被系统移除的旧钩子。
+        Uninstall();
         Install();
     }
 
@@ -145,6 +147,17 @@ internal sealed class SingleKeyHotkeyHook : IDisposable
 
     private static bool IsDown(int virtualKey) =>
         (NativeMethods.GetAsyncKeyState(virtualKey) & 0x8000) != 0;
+
+    public void Reinstall()
+    {
+        if (_disposed || _actions.Count == 0)
+        {
+            return;
+        }
+
+        Uninstall();
+        Install();
+    }
 
     public void Dispose()
     {

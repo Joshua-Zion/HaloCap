@@ -506,6 +506,13 @@
                                      Content="截图与贴图"
                                      Style="{StaticResource NavItemStyle}"
                                      Checked="NavItem_Checked" />
+                        <RadioButton x:Name="NavOcr"
+                                     GroupName="SettingsNav"
+                                     Uid="ocr"
+                                     Tag="&#xE8A5;"
+                                     Content="文字识别"
+                                     Style="{StaticResource NavItemStyle}"
+                                     Checked="NavItem_Checked" />
                         <RadioButton x:Name="NavRecording"
                                      GroupName="SettingsNav"
                                      Uid="recording"
@@ -901,6 +908,168 @@
                                                 </Grid>
                                             </Border>
                                         </Border>
+                                    </StackPanel>
+                                </ScrollViewer>
+                            </Grid>
+
+                            <!-- 文字识别 -->
+                            <Grid x:Name="OcrPane" Visibility="Collapsed">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto" />
+                                    <RowDefinition Height="*" />
+                                </Grid.RowDefinitions>
+
+                                <StackPanel Margin="30,26,30,0"
+                                            Background="Transparent"
+                                            MouseLeftButtonDown="TitleBar_MouseLeftButtonDown">
+                                    <TextBlock Text="文字识别" Style="{StaticResource PaneTitleStyle}" />
+                                    <TextBlock Text="选择识别引擎与结果偏好"
+                                               Style="{StaticResource PaneSubtitleStyle}" />
+                                </StackPanel>
+
+                                <ScrollViewer Grid.Row="1"
+                                              Margin="30,20,30,0"
+                                              VerticalScrollBarVisibility="Auto"
+                                              HorizontalScrollBarVisibility="Disabled"
+                                              Focusable="False">
+                                    <StackPanel Margin="0,0,4,20">
+                                        <TextBlock Text="识别" Style="{StaticResource GroupLabelStyle}" />
+                                        <Border Style="{StaticResource CardStyle}">
+                                            <StackPanel>
+                                                <Border Padding="16,14">
+                                                    <Grid>
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="*" />
+                                                            <ColumnDefinition Width="Auto" />
+                                                        </Grid.ColumnDefinitions>
+
+                                                        <StackPanel VerticalAlignment="Center"
+                                                                    Margin="0,0,18,0">
+                                                            <TextBlock Text="识别引擎"
+                                                                       Style="{StaticResource SettingTitleStyle}" />
+                                                            <TextBlock Text="原生引擎轻快，模型引擎对中英混排和小字更稳"
+                                                                       Style="{StaticResource SettingDescStyle}" />
+                                                        </StackPanel>
+
+                                                        <Border Grid.Column="1"
+                                                                Background="#FFF0F0F3"
+                                                                BorderBrush="#FFE2E2E7"
+                                                                BorderThickness="1"
+                                                                CornerRadius="8"
+                                                                Padding="2"
+                                                                VerticalAlignment="Center">
+                                                            <StackPanel Orientation="Horizontal">
+                                                                <RadioButton x:Name="OcrNativeRadio"
+                                                                             GroupName="OcrEngine"
+                                                                             Tag="Native"
+                                                                             Content="原生识别"
+                                                                             Width="80"
+                                                                             Style="{StaticResource SegmentOptionStyle}"
+                                                                             Checked="OcrEngineRadio_Checked"
+                                                                             AutomationProperties.Name="原生识别引擎" />
+                                                                <RadioButton x:Name="OcrModelRadio"
+                                                                             GroupName="OcrEngine"
+                                                                             Tag="Model"
+                                                                             Content="模型识别"
+                                                                             Width="80"
+                                                                             Style="{StaticResource SegmentOptionStyle}"
+                                                                             Checked="OcrEngineRadio_Checked"
+                                                                             AutomationProperties.Name="模型识别引擎" />
+                                                            </StackPanel>
+                                                        </Border>
+                                                    </Grid>
+                                                </Border>
+
+                                                <Rectangle Style="{StaticResource RowDividerStyle}" />
+
+                                                <Border Padding="16,12">
+                                                    <Grid>
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="*" />
+                                                            <ColumnDefinition Width="Auto" />
+                                                        </Grid.ColumnDefinitions>
+
+                                                        <StackPanel VerticalAlignment="Center"
+                                                                    Margin="0,0,18,0">
+                                                            <TextBlock Text="自动复制"
+                                                                       Style="{StaticResource SettingTitleStyle}" />
+                                                            <TextBlock Text="识别成功后自动把全部文字复制到剪贴板"
+                                                                       Style="{StaticResource SettingDescStyle}" />
+                                                        </StackPanel>
+
+                                                        <ToggleButton x:Name="OcrAutoCopyToggle"
+                                                                      Grid.Column="1"
+                                                                      VerticalAlignment="Center"
+                                                                      Style="{StaticResource ToggleSwitchStyle}"
+                                                                      ToolTip="识别后自动复制"
+                                                                      AutomationProperties.Name="识别后自动复制" />
+                                                    </Grid>
+                                                </Border>
+                                            </StackPanel>
+                                        </Border>
+
+                                        <TextBlock Text="引擎说明"
+                                                   Style="{StaticResource GroupLabelStyle}"
+                                                   Margin="4,20,0,8" />
+                                        <Border Style="{StaticResource CardStyle}">
+                                            <StackPanel>
+                                                <Border Padding="16,12">
+                                                    <StackPanel>
+                                                        <TextBlock Text="Windows 原生"
+                                                                   Style="{StaticResource SettingTitleStyle}" />
+                                                        <TextBlock Text="使用 Windows 自带的离线识别引擎，速度快、占用低；中文识别需要系统中安装「光学字符识别」语言组件。"
+                                                                   Style="{StaticResource SettingDescStyle}" />
+                                                    </StackPanel>
+                                                </Border>
+
+                                                <Rectangle Style="{StaticResource RowDividerStyle}" />
+
+                                                <Border Padding="16,12">
+                                                    <StackPanel>
+                                                        <TextBlock Text="PP-OCRv6 tiny"
+                                                                   Style="{StaticResource SettingTitleStyle}" />
+                                                        <TextBlock Text="内置约 6 MB 的检测与识别模型，首次使用会解压到本地；对中英混排和小字更稳，速度比原生稍慢。"
+                                                                   Style="{StaticResource SettingDescStyle}" />
+                                                    </StackPanel>
+                                                </Border>
+                                            </StackPanel>
+                                        </Border>
+
+                                        <TextBlock Text="入口"
+                                                   Style="{StaticResource GroupLabelStyle}"
+                                                   Margin="4,20,0,8" />
+                                        <Border Style="{StaticResource CardStyle}">
+                                            <Border Padding="16,12">
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+
+                                                    <StackPanel VerticalAlignment="Center"
+                                                                Margin="0,0,18,0">
+                                                        <TextBlock Text="贴图右键识别文字"
+                                                                   Style="{StaticResource SettingTitleStyle}" />
+                                                        <TextBlock Text="在贴图上右键或按 O 识别原图，识别结果不包含标注"
+                                                                   Style="{StaticResource SettingDescStyle}" />
+                                                    </StackPanel>
+
+                                                    <ToggleButton x:Name="PinOcrToggle"
+                                                                  Grid.Column="1"
+                                                                  VerticalAlignment="Center"
+                                                                  Style="{StaticResource ToggleSwitchStyle}"
+                                                                  ToolTip="允许从贴图识别文字"
+                                                                  AutomationProperties.Name="贴图识别文字" />
+                                                </Grid>
+                                            </Border>
+                                        </Border>
+
+                                        <TextBlock Text="两种引擎都按检测到的文本行输出，不额外重建排版。识别完全在本机完成，图片不会上传网络。"
+                                                   FontSize="10.5"
+                                                   Foreground="{StaticResource TextTertiaryBrush}"
+                                                   TextWrapping="Wrap"
+                                                   LineHeight="17"
+                                                   Margin="4,12,4,0" />
                                     </StackPanel>
                                 </ScrollViewer>
                             </Grid>

@@ -39,6 +39,9 @@ internal static class SettingsStore
                 settings.Hotkey = HotkeyDefinition.Default;
             }
 
+            settings.Ocr ??= new OcrSettings();
+            settings.Ocr.Normalize();
+
             var defaults = new AppSettings();
             foreach (var action in new[]
                      {

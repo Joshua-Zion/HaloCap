@@ -140,6 +140,17 @@ internal sealed class CaptureTypedKeyHook : IDisposable
     private static bool IsDown(int virtualKey) =>
         (NativeMethods.GetAsyncKeyState(virtualKey) & 0x8000) != 0;
 
+    public void Reinstall()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        Uninstall();
+        Install();
+    }
+
     public void Dispose()
     {
         if (_disposed)

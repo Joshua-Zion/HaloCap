@@ -82,6 +82,20 @@ internal sealed class HotkeyService : IDisposable
         return false;
     }
 
+    public bool ReRegister(out string? error)
+    {
+        error = null;
+
+        if (Current is null)
+        {
+            return false;
+        }
+
+        var hotkey = Current;
+        UnregisterCore();
+        return RegisterCore(hotkey, out error);
+    }
+
     private bool RegisterCore(HotkeyDefinition hotkey, out string? error)
     {
         error = null;

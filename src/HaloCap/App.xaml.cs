@@ -17,6 +17,7 @@ namespace HaloCap;
 public partial class App : Application
 {
     private const string DisplayName = AppInfo.DisplayName;
+    private const int RadialActionDelayMs = 60;
 
     private static readonly RadialAction[] ActionHotkeyOrder =
     {
@@ -199,7 +200,7 @@ public partial class App : Application
 
         menu.OpenRequested += (_, _) => Defer(ShowRadialFromTray);
         menu.SettingsRequested += (_, _) => Defer(OpenSettings);
-        menu.ActionRequested += action => Defer(() => TriggerAction(action, 170));
+        menu.ActionRequested += action => Defer(() => TriggerAction(action, RadialActionDelayMs));
         menu.AutoStartToggleRequested += enabled => Defer(() => ToggleAutoStartFromTray(enabled));
         menu.ExitRequested += (_, _) => Defer(ExitApplication);
         menu.Closed += (_, _) =>
@@ -578,8 +579,9 @@ public partial class App : Application
         }
 
         var wasRadialOpen = _radial?.IsOpen == true;
-        _radial?.HideMenu();
-        var wait = wasRadialOpen ? Math.Max(delayMs, 170) : delayMs;
+        // 光圈不再淡出，只需等它真正从屏幕消失，避免遮罩把光圈截进去。
+        _radial?.HideMenu(immediate: wasRadialOpen);
+        var wait = wasRadialOpen ? Math.Max(delayMs, RadialActionDelayMs) : delayMs;
         _ = StartCaptureAsync(ToCaptureMode(action), wait);
     }
 
@@ -603,8 +605,8 @@ public partial class App : Application
             return;
         }
 
-        // 等待光圈淡出，避免遮罩把光圈本身截进去。
-        await StartCaptureAsync(ToCaptureMode(action), 170);
+        // 光圈已即时收起，只留一帧让窗口真正消失，避免遮罩把光圈本身截进去。
+        await StartCaptureAsync(ToCaptureMode(action), RadialActionDelayMs);
     }
 
     private async Task StartCaptureAsync(CaptureSessionMode mode, int delayMs)

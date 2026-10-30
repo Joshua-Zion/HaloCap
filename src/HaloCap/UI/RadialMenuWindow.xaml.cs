@@ -162,6 +162,24 @@ public partial class RadialMenuWindow : Window
             });
     }
 
+    public void HideImmediately()
+    {
+        if (!IsVisible)
+        {
+            return;
+        }
+
+        // 选中截图、识别或录屏后要立刻让出屏幕，避免淡出动画拖慢选区启动。
+        _animationVersion++;
+        BeginAnimation(OpacityProperty, null);
+        RootScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
+        RootScale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
+        Opacity = 0;
+        RootScale.ScaleX = _sizeScale;
+        RootScale.ScaleY = _sizeScale;
+        Hide();
+    }
+
     public void SetActionEnabled(RadialAction action, bool enabled)
     {
         if (!_items.TryGetValue(action, out var item))

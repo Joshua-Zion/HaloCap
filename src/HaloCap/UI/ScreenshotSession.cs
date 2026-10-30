@@ -5,6 +5,7 @@ using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using System.Windows.Threading;
 using HaloCap.Diagnostics;
 using HaloCap.Interop;
 using HaloCap.Models;
@@ -52,6 +53,8 @@ internal sealed class ScreenshotSession : IDisposable
     internal bool IsSelectionComplete => _selectionComplete;
 
     internal ScreenshotOverlayWindow? SelectionHost => _selectionHost;
+
+    internal ScreenshotOverlayWindow? ActiveOverlay => _activeOverlay;
 
     internal void RegisterOverlay(ScreenshotOverlayWindow overlay)
     {
@@ -429,6 +432,22 @@ internal sealed class ScreenshotSession : IDisposable
 
             _activeOverlay = active;
             active.ActivateForSelection();
+
+            // 所有显示器在同一帧直接显示，避免淡入或逐屏启动时一边已压暗、另一边还是实时画面。
+            active.Dispatcher.BeginInvoke(
+                DispatcherPriority.ApplicationIdle,
+                new Action(() =>
+                {
+                    if (_disposed)
+                    {
+                        return;
+                    }
+
+                    foreach (var overlay in _overlays.ToArray())
+                    {
+                        overlay.RevealOverlay();
+                    }
+                }));
         }
         catch
         {

@@ -1736,17 +1736,33 @@ internal static class Program
             True(border.Visibility == Visibility.Visible,
                 "a synthetic mouse leave must keep the hover while the cursor is still on the monitor");
 
-            session.BeginSelection(overlay, new PhysicalRect(20, 20, 4, 4));
+            session.BeginSelection(
+                overlay,
+                ScreenGeometry.ToVirtual(new PhysicalRect(20, 20, 4, 4), monitor.Bounds));
             True(!session.IsSelectionComplete, "the tiny selection should still be pending");
             True(overlay.DiscardIncompleteTinySelection(),
                 "a stray point-sized selection should be discarded");
             True(!session.HasSelection, "discarding the dot should return the session to idle");
-            True(((FrameworkElement)overlay.FindName("DimFull")).Visibility == Visibility.Visible,
-                "the idle mask should come back after discarding the dot");
+            True(!overlay.HasSelection, "the overlay should leave the dot selection state");
+            True(((FrameworkElement)overlay.FindName("SelectionBorder")).Visibility == Visibility.Collapsed,
+                "the dot selection chrome should be gone");
+            True(((FrameworkElement)overlay.FindName("DimFull")).Visibility == Visibility.Visible ||
+                 ((FrameworkElement)overlay.FindName("ElementBorder")).Visibility == Visibility.Visible,
+                "the overlay should return to idle or hover, never a bare dot");
 
-            session.BeginSelection(overlay, new PhysicalRect(20, 20, 100, 80));
+            session.BeginSelection(
+                overlay,
+                ScreenGeometry.ToVirtual(new PhysicalRect(20, 20, 100, 80), monitor.Bounds));
             True(!overlay.DiscardIncompleteTinySelection(),
                 "a pending selection with a real area must not be discarded");
+
+            overlay.ActivateForSelection();
+            True((bool)typeof(ScreenshotOverlayWindow).GetField("_activationPending", flags)!.GetValue(overlay)!,
+                "focus should wait until the overlay is actually on screen");
+            typeof(ScreenshotOverlayWindow).GetMethod("RevealOverlay", flags)!.Invoke(overlay, null);
+            Equal(1.0, overlay.Opacity, 0.0001);
+            True((bool)typeof(ScreenshotOverlayWindow).GetField("_revealCompleted", flags)!.GetValue(overlay)!,
+                "the overlay should be fully visible before focus is taken");
         }
         finally
         {

@@ -169,7 +169,7 @@ internal sealed class RadialMenuController : IDisposable
         }
     }
 
-    public void HideMenu()
+    public void HideMenu(bool immediate = false)
     {
         if (!_isOpen)
         {
@@ -181,7 +181,15 @@ internal sealed class RadialMenuController : IDisposable
         _showGeneration++;
         _hovered = null;
         _hooks.Uninstall();
-        _window.PlayHideAnimation();
+
+        if (immediate)
+        {
+            _window.HideImmediately();
+        }
+        else
+        {
+            _window.PlayHideAnimation();
+        }
     }
 
     private void ShowMenu()
@@ -355,7 +363,7 @@ internal sealed class RadialMenuController : IDisposable
 
         if (virtualKey == VkEscape)
         {
-            _dispatcher.BeginInvoke(DispatcherPriority.Input, new Action(HideMenu));
+            _dispatcher.BeginInvoke(DispatcherPriority.Input, new Action(() => HideMenu()));
             return true;
         }
 
@@ -556,7 +564,8 @@ internal sealed class RadialMenuController : IDisposable
             return;
         }
 
-        HideMenu();
+        // 截图、文字识别和录屏要尽快出现选区，光圈直接收起；贴图没有选区，保留淡出。
+        HideMenu(immediate: action != RadialAction.Pin);
 
         try
         {

@@ -77,6 +77,9 @@ public partial class ScreenshotOverlayWindow : Window
     private bool _activeDim;
     private bool _initialHoverLogged;
     private readonly DispatcherTimer _idleHoverTimer;
+    private readonly DispatcherTimer _revealSettleTimer;
+    private bool _revealCompleted;
+    private bool _activationPending;
 
     private bool _annotating;
     private AnnotationTool _annotationTool = AnnotationTool.Pen;
@@ -148,13 +151,16 @@ public partial class ScreenshotOverlayWindow : Window
         _idleHoverTimer.Tick += (_, _) => IdleHoverTick();
         _idleHoverTimer.Start();
 
+        // 遮罩上屏后再抢焦点，否则透明或半透明阶段的前台窗口会先失活，屏幕像是闪了一下。
+        _revealSettleTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(40) };
+        _revealSettleTimer.Tick += (_, _) => OnRevealSettled();
+
         SourceInitialized += (_, _) =>
         {
             ApplyOverlayWindowStyle();
             _source = HwndSource.FromHwnd(new WindowInteropHelper(this).Handle);
             _source?.AddHook(OverlayWndProc);
         };
-        ContentRendered += (_, _) => RevealOverlay();
         DpiChanged += (_, _) =>
         {
             ApplyPhysicalBounds();
@@ -183,6 +189,7 @@ public partial class ScreenshotOverlayWindow : Window
         {
             _toolHudTimer.Stop();
             _idleHoverTimer.Stop();
+            _revealSettleTimer.Stop();
 
             if (Mouse.Captured == Root)
             {
@@ -365,10 +372,6 @@ public partial class ScreenshotOverlayWindow : Window
         ApplyPhysicalBounds();
 
         Dispatcher.BeginInvoke(
-            DispatcherPriority.ApplicationIdle,
-            new Action(RevealOverlay));
-
-        Dispatcher.BeginInvoke(
             DispatcherPriority.Loaded,
             new Action(() =>
             {
@@ -391,7 +394,7 @@ public partial class ScreenshotOverlayWindow : Window
             }));
     }
 
-    private void RevealOverlay()
+    internal void RevealOverlay()
     {
         if (_revealed || _closed)
         {
@@ -401,27 +404,73 @@ public partial class ScreenshotOverlayWindow : Window
         // DPI/窗口位置可能在首帧后仍有一次调整，显示前再对齐一次显示器边界。
         ApplyPhysicalBounds();
         RefreshMapping();
+        Root.UpdateLayout();
         _revealed = true;
+        _revealCompleted = true;
 
-        // 遮罩若在一帧内整屏压暗，观感上就是一次闪屏；淡入让桌面平滑过渡到选区状态。
+        // 先把候选窗口和遮罩开洞算好，再直接显示，避免第一帧之后再改变整屏明暗。
+        if (!_session.HasSelection)
+        {
+            PositionCrosshairFromCursor();
+        }
+
+        // 选区要即时出现：轻遮罩直接上屏，不再做淡入，既没有跨帧亮度变化也不拖慢启动。
+        BeginAnimation(OpacityProperty, null);
         Opacity = 1;
-        BeginAnimation(
-            OpacityProperty,
-            new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(150))
-            {
-                EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut },
-                FillBehavior = FillBehavior.Stop
-            });
 
-        // 首帧完成后立即给出光标下的候选窗口，不需要先移动鼠标才“亮起来”。
-        Dispatcher.BeginInvoke(
-            DispatcherPriority.Render,
-            new Action(PositionCrosshairFromCursor));
+        _revealSettleTimer.Stop();
+        _revealSettleTimer.Start();
+    }
+
+    private void OnRevealSettled()
+    {
+        _revealSettleTimer.Stop();
+
+        if (_closed)
+        {
+            return;
+        }
+
+        // 首帧时布局尚未就绪、没能算出候选时，上屏后补一次。
+        if (!_session.HasSelection &&
+            !_hasSelection &&
+            !_dragging &&
+            !_annotating &&
+            ElementBorder.Visibility != Visibility.Visible)
+        {
+            PositionCrosshairFromCursor();
+        }
+
+        TryActivateForInput();
     }
 
     internal void ActivateForSelection()
     {
         if (_closed)
+        {
+            return;
+        }
+
+        _activationPending = true;
+        PositionCrosshairFromCursor();
+
+        if (_revealCompleted)
+        {
+            TryActivateForInput();
+        }
+    }
+
+    private void TryActivateForInput()
+    {
+        if (_closed || !_activationPending)
+        {
+            return;
+        }
+
+        _activationPending = false;
+
+        // 用户已经在另一块屏上开始操作时，不要再把焦点抢回启动时的遮罩。
+        if (!ReferenceEquals(_session.ActiveOverlay, this))
         {
             return;
         }
@@ -436,8 +485,6 @@ public partial class ScreenshotOverlayWindow : Window
         {
             // 窗口可能已被其他显示器事件关闭。
         }
-
-        PositionCrosshairFromCursor();
     }
 
     internal BitmapSource? CreateLocalSelectionBitmap(bool includeAnnotations)
@@ -717,6 +764,7 @@ public partial class ScreenshotOverlayWindow : Window
         Activate();
         MonitorService.ActivateWindow(new WindowInteropHelper(this).Handle);
         Keyboard.Focus(Root);
+        _activationPending = false;
 
         var point = e.GetPosition(Root);
 

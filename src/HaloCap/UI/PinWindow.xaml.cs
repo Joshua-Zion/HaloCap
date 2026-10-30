@@ -65,6 +65,7 @@ public partial class PinWindow : Window
     private AnnotationStroke? _liveStroke;
     private bool _drawingAnnotation;
     private TextBox? _textEditor;
+    private ImeContextController? _imeContext;
     private Point _textPoint;
 
     internal PinWindow(
@@ -78,6 +79,11 @@ public partial class PinWindow : Window
 
         // 贴图的单键标注快捷键要先于输入法拿到按键；只有编辑文字时再启用 IME。
         InputMethod.SetIsInputMethodEnabled(this, false);
+
+        SourceInitialized += (_, _) =>
+        {
+            _imeContext = new ImeContextController(new WindowInteropHelper(this).Handle);
+        };
 
         _image = image;
         _initialRect = initialRect.Width > 0 && initialRect.Height > 0
@@ -115,7 +121,18 @@ public partial class PinWindow : Window
         Closed += (_, _) =>
         {
             _hudTimer.Stop();
+            _imeContext?.Dispose();
+            _imeContext = null;
             OpenPins.Remove(this);
+
+            try
+            {
+                Content = null;
+            }
+            catch
+            {
+                // 窗口已在关闭，忽略。
+            }
         };
 
         Root.SizeChanged += (_, _) => UpdateAnnotationScale();
@@ -1664,6 +1681,7 @@ public partial class PinWindow : Window
         _textPoint = imagePoint;
         InputMethod.SetIsInputMethodEnabled(this, true);
         InputMethod.SetIsInputMethodEnabled(box, true);
+        _imeContext?.Attach();
         box.Focus();
     }
 
@@ -1696,6 +1714,7 @@ public partial class PinWindow : Window
         var text = box.Text.Trim();
         EditorLayer.Children.Remove(box);
         InputMethod.SetIsInputMethodEnabled(this, false);
+        _imeContext?.Detach(cancelComposition: true);
 
         if (text.Length == 0)
         {
@@ -1731,6 +1750,7 @@ public partial class PinWindow : Window
         _textEditor = null;
         EditorLayer.Children.Remove(box);
         InputMethod.SetIsInputMethodEnabled(this, false);
+        _imeContext?.Detach(cancelComposition: true);
     }
 
     private Point ToImagePoint(Point displayPoint)

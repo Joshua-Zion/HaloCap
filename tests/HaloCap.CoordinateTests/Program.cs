@@ -1547,6 +1547,8 @@ internal static class Program
                     var dimFull = (FrameworkElement)overlay.FindName("DimFull");
                     True(dimFull.Visibility == Visibility.Visible,
                         "every capture mode should start with the full-screen dim");
+                    True(overlay.AllowsTransparency == !frozen,
+                        "frozen captures should use an opaque DWM window instead of a layered one");
                     Equal(92, ((SolidColorBrush)((System.Windows.Shapes.Rectangle)dimFull).Fill).Color.A);
                     True(!(bool)type.GetField("_textBold", flags)!.GetValue(overlay)!,
                         "capture text tool should default to regular weight");
@@ -1828,6 +1830,8 @@ internal static class Program
             "the overlay should keep a frozen bitmap while alive");
         True(!InputMethod.GetIsInputMethodEnabled(overlay),
             "the overlay should disable IME so single-key shortcuts win over composition");
+        True(!overlay.AllowsTransparency,
+            "a frozen capture overlay should be opaque to avoid retaining layered surfaces");
         var image = (Image)overlay.FindName("FrozenImage");
         True(image.Source is not null, "the frozen image should be shown");
 

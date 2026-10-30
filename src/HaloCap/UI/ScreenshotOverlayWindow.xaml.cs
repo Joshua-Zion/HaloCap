@@ -48,6 +48,7 @@ public partial class ScreenshotOverlayWindow : Window
     private readonly List<List<AnnotationStroke>> _redoStack = new();
 
     private IntPtr _handle;
+    private ImeContextController? _imeContext;
     private bool _closed;
     private bool _revealed;
     private bool _dragging;
@@ -127,6 +128,10 @@ public partial class ScreenshotOverlayWindow : Window
 
         if (frozenBitmap is not null)
         {
+            // 冻结画面已经覆盖整个显示器，不需要分层透明窗口；改用普通 DWM 窗口后，
+            // 不再为每块屏创建/保留逐像素合成表面，取消选区后内存能真正降下来。
+            AllowsTransparency = false;
+            Background = Brushes.Black;
             _frozenSource = ScreenCaptureService.ToBitmapSource(frozenBitmap);
             FrozenImage.Source = _frozenSource;
         }
@@ -163,8 +168,11 @@ public partial class ScreenshotOverlayWindow : Window
         SourceInitialized += (_, _) =>
         {
             ApplyOverlayWindowStyle();
-            _source = HwndSource.FromHwnd(new WindowInteropHelper(this).Handle);
+
+            var handle = new WindowInteropHelper(this).Handle;
+            _source = HwndSource.FromHwnd(handle);
             _source?.AddHook(OverlayWndProc);
+            _imeContext = new ImeContextController(handle);
         };
         DpiChanged += (_, _) =>
         {
@@ -203,11 +211,23 @@ public partial class ScreenshotOverlayWindow : Window
 
             _source?.RemoveHook(OverlayWndProc);
             _source = null;
+            _imeContext?.Dispose();
+            _imeContext = null;
 
             // WPF 位图的像素不在托管堆里，关窗后必须主动断开引用，否则取消几次选区
             // 就会累积数百 MB 的冻结画面，后台常驻内存迟迟不降。
             ReleaseFrozenBuffers();
             ClearAnnotations();
+
+            try
+            {
+                // 关闭窗口不再保留整棵可视化树，避免 HwndSource/IME 事件仍引用它。
+                Content = null;
+            }
+            catch
+            {
+                // 窗口已在关闭，忽略。
+            }
 
             _session.UnregisterOverlay(this);
         };
@@ -3417,6 +3437,7 @@ public partial class ScreenshotOverlayWindow : Window
         _textPoint = selectionPoint;
         InputMethod.SetIsInputMethodEnabled(this, true);
         InputMethod.SetIsInputMethodEnabled(box, true);
+        _imeContext?.Attach();
         box.Focus();
     }
 
@@ -3449,6 +3470,7 @@ public partial class ScreenshotOverlayWindow : Window
         var text = box.Text.Trim();
         EditorLayer.Children.Remove(box);
         InputMethod.SetIsInputMethodEnabled(this, false);
+        _imeContext?.Detach(cancelComposition: true);
 
         if (text.Length == 0)
         {
@@ -3484,6 +3506,7 @@ public partial class ScreenshotOverlayWindow : Window
         _textEditor = null;
         EditorLayer.Children.Remove(box);
         InputMethod.SetIsInputMethodEnabled(this, false);
+        _imeContext?.Detach(cancelComposition: true);
     }
 
     private bool IsWithinTextEditor(object? source)

@@ -173,6 +173,13 @@ public partial class ScreenshotOverlayWindow : Window
             _source = HwndSource.FromHwnd(handle);
             _source?.AddHook(OverlayWndProc);
             _imeContext = new ImeContextController(handle);
+
+            // 全屏选区只在启动和拖动时短暂使用；改用软件渲染可避免为 4K 选区
+            // 保留大量 D3D 合成表面（GPU 私有内存会进入进程常驻占用）。
+            if (_source?.CompositionTarget is { } target)
+            {
+                target.RenderMode = RenderMode.SoftwareOnly;
+            }
         };
         DpiChanged += (_, _) =>
         {

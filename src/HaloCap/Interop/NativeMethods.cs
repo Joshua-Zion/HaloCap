@@ -208,30 +208,6 @@ internal static class NativeMethods
     [DllImport("user32.dll", EntryPoint = "GetWindowTextW", CharSet = CharSet.Unicode)]
     public static extern int GetWindowText(IntPtr hWnd, StringBuilder lpString, int nMaxCount);
 
-    public const uint NI_COMPOSITIONSTR = 0x0015;
-    public const uint CPS_CANCEL = 0x0004;
-
-    [DllImport("imm32.dll")]
-    public static extern IntPtr ImmAssociateContext(IntPtr hWnd, IntPtr hIMC);
-
-    [DllImport("imm32.dll")]
-    public static extern IntPtr ImmGetContext(IntPtr hWnd);
-
-    [DllImport("imm32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    public static extern bool ImmReleaseContext(IntPtr hWnd, IntPtr hIMC);
-
-    [DllImport("imm32.dll")]
-    public static extern IntPtr ImmCreateContext();
-
-    [DllImport("imm32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    public static extern bool ImmDestroyContext(IntPtr hIMC);
-
-    [DllImport("imm32.dll")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    public static extern bool ImmNotifyIME(IntPtr hIMC, uint action, uint index, uint value);
-
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool fAttach);

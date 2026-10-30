@@ -34,6 +34,7 @@ public partial class App : Application
     private readonly ClipboardPinService _clipboardPin = new();
     private readonly Dictionary<RadialAction, HotkeyService> _actionHotkeyServices = new();
     private SingleKeyHotkeyHook? _singleKeyHotkeyHook;
+    private CaptureTypedKeyHook? _captureTypedKeyHook;
     private SingleInstanceService? _singleInstance;
     private HotkeyService? _hotkeyService;
     private TrayIconService? _tray;
@@ -674,6 +675,14 @@ public partial class App : Application
             }
 
             _screenshotSession = ScreenshotSession.Start(mode, HandleCaptureCompleted);
+
+            _captureTypedKeyHook ??= new CaptureTypedKeyHook
+            {
+                CanHandle = () => _screenshotSession is not null
+            };
+            _captureTypedKeyHook.KeyDown = virtualKey =>
+                _screenshotSession?.TryHandleTypedKey(virtualKey) == true;
+            _captureTypedKeyHook.Install();
         }
         catch (Exception ex)
         {
@@ -812,6 +821,7 @@ public partial class App : Application
 
     private async void HandleCaptureCompleted(CaptureResult result)
     {
+        _captureTypedKeyHook?.Uninstall();
         _screenshotSession = null;
         ScheduleMemoryTrim();
 
@@ -1053,6 +1063,8 @@ public partial class App : Application
         _radial = null;
         _singleKeyHotkeyHook?.Dispose();
         _singleKeyHotkeyHook = null;
+        _captureTypedKeyHook?.Dispose();
+        _captureTypedKeyHook = null;
         _memoryTrimTimer?.Stop();
         _memoryTrimTimer = null;
         _tray?.Dispose();

@@ -58,9 +58,11 @@ internal sealed class ScreenshotSession : IDisposable
 
     internal ScreenshotOverlayWindow? ActiveOverlay => _activeOverlay;
 
+    internal bool TryHandleTypedKey(int virtualKey) =>
+        _activeOverlay?.HandleTypedKey(virtualKey) == true;
+
     internal bool TryGetColorAtCursor(out Color color)
-    {
-        color = default;
+    {        color = default;
 
         if (!NativeMethods.GetCursorPos(out var cursor))
         {

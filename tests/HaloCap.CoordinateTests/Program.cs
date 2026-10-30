@@ -49,6 +49,7 @@ internal static class Program
             ("Combination hotkey stays valid", CombinationHotkeyIsValid),
             ("Single key display has no plus sign", SingleKeyDisplayIsPlain),
             ("Typing single keys are classified", TypingSingleKeysAreClassified),
+            ("Capture typed key hook classifies input keys", CaptureTypedKeyHookClassifiesKeys),
             ("Color clipboard formatter matches hex and rgb", ColorClipboardFormatterMatches),
             ("Radial size presets map to window sizes", RadialSizePresetsMapToWindowSizes),
             ("MoveWithin keeps selection inside", MoveWithinKeepsSelectionInside),
@@ -297,6 +298,17 @@ internal static class Program
         var color = Color.FromRgb(0x12, 0xAB, 0xFF);
         Equal("#12ABFF", ColorClipboardFormatter.Format(color, false));
         Equal("rgb(18, 171, 255)", ColorClipboardFormatter.Format(color, true));
+    }
+
+    private static void CaptureTypedKeyHookClassifiesKeys()
+    {
+        True(CaptureTypedKeyHook.IsTypingKey(0x41), "A should be intercepted for the overlay");
+        True(CaptureTypedKeyHook.IsTypingKey(0x43), "C should be intercepted for color copy");
+        True(CaptureTypedKeyHook.IsTypingKey(0x20), "Space should be intercepted for annotation mode");
+        True(CaptureTypedKeyHook.IsTypingKey(0xDB), "[ should be intercepted for brush size");
+        True(!CaptureTypedKeyHook.IsTypingKey(0x1B), "Esc must pass through to the overlay");
+        True(!CaptureTypedKeyHook.IsTypingKey(0x0D), "Enter must pass through to the overlay");
+        True(!CaptureTypedKeyHook.IsTypingKey(0x70), "F1 must pass through to the global hotkey");
     }
 
     private static void RadialSizePresetsMapToWindowSizes()
@@ -1547,8 +1559,6 @@ internal static class Program
                     var dimFull = (FrameworkElement)overlay.FindName("DimFull");
                     True(dimFull.Visibility == Visibility.Visible,
                         "every capture mode should start with the full-screen dim");
-                    True(overlay.AllowsTransparency == !frozen,
-                        "frozen captures should use an opaque DWM window instead of a layered one");
                     Equal(92, ((SolidColorBrush)((System.Windows.Shapes.Rectangle)dimFull).Fill).Color.A);
                     True(!(bool)type.GetField("_textBold", flags)!.GetValue(overlay)!,
                         "capture text tool should default to regular weight");
@@ -1828,10 +1838,6 @@ internal static class Program
             "the overlay should keep a frozen source while alive");
         True(type.GetField("_frozenBitmap", flags)!.GetValue(overlay) is not null,
             "the overlay should keep a frozen bitmap while alive");
-        True(!InputMethod.GetIsInputMethodEnabled(overlay),
-            "the overlay should disable IME so single-key shortcuts win over composition");
-        True(!overlay.AllowsTransparency,
-            "a frozen capture overlay should be opaque to avoid retaining layered surfaces");
         var image = (Image)overlay.FindName("FrozenImage");
         True(image.Source is not null, "the frozen image should be shown");
 

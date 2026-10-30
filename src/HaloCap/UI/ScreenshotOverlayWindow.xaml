@@ -196,11 +196,11 @@
                RenderOptions.BitmapScalingMode="HighQuality" />
 
         <Canvas x:Name="ChromeLayer" IsHitTestVisible="False" ClipToBounds="True">
-            <Rectangle x:Name="DimFull" Fill="#A6000000" />
-            <Rectangle x:Name="DimTop" Fill="#A6000000" Visibility="Collapsed" />
-            <Rectangle x:Name="DimBottom" Fill="#A6000000" Visibility="Collapsed" />
-            <Rectangle x:Name="DimLeft" Fill="#A6000000" Visibility="Collapsed" />
-            <Rectangle x:Name="DimRight" Fill="#A6000000" Visibility="Collapsed" />
+            <Rectangle x:Name="DimFull" Fill="#5C000000" />
+            <Rectangle x:Name="DimTop" Fill="#5C000000" Visibility="Collapsed" />
+            <Rectangle x:Name="DimBottom" Fill="#5C000000" Visibility="Collapsed" />
+            <Rectangle x:Name="DimLeft" Fill="#5C000000" Visibility="Collapsed" />
+            <Rectangle x:Name="DimRight" Fill="#5C000000" Visibility="Collapsed" />
 
             <Rectangle x:Name="CrossVertical"
                        Width="1"

@@ -14,6 +14,7 @@ using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using HaloCap.Interop;
 using HaloCap.Models;
 using HaloCap.Services;
 using HaloCap.UI;
@@ -1195,6 +1196,7 @@ internal static class Program
             CaptureOverlayPreviewKeepsMouseSurface();
             CaptureSelectionHintsStayLightAndConcise();
             CaptureSelectionFallsBackToFullScreen();
+            CaptureStartupKeepsHoverCandidateAndClearsDots();
             RecordSelectionDimsLikeOtherModes();
             CrossScreenSelectionSharesStateAndComposesCapture();
             SettingsAndTrayChromeUseCleanLayout(app);
@@ -1519,8 +1521,10 @@ internal static class Program
                     var dimFull = (FrameworkElement)overlay.FindName("DimFull");
                     True(dimFull.Visibility == Visibility.Visible,
                         "every capture mode should start with the full-screen dim");
+                    Equal(92, ((SolidColorBrush)((System.Windows.Shapes.Rectangle)dimFull).Fill).Color.A);
                     True(!(bool)type.GetField("_textBold", flags)!.GetValue(overlay)!,
                         "capture text tool should default to regular weight");
+                    var dimTop = (FrameworkElement)overlay.FindName("DimTop");
                     var doneButton = (Button)overlay.FindName("DoneButton");
                     var cancelButton = (Button)overlay.FindName("CancelButton");
                     var toolbarPanel = (StackPanel)((Border)overlay.FindName("Toolbar")).Child;
@@ -1547,6 +1551,8 @@ internal static class Program
                     RenderSurface();
                     var candidate = new PhysicalRect((int)(80 * scale), (int)(80 * scale), (int)(380 * scale), (int)(260 * scale));
                     showHover.Invoke(overlay, new object[] { candidate });
+                    Equal(92, ((SolidColorBrush)((System.Windows.Shapes.Rectangle)dimTop).Fill).Color.A);
+                    True(dimTop.Visibility == Visibility.Visible, "a hovered window should show the outside dim");
                     var reference = RenderSurface();
                     var sampleOffset = (((int)(250 * scale) * pixelWidth) + (int)(300 * scale)) * 4;
                     Equal(frozen ? 255 : 1, reference[sampleOffset + 3]);
@@ -1577,13 +1583,15 @@ internal static class Program
                     var idle = RenderSurface();
                     var cornerOffset = (((int)(8 * scale) * pixelWidth) + (int)(8 * scale)) * 4;
                     Equal(
-                        frozen ? 255 : 166,
-                        idle[cornerOffset + 3]);
+                        frozen ? 255 : 92,
+                        idle[cornerOffset + 3],
+                        1);
                     hasSelectionField.SetValue(overlay, true);
                     selectionField.SetValue(overlay, candidate);
                     updateSelection.Invoke(overlay, new object[] { false });
                     RenderSurface();
                     Equal(ScreenGeometry.ToVirtual(candidate, monitor.Bounds), overlay.VirtualSelection);
+                    Equal(140, ((SolidColorBrush)((System.Windows.Shapes.Rectangle)dimTop).Fill).Color.A);
                     True(!overlay.IsVisible && new System.Windows.Interop.WindowInteropHelper(overlay).Handle == IntPtr.Zero,
                         "offscreen state transitions must not activate the desktop");
 
@@ -1685,6 +1693,60 @@ internal static class Program
             session.BeginSelection(overlay, new PhysicalRect(100, 100, 5, 5));
             type.GetMethod("EndDrag", flags)!.Invoke(overlay, null);
             Equal(new PhysicalRect(0, 0, 600, 400), session.SelectionVirtual);
+        }
+        finally
+        {
+            overlay.Close();
+        }
+    }
+
+    private static void CaptureStartupKeepsHoverCandidateAndClearsDots()
+    {
+        const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
+        True(WindowProbe.IsCandidateSize(new PhysicalRect(0, 0, 32, 32)),
+            "a 32px window should remain a valid hover candidate");
+        True(!WindowProbe.IsCandidateSize(new PhysicalRect(0, 0, 31, 32)),
+            "tiny helper windows should not become a dot-like hover");
+
+        NativeMethods.GetCursorPos(out var cursor);
+        var monitor = new ScreenMonitor
+        {
+            Bounds = new PhysicalRect(cursor.X - 1000, cursor.Y - 1000, 2000, 2000),
+            WorkArea = new PhysicalRect(cursor.X - 1000, cursor.Y - 1000, 2000, 2000),
+            Scale = 1.0
+        };
+
+        using var session = (ScreenshotSession)Activator.CreateInstance(typeof(ScreenshotSession), flags, null,
+            new object[] { CaptureSessionMode.Screenshot, (Action<CaptureResult>)(_ => { }) }, CultureInfo.InvariantCulture)!;
+        var overlay = new ScreenshotOverlayWindow(session, monitor, CaptureSessionMode.Screenshot, null);
+        try
+        {
+            var root = (Grid)overlay.FindName("Root");
+            root.Measure(new Size(600, 400));
+            root.Arrange(new Rect(0, 0, 600, 400));
+            typeof(ScreenshotOverlayWindow).GetMethod("RefreshMapping", flags)!.Invoke(overlay, null);
+
+            var border = (FrameworkElement)overlay.FindName("ElementBorder");
+            typeof(ScreenshotOverlayWindow).GetMethod("ShowElementHover", flags)!
+                .Invoke(overlay, new object[] { new PhysicalRect(10, 10, 200, 150) });
+            True(border.Visibility == Visibility.Visible, "startup should expose the hovered window");
+
+            typeof(ScreenshotOverlayWindow).GetMethod("Root_MouseLeave", flags)!
+                .Invoke(overlay, new object[] { root, new MouseEventArgs(Mouse.PrimaryDevice, 0) });
+            True(border.Visibility == Visibility.Visible,
+                "a synthetic mouse leave must keep the hover while the cursor is still on the monitor");
+
+            session.BeginSelection(overlay, new PhysicalRect(20, 20, 4, 4));
+            True(!session.IsSelectionComplete, "the tiny selection should still be pending");
+            True(overlay.DiscardIncompleteTinySelection(),
+                "a stray point-sized selection should be discarded");
+            True(!session.HasSelection, "discarding the dot should return the session to idle");
+            True(((FrameworkElement)overlay.FindName("DimFull")).Visibility == Visibility.Visible,
+                "the idle mask should come back after discarding the dot");
+
+            session.BeginSelection(overlay, new PhysicalRect(20, 20, 100, 80));
+            True(!overlay.DiscardIncompleteTinySelection(),
+                "a pending selection with a real area must not be discarded");
         }
         finally
         {

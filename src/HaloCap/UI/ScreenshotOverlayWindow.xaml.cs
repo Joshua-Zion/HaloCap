@@ -26,6 +26,10 @@ public partial class ScreenshotOverlayWindow : Window
     private const long PhysicalPressWindowMs = 600;
     private const int VkLeftButton = 0x01;
 
+    // 未框选时保持轻遮罩，进入选区后再压暗外围，启动时不会整屏像被盖住。
+    private static readonly Brush HoverDimBrush = CreateDimBrush(0x5C);
+    private static readonly Brush SelectionDimBrush = CreateDimBrush(0x8C);
+
     private enum DragKind
     {
         None,
@@ -70,6 +74,9 @@ public partial class ScreenshotOverlayWindow : Window
     private HwndSource? _source;
     private long _lastPhysicalPressTick = -1_000_000;
     private bool _syntheticPressLogged;
+    private bool _activeDim;
+    private bool _initialHoverLogged;
+    private readonly DispatcherTimer _idleHoverTimer;
 
     private bool _annotating;
     private AnnotationTool _annotationTool = AnnotationTool.Pen;
@@ -135,6 +142,12 @@ public partial class ScreenshotOverlayWindow : Window
             FadeToolHudOut();
         };
 
+        // 启动时 WPF 可能不会补发鼠标移动，窗口激活时也可能收到一次假的离开事件；
+        // 定时校正未框选状态，保证候选窗口一直可见，并兜底清理未成形的点选区。
+        _idleHoverTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(150) };
+        _idleHoverTimer.Tick += (_, _) => IdleHoverTick();
+        _idleHoverTimer.Start();
+
         SourceInitialized += (_, _) =>
         {
             ApplyOverlayWindowStyle();
@@ -169,6 +182,7 @@ public partial class ScreenshotOverlayWindow : Window
         Closed += (_, _) =>
         {
             _toolHudTimer.Stop();
+            _idleHoverTimer.Stop();
 
             if (Mouse.Captured == Root)
             {
@@ -233,6 +247,8 @@ public partial class ScreenshotOverlayWindow : Window
 
         if (local.IsEmpty)
         {
+            SetActiveDim(false);
+            SetFullDim(!_dragging);
             DimFull.Visibility = Visibility.Visible;
             DimTop.Visibility = Visibility.Collapsed;
             DimBottom.Visibility = Visibility.Collapsed;
@@ -396,6 +412,11 @@ public partial class ScreenshotOverlayWindow : Window
                 EasingFunction = new QuadraticEase { EasingMode = EasingMode.EaseOut },
                 FillBehavior = FillBehavior.Stop
             });
+
+        // 首帧完成后立即给出光标下的候选窗口，不需要先移动鼠标才“亮起来”。
+        Dispatcher.BeginInvoke(
+            DispatcherPriority.Render,
+            new Action(PositionCrosshairFromCursor));
     }
 
     internal void ActivateForSelection()
@@ -973,6 +994,13 @@ public partial class ScreenshotOverlayWindow : Window
             return;
         }
 
+        // 窗口刚显示或激活时 WPF 可能补发一次离开事件，实际上光标仍在遮罩内；
+        // 误清掉候选会让整屏只剩遮罩，看起来像一个点，需要等光标真的离开再处理。
+        if (IsCursorInsideMonitor())
+        {
+            return;
+        }
+
         HideCrosshair();
         HideMagnifier();
 
@@ -1304,6 +1332,8 @@ public partial class ScreenshotOverlayWindow : Window
         HideCrosshair();
         HideMagnifier();
         SizeBadge.Visibility = Visibility.Collapsed;
+        SetActiveDim(false);
+        SetFullDim(false);
         SelectionBorder.Visibility = Visibility.Collapsed;
         SetCornersVisible(false);
         AnnotationLayer.Visibility = Visibility.Collapsed;
@@ -1351,6 +1381,7 @@ public partial class ScreenshotOverlayWindow : Window
         var right = left + selectionWidth;
         var bottom = top + selectionHeight;
         var hasLocal = !localPx.IsEmpty;
+        SetActiveDim(hasLocal);
 
         // 选区还没面积时保留整屏遮罩：否则按下的瞬间桌面会整体变亮，屏幕上只剩下一个点。
         DimFull.Visibility = hasLocal ? Visibility.Collapsed : Visibility.Visible;
@@ -1662,6 +1693,156 @@ public partial class ScreenshotOverlayWindow : Window
         UpdateElementHover(point);
     }
 
+    private void IdleHoverTick()
+    {
+        if (_closed)
+        {
+            _idleHoverTimer.Stop();
+            return;
+        }
+
+        if (!_revealed || !IsVisible)
+        {
+            return;
+        }
+
+        if (_dragging)
+        {
+            if (!IsLeftButtonPressed())
+            {
+                if (_dragKind == DragKind.Create &&
+                    !ScreenGeometry.IsUsableSelection(_session.SelectionVirtual, MinSelectionSizePx))
+                {
+                    CancelUnusableDrag();
+                }
+                else
+                {
+                    EndDrag();
+                }
+            }
+
+            return;
+        }
+
+        if (_session.HasSelection)
+        {
+            if (!IsLeftButtonPressed())
+            {
+                DiscardIncompleteTinySelection();
+            }
+
+            return;
+        }
+
+        if (_hasSelection || _annotating)
+        {
+            return;
+        }
+
+        if (!IsCursorInsideMonitor())
+        {
+            if (ElementBorder.Visibility == Visibility.Visible ||
+                CrossVertical.Visibility == Visibility.Visible)
+            {
+                ClearElementHover();
+                HideCrosshair();
+                HideMagnifier();
+            }
+
+            return;
+        }
+
+        if (ElementBorder.Visibility == Visibility.Visible && !_hoverElementPx.IsEmpty)
+        {
+            return;
+        }
+
+        PositionCrosshairFromCursor();
+    }
+
+    internal bool DiscardIncompleteTinySelection()
+    {
+        if (_closed ||
+            _dragging ||
+            !IsSelectionHost ||
+            !_session.HasSelection ||
+            _session.IsSelectionComplete ||
+            ScreenGeometry.IsUsableSelection(_session.SelectionVirtual, MinSelectionSizePx))
+        {
+            return false;
+        }
+
+        Log.Info($"清除未成形的点选区：{_session.SelectionVirtual}");
+        _session.ClearSelection();
+        return true;
+    }
+
+    private void CancelUnusableDrag()
+    {
+        _dragging = false;
+        _dragKind = DragKind.None;
+        _clickElementPx = default;
+
+        try
+        {
+            if (Mouse.Captured == Root)
+            {
+                Mouse.Capture(null);
+            }
+        }
+        catch
+        {
+            // 忽略释放捕获异常。
+        }
+
+        Log.Info($"忽略未成形的点拖拽：{_session.SelectionVirtual}");
+        _session.ClearSelection();
+    }
+
+    private bool IsCursorInsideMonitor()
+    {
+        if (!NativeMethods.GetCursorPos(out var cursor))
+        {
+            return false;
+        }
+
+        return cursor.X >= _monitor.Bounds.Left &&
+               cursor.X < _monitor.Bounds.Right &&
+               cursor.Y >= _monitor.Bounds.Top &&
+               cursor.Y < _monitor.Bounds.Bottom;
+    }
+
+    private void SetActiveDim(bool active)
+    {
+        if (_activeDim == active)
+        {
+            return;
+        }
+
+        _activeDim = active;
+        var brush = active ? SelectionDimBrush : HoverDimBrush;
+        DimTop.Fill = brush;
+        DimBottom.Fill = brush;
+        DimLeft.Fill = brush;
+        DimRight.Fill = brush;
+    }
+
+    private void SetFullDim(bool active)
+    {
+        var brush = active ? SelectionDimBrush : HoverDimBrush;
+        if (!ReferenceEquals(DimFull.Fill, brush))
+        {
+            DimFull.Fill = brush;
+        }
+    }
+
+    private static Brush CreateDimBrush(byte alpha)
+    {
+        var brush = new SolidColorBrush(Color.FromArgb(alpha, 0, 0, 0));
+        brush.Freeze();
+        return brush;
+    }
+
     private bool IsPointerOverToolbars() =>
         (Toolbar.Visibility == Visibility.Visible && Toolbar.IsMouseOver) ||
         (OptionBar.Visibility == Visibility.Visible && OptionBar.IsMouseOver);
@@ -1891,6 +2072,13 @@ public partial class ScreenshotOverlayWindow : Window
     {
         // 没有识别到可见窗口时退回整屏，单击即可直接框选全屏。
         ShowElementHover(region ?? MonitorLocalBounds);
+
+        if (!_initialHoverLogged)
+        {
+            _initialHoverLogged = true;
+            Log.Info(
+                $"选区启动候选：monitor={_monitor.Bounds} cursor={_lastProbeX},{_lastProbeY} source={(region is null ? "screen" : "window")} region={_hoverElementPx}");
+        }
     }
 
     private void ShowElementHover(PhysicalRect rect)
@@ -1900,6 +2088,7 @@ public partial class ScreenshotOverlayWindow : Window
             return;
         }
 
+        SetActiveDim(false);
         _hoverElementPx = rect;
 
         var left = rect.Left / _mapScaleX;
@@ -1941,6 +2130,7 @@ public partial class ScreenshotOverlayWindow : Window
 
         if (!_hasSelection && !_dragging && !_annotating)
         {
+            SetActiveDim(false);
             DimFull.Visibility = Visibility.Visible;
             DimTop.Visibility = Visibility.Collapsed;
             DimBottom.Visibility = Visibility.Collapsed;

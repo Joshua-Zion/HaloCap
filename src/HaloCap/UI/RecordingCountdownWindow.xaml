@@ -1,0 +1,49 @@
+<Window x:Class="HaloCap.UI.RecordingCountdownWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="HaloCap 录屏倒计时"
+        Width="148"
+        Height="148"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
+        ResizeMode="NoResize"
+        WindowStartupLocation="Manual"
+        ShowInTaskbar="False"
+        Topmost="True"
+        ShowActivated="False"
+        FocusVisualStyle="{x:Null}"
+        FontFamily="{StaticResource AppFont}">
+    <Grid>
+        <Border x:Name="Card"
+                Width="118"
+                Height="118"
+                CornerRadius="30"
+                Background="#E610141C"
+                BorderBrush="#45FFFFFF"
+                BorderThickness="1"
+                HorizontalAlignment="Center"
+                VerticalAlignment="Center">
+            <Border.Effect>
+                <DropShadowEffect Color="#FF000000" BlurRadius="26" ShadowDepth="6" Opacity="0.5" />
+            </Border.Effect>
+
+            <Grid>
+                <TextBlock x:Name="CountText"
+                           Text="3"
+                           FontSize="54"
+                           FontWeight="SemiBold"
+                           Foreground="#F5F8FC"
+                           HorizontalAlignment="Center"
+                           VerticalAlignment="Center"
+                           Margin="0,-8,0,0" />
+                <TextBlock Text="开始录屏"
+                           FontSize="10.5"
+                           Foreground="#99E4EAF4"
+                           HorizontalAlignment="Center"
+                           VerticalAlignment="Bottom"
+                           Margin="0,0,0,17" />
+            </Grid>
+        </Border>
+    </Grid>
+</Window>

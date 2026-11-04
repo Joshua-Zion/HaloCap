@@ -13,7 +13,7 @@ namespace HaloCap.UI;
 /// </summary>
 public partial class RecordingFrameWindow : Window
 {
-    private readonly PhysicalRect _crop;
+    private PhysicalRect _crop;
     private IntPtr _handle;
     private bool _prepared;
     private bool _closed;
@@ -82,6 +82,22 @@ public partial class RecordingFrameWindow : Window
 
         _closed = true;
         Close();
+    }
+
+    /// <summary>窗口录制时边框跟随目标窗口的可见区域移动。</summary>
+    internal void UpdateCrop(PhysicalRect crop)
+    {
+        if (_closed || crop.Equals(_crop))
+        {
+            return;
+        }
+
+        _crop = crop;
+
+        if (IsVisible)
+        {
+            PlaceWindow();
+        }
     }
 
     private void ApplyStyles()

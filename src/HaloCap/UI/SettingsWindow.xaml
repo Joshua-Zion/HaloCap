@@ -1095,6 +1095,309 @@
                                               HorizontalScrollBarVisibility="Disabled"
                                               Focusable="False">
                                     <StackPanel Margin="0,0,4,20">
+                                        <TextBlock Text="画面" Style="{StaticResource GroupLabelStyle}" />
+                                        <Border Style="{StaticResource CardStyle}">
+                                            <StackPanel>
+                                                <Border Padding="16,14">
+                                                    <Grid>
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="*" />
+                                                            <ColumnDefinition Width="Auto" />
+                                                        </Grid.ColumnDefinitions>
+
+                                                        <StackPanel VerticalAlignment="Center"
+                                                                    Margin="0,0,18,0">
+                                                            <TextBlock Text="输出分辨率"
+                                                                       Style="{StaticResource SettingTitleStyle}" />
+                                                            <TextBlock Text="只缩小不放大；选中的档位高于选区时按原始尺寸输出"
+                                                                       Style="{StaticResource SettingDescStyle}" />
+                                                        </StackPanel>
+
+                                                        <Border Grid.Column="1"
+                                                                Background="#FFF0F0F3"
+                                                                BorderBrush="#FFE2E2E7"
+                                                                BorderThickness="1"
+                                                                CornerRadius="8"
+                                                                Padding="2"
+                                                                VerticalAlignment="Center">
+                                                            <StackPanel Orientation="Horizontal">
+                                                                <RadioButton x:Name="RecordResolutionOriginalRadio"
+                                                                             GroupName="RecordResolution"
+                                                                             Tag="Original"
+                                                                             Content="原始"
+                                                                             Width="54"
+                                                                             Style="{StaticResource SegmentOptionStyle}"
+                                                                             Checked="RecordOptionRadio_Checked"
+                                                                             AutomationProperties.Name="原始分辨率录制" />
+                                                                <RadioButton x:Name="RecordResolution2160Radio"
+                                                                             GroupName="RecordResolution"
+                                                                             Tag="P2160"
+                                                                             Content="2160p"
+                                                                             Width="54"
+                                                                             Style="{StaticResource SegmentOptionStyle}"
+                                                                             Checked="RecordOptionRadio_Checked"
+                                                                             AutomationProperties.Name="2160p 录制" />
+                                                                <RadioButton x:Name="RecordResolution1440Radio"
+                                                                             GroupName="RecordResolution"
+                                                                             Tag="P1440"
+                                                                             Content="1440p"
+                                                                             Width="54"
+                                                                             Style="{StaticResource SegmentOptionStyle}"
+                                                                             Checked="RecordOptionRadio_Checked"
+                                                                             AutomationProperties.Name="1440p 录制" />
+                                                                <RadioButton x:Name="RecordResolution1080Radio"
+                                                                             GroupName="RecordResolution"
+                                                                             Tag="P1080"
+                                                                             Content="1080p"
+                                                                             Width="54"
+                                                                             Style="{StaticResource SegmentOptionStyle}"
+                                                                             Checked="RecordOptionRadio_Checked"
+                                                                             AutomationProperties.Name="1080p 录制" />
+                                                                <RadioButton x:Name="RecordResolution720Radio"
+                                                                             GroupName="RecordResolution"
+                                                                             Tag="P720"
+                                                                             Content="720p"
+                                                                             Width="54"
+                                                                             Style="{StaticResource SegmentOptionStyle}"
+                                                                             Checked="RecordOptionRadio_Checked"
+                                                                             AutomationProperties.Name="720p 录制" />
+                                                            </StackPanel>
+                                                        </Border>
+                                                    </Grid>
+                                                </Border>
+
+                                                <Rectangle Style="{StaticResource RowDividerStyle}" />
+
+                                                <Border Padding="16,14">
+                                                    <Grid>
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="*" />
+                                                            <ColumnDefinition Width="Auto" />
+                                                        </Grid.ColumnDefinitions>
+
+                                                        <StackPanel VerticalAlignment="Center"
+                                                                    Margin="0,0,18,0">
+                                                            <TextBlock Text="帧率"
+                                                                       Style="{StaticResource SettingTitleStyle}" />
+                                                            <TextBlock x:Name="FrameRateDescText"
+                                                                       Text="30fps 足够流畅，60fps 需要更强的机器"
+                                                                       Style="{StaticResource SettingDescStyle}" />
+                                                        </StackPanel>
+
+                                                        <Border Grid.Column="1"
+                                                                Background="#FFF0F0F3"
+                                                                BorderBrush="#FFE2E2E7"
+                                                                BorderThickness="1"
+                                                                CornerRadius="8"
+                                                                Padding="2"
+                                                                VerticalAlignment="Center">
+                                                            <StackPanel Orientation="Horizontal">
+                                                                <RadioButton x:Name="RecordFps30Radio"
+                                                                             GroupName="RecordFrameRate"
+                                                                             Tag="Thirty"
+                                                                             Content="30fps"
+                                                                             Width="64"
+                                                                             Style="{StaticResource SegmentOptionStyle}"
+                                                                             Checked="RecordOptionRadio_Checked"
+                                                                             AutomationProperties.Name="30 帧录制" />
+                                                                <RadioButton x:Name="RecordFps60Radio"
+                                                                             GroupName="RecordFrameRate"
+                                                                             Tag="Sixty"
+                                                                             Content="60fps"
+                                                                             Width="64"
+                                                                             Style="{StaticResource SegmentOptionStyle}"
+                                                                             Checked="RecordOptionRadio_Checked"
+                                                                             AutomationProperties.Name="60 帧录制" />
+                                                            </StackPanel>
+                                                        </Border>
+                                                    </Grid>
+                                                </Border>
+
+                                                <Rectangle Style="{StaticResource RowDividerStyle}" />
+
+                                                <Border Padding="16,14">
+                                                    <Grid>
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="*" />
+                                                            <ColumnDefinition Width="Auto" />
+                                                        </Grid.ColumnDefinitions>
+
+                                                        <StackPanel VerticalAlignment="Center"
+                                                                    Margin="0,0,18,0">
+                                                            <TextBlock Text="画质"
+                                                                       Style="{StaticResource SettingTitleStyle}" />
+                                                            <TextBlock x:Name="QualityDescText"
+                                                                       Text="均衡：码率随分辨率与帧率自动计算"
+                                                                       Style="{StaticResource SettingDescStyle}" />
+                                                        </StackPanel>
+
+                                                        <Border Grid.Column="1"
+                                                                Background="#FFF0F0F3"
+                                                                BorderBrush="#FFE2E2E7"
+                                                                BorderThickness="1"
+                                                                CornerRadius="8"
+                                                                Padding="2"
+                                                                VerticalAlignment="Center">
+                                                            <StackPanel Orientation="Horizontal">
+                                                                <RadioButton x:Name="RecordQualityHighRadio"
+                                                                             GroupName="RecordQuality"
+                                                                             Tag="High"
+                                                                             Content="高"
+                                                                             Width="62"
+                                                                             Style="{StaticResource SegmentOptionStyle}"
+                                                                             Checked="RecordOptionRadio_Checked"
+                                                                             AutomationProperties.Name="高画质录制" />
+                                                                <RadioButton x:Name="RecordQualityBalancedRadio"
+                                                                             GroupName="RecordQuality"
+                                                                             Tag="Balanced"
+                                                                             Content="均衡"
+                                                                             Width="62"
+                                                                             Style="{StaticResource SegmentOptionStyle}"
+                                                                             Checked="RecordOptionRadio_Checked"
+                                                                             AutomationProperties.Name="均衡画质录制" />
+                                                                <RadioButton x:Name="RecordQualityCompactRadio"
+                                                                             GroupName="RecordQuality"
+                                                                             Tag="Compact"
+                                                                             Content="紧凑"
+                                                                             Width="62"
+                                                                             Style="{StaticResource SegmentOptionStyle}"
+                                                                             Checked="RecordOptionRadio_Checked"
+                                                                             AutomationProperties.Name="紧凑画质录制" />
+                                                            </StackPanel>
+                                                        </Border>
+                                                    </Grid>
+                                                </Border>
+                                            </StackPanel>
+                                        </Border>
+
+                                        <TextBlock Text="控制" Style="{StaticResource GroupLabelStyle}" />
+                                        <Border Style="{StaticResource CardStyle}">
+                                            <StackPanel>
+                                                <Border Padding="16,14">
+                                                    <Grid>
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="*" />
+                                                            <ColumnDefinition Width="Auto" />
+                                                        </Grid.ColumnDefinitions>
+
+                                                        <StackPanel VerticalAlignment="Center"
+                                                                    Margin="0,0,18,0">
+                                                            <TextBlock Text="录制范围"
+                                                                       Style="{StaticResource SettingTitleStyle}" />
+                                                            <TextBlock Text="窗口模式只录目标窗口，窗口关闭或最小化时自动保存"
+                                                                       Style="{StaticResource SettingDescStyle}" />
+                                                        </StackPanel>
+
+                                                        <Border Grid.Column="1"
+                                                                Background="#FFF0F0F3"
+                                                                BorderBrush="#FFE2E2E7"
+                                                                BorderThickness="1"
+                                                                CornerRadius="8"
+                                                                Padding="2"
+                                                                VerticalAlignment="Center">
+                                                            <StackPanel Orientation="Horizontal">
+                                                                <RadioButton x:Name="RecordRangeRegionRadio"
+                                                                             GroupName="RecordRange"
+                                                                             Tag="Region"
+                                                                             Content="区域"
+                                                                             Width="64"
+                                                                             Style="{StaticResource SegmentOptionStyle}"
+                                                                             Checked="RecordOptionRadio_Checked"
+                                                                             AutomationProperties.Name="录制区域" />
+                                                                <RadioButton x:Name="RecordRangeWindowRadio"
+                                                                             GroupName="RecordRange"
+                                                                             Tag="Window"
+                                                                             Content="窗口"
+                                                                             Width="64"
+                                                                             Style="{StaticResource SegmentOptionStyle}"
+                                                                             Checked="RecordOptionRadio_Checked"
+                                                                             AutomationProperties.Name="录制窗口" />
+                                                            </StackPanel>
+                                                        </Border>
+                                                    </Grid>
+                                                </Border>
+
+                                                <Rectangle Style="{StaticResource RowDividerStyle}" />
+
+                                                <Border Padding="16,14">
+                                                    <Grid>
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="*" />
+                                                            <ColumnDefinition Width="Auto" />
+                                                        </Grid.ColumnDefinitions>
+
+                                                        <StackPanel VerticalAlignment="Center"
+                                                                    Margin="0,0,18,0">
+                                                            <TextBlock Text="倒计时"
+                                                                       Style="{StaticResource SettingTitleStyle}" />
+                                                            <TextBlock Text="选区确定后先倒数，再开始采集，方便准备画面"
+                                                                       Style="{StaticResource SettingDescStyle}" />
+                                                        </StackPanel>
+
+                                                        <Border Grid.Column="1"
+                                                                Background="#FFF0F0F3"
+                                                                BorderBrush="#FFE2E2E7"
+                                                                BorderThickness="1"
+                                                                CornerRadius="8"
+                                                                Padding="2"
+                                                                VerticalAlignment="Center">
+                                                            <StackPanel Orientation="Horizontal">
+                                                                <RadioButton x:Name="RecordCountdownOffRadio"
+                                                                             GroupName="RecordCountdown"
+                                                                             Tag="Off"
+                                                                             Content="关闭"
+                                                                             Width="62"
+                                                                             Style="{StaticResource SegmentOptionStyle}"
+                                                                             Checked="RecordOptionRadio_Checked"
+                                                                             AutomationProperties.Name="不倒计时" />
+                                                                <RadioButton x:Name="RecordCountdown3Radio"
+                                                                             GroupName="RecordCountdown"
+                                                                             Tag="ThreeSeconds"
+                                                                             Content="3 秒"
+                                                                             Width="62"
+                                                                             Style="{StaticResource SegmentOptionStyle}"
+                                                                             Checked="RecordOptionRadio_Checked"
+                                                                             AutomationProperties.Name="三秒倒计时" />
+                                                                <RadioButton x:Name="RecordCountdown5Radio"
+                                                                             GroupName="RecordCountdown"
+                                                                             Tag="FiveSeconds"
+                                                                             Content="5 秒"
+                                                                             Width="62"
+                                                                             Style="{StaticResource SegmentOptionStyle}"
+                                                                             Checked="RecordOptionRadio_Checked"
+                                                                             AutomationProperties.Name="五秒倒计时" />
+                                                            </StackPanel>
+                                                        </Border>
+                                                    </Grid>
+                                                </Border>
+
+                                                <Rectangle Style="{StaticResource RowDividerStyle}" />
+
+                                                <Border Padding="16,13">
+                                                    <Grid>
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="*" />
+                                                            <ColumnDefinition Width="Auto" />
+                                                        </Grid.ColumnDefinitions>
+
+                                                        <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
+                                                            <TextBlock Text="录制光标"
+                                                                       Style="{StaticResource SettingTitleStyle}" />
+                                                            <TextBlock Text="关闭后视频里不出现鼠标指针"
+                                                                       Style="{StaticResource SettingDescStyle}" />
+                                                        </StackPanel>
+
+                                                        <ToggleButton x:Name="RecordCursorToggle"
+                                                                      Grid.Column="1"
+                                                                      VerticalAlignment="Center"
+                                                                      Style="{StaticResource ToggleSwitchStyle}"
+                                                                      ToolTip="把鼠标指针录进视频"
+                                                                      AutomationProperties.Name="录制光标" />
+                                                    </Grid>
+                                                </Border>
+                                            </StackPanel>
+                                        </Border>
+
                                         <TextBlock Text="存储" Style="{StaticResource GroupLabelStyle}" />
                                         <Border Style="{StaticResource CardStyle}">
                                             <StackPanel Margin="16,14">
@@ -1129,12 +1432,19 @@
                                                            Foreground="{StaticResource TextTertiaryBrush}"
                                                            TextWrapping="Wrap"
                                                            Margin="2,8,0,0" />
+
+                                                <TextBlock x:Name="RecordingSummaryText"
+                                                           FontSize="10.5"
+                                                           Foreground="{StaticResource TextSecondaryBrush}"
+                                                           TextWrapping="Wrap"
+                                                           Margin="2,12,0,0" />
                                             </StackPanel>
                                         </Border>
 
-                                        <TextBlock Text="当前仅录制画面，不含麦克风或系统声音。"
+                                        <TextBlock Text="当前仅录制画面，不含麦克风与系统声音（计划在 v1.6）；录制与编码全部在本机完成，不访问网络。"
                                                    FontSize="10.5"
                                                    Foreground="{StaticResource TextTertiaryBrush}"
+                                                   TextWrapping="Wrap"
                                                    Margin="4,12,0,0" />
                                     </StackPanel>
                                 </ScrollViewer>

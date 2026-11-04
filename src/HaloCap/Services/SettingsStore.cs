@@ -42,6 +42,9 @@ internal static class SettingsStore
             settings.Ocr ??= new OcrSettings();
             settings.Ocr.Normalize();
 
+            settings.Recording ??= new RecordingSettings();
+            settings.Recording.Normalize();
+
             var defaults = new AppSettings();
             foreach (var action in new[]
                      {

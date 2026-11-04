@@ -91,6 +91,7 @@ public partial class App : Application
     {
         _settings = SettingsStore.Load();
         _settings.Ocr ??= new OcrSettings();
+        _settings.Recording ??= new RecordingSettings();
 
         _radial = new RadialMenuController(_settings.Hotkey, _settings.MenuSize)
         {
@@ -408,11 +409,13 @@ public partial class App : Application
             GetActionHotkeys(),
             _autoStart.IsEnabled(),
             _recording?.IsRecording == true,
+            _recording?.IsPaused == true,
             _clipboardPin.CanPin);
 
         menu.OpenRequested += (_, _) => Defer(ShowRadialFromTray);
         menu.SettingsRequested += (_, _) => Defer(OpenSettings);
         menu.ActionRequested += action => Defer(() => TriggerAction(action, RadialActionDelayMs));
+        menu.PauseRecordingRequested += (_, _) => Defer(ToggleRecordingPause);
         menu.AutoStartToggleRequested += enabled => Defer(() => ToggleAutoStartFromTray(enabled));
         menu.ExitRequested += (_, _) => Defer(ExitApplication);
         menu.Closed += (_, _) =>
@@ -458,7 +461,9 @@ public partial class App : Application
             ApplyRecordingDirectory,
             ApplyConvertFilePathsToImages,
             _settings.Ocr.Clone(),
-            ApplyOcrSettings);
+            ApplyOcrSettings,
+            _settings.Recording.Clone(),
+            ApplyRecordingSettings);
 
         _settingsWindow = window;
         window.Closed += (_, _) =>
@@ -771,6 +776,37 @@ public partial class App : Application
         }
     }
 
+    private string? ApplyRecordingSettings(RecordingSettings settings)
+    {
+        settings.Normalize();
+
+        if (_settings.Recording.ValueEquals(settings))
+        {
+            return null;
+        }
+
+        var previous = _settings.Recording;
+        _settings.Recording = settings.Clone();
+
+        try
+        {
+            SettingsStore.Save(_settings);
+
+            if (_recording?.IsRecording == true)
+            {
+                Log.Info("录屏参数已保存，下一次录制生效。");
+            }
+
+            return null;
+        }
+        catch (Exception ex)
+        {
+            _settings.Recording = previous;
+            Log.Error("保存录屏设置失败", ex);
+            return "录屏设置保存失败：" + ex.Message;
+        }
+    }
+
     private string? ApplyOcrSettings(OcrSettings settings)
     {
         settings.Normalize();
@@ -924,7 +960,11 @@ public partial class App : Application
                 return;
             }
 
-            var session = await ScreenshotSession.StartAsync(mode, HandleCaptureCompleted);
+            var session = await ScreenshotSession.StartAsync(
+                mode,
+                HandleCaptureCompleted,
+                mode == CaptureSessionMode.Record &&
+                _settings.Recording.Range == RecordingRange.Window);
 
             if (_isExiting || generation != _captureGeneration)
             {
@@ -1218,6 +1258,17 @@ public partial class App : Application
             return;
         }
 
+        var windowRange = _settings.Recording.Range == RecordingRange.Window;
+
+        if (windowRange && result.WindowHandle == IntPtr.Zero)
+        {
+            _tray?.ShowNotification(
+                "录屏未开始",
+                "没有识别到可录制的窗口，请在选区中心保留目标窗口后重试。",
+                Forms.ToolTipIcon.Warning);
+            return;
+        }
+
         var generation = ++_captureGeneration;
         _captureStarting = true;
         _captureStartedAt = Environment.TickCount64;
@@ -1231,10 +1282,12 @@ public partial class App : Application
                 return;
             }
 
-            await _recording.StartAsync(
+            await _recording.StartAsync(new RecordingRequest(
                 result.Monitor,
                 result.PhysicalRect,
-                _settings.RecordingDirectory);
+                result.WindowHandle,
+                _settings.Recording,
+                _settings.RecordingDirectory));
         }
         catch (Exception ex)
         {
@@ -1252,6 +1305,17 @@ public partial class App : Application
                 _captureStartedAt = 0;
             }
         }
+    }
+
+    private void ToggleRecordingPause()
+    {
+        if (_recording is not { IsRecording: true })
+        {
+            return;
+        }
+
+        _recording.TogglePause();
+        _tray?.SetRecordingState(true, _recording.IsPaused);
     }
 
     private void StopRecordingFromTray() => _ = StopRecordingAsync();
@@ -1276,19 +1340,32 @@ public partial class App : Application
 
     private void OnRecordingStateChanged()
     {
-        _tray?.SetRecordingState(_recording?.IsRecording == true);
+        _tray?.SetRecordingState(_recording?.IsRecording == true, _recording?.IsPaused == true);
     }
 
-    private void OnRecordingSaved(string path)
+    private void OnRecordingSaved(RecordingOutput output)
     {
         try
         {
+            var seconds = output.Duration.TotalSeconds;
+            var duration = seconds >= 60
+                ? $"{(int)seconds / 60:00}:{seconds % 60:00}"
+                : $"{seconds:0.0} 秒";
+            var size = output.Bytes >= 1024L * 1024 * 1024
+                ? $"{output.Bytes / 1024.0 / 1024.0 / 1024.0:0.##} GB"
+                : $"{output.Bytes / 1024.0 / 1024.0:0.##} MB";
+            var dropped = output.DroppedFrames > 0
+                ? $" · 丢帧 {output.DroppedFrames}"
+                : string.Empty;
+
             _tray?.ShowNotificationWithAction(
                 "录屏已保存",
-                Path.GetFileName(path) + " · 单击定位文件",
-                path,
+                $"{Path.GetFileName(output.Path)} · {duration} · {output.Width}×{output.Height}{size}{dropped} · 单击定位文件",
+                output.Path,
                 Forms.ToolTipIcon.Info);
-            Log.Info("录屏已保存：" + path);
+            Log.Info(
+                $"录屏已保存：{output.Path}（{duration}，{output.EncodedFrames} 帧，" +
+                $"{(output.HardwareEncoder ? "硬件" : "软件")}编码{dropped}）");
         }
         catch (Exception ex)
         {

@@ -1,8 +1,8 @@
 using System;
-using System.Buffers;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using HaloCap.Diagnostics;
@@ -12,88 +12,145 @@ using Windows.Foundation.Metadata;
 using Windows.Graphics.Capture;
 using Windows.Graphics.DirectX;
 using Windows.Graphics.DirectX.Direct3D11;
-using Windows.Graphics.Imaging;
-using Windows.Storage.Streams;
-using WinRtBuffer = Windows.Storage.Streams.Buffer;
 
 namespace HaloCap.Services;
 
+/// <summary>
+/// 一次录屏的采集与编码会话。选区在 GPU 上裁剪后再回到 CPU，只搬运选区大小的像素，
+/// 并按设置下采样、限速到目标帧率；暂停时冻结时间轴，恢复后时长继续而不出现跳帧。
+/// </summary>
 internal sealed class RecordingSession : IDisposable
 {
-    private const int FramesPerSecond = 30;
-    private const int FrameDuration = 333_333;
+    private const long TicksPerSecond = 10_000_000L;
     private const int MaxQueueDepth = 3;
+    private const int LargeFrameThresholdBytes = 12_000_000;
 
-    private readonly ScreenMonitor _monitor;
-    private readonly PhysicalRect _crop;
+    private readonly GraphicsCaptureItem _item;
     private readonly string _path;
-    private readonly int _captureWidth;
-    private readonly int _captureHeight;
-    private readonly int _frameWidth;
-    private readonly int _frameHeight;
-    private readonly int _frameBytes;
-    private readonly int _bitrate;
-    private readonly byte[] _fullFrame;
-    private readonly BlockingCollection<FramePacket> _queue = new(MaxQueueDepth);
+    private readonly RecordingPlan _plan;
+    private readonly Func<PhysicalRect> _cropResolver;
+    private readonly bool _isWindow;
     private readonly TaskCompletionSource<bool> _encoderReady =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly TaskCompletionSource<Exception?> _encoderCompleted =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly BlockingCollection<int> _queue = new();
+    private readonly ConcurrentQueue<int> _freeBuffers = new();
     private readonly Stopwatch _clock = new();
     private readonly object _stopLock = new();
+    private readonly object _captureLock = new();
+    private readonly long _frameInterval;
 
-    private GraphicsCaptureItem? _item;
-    private IDirect3DDevice? _device;
+    private byte[][]? _frameBuffers;
+    private long[]? _frameTimestamps;
+    private byte[]? _cropScratch;
+    private int _cropStride;
+    private int _cropWidth;
+    private int _cropHeight;
+    private int _surfaceWidth;
+    private int _surfaceHeight;
+    private int _frameBytes;
+    private int _queueCapacity;
+    private int _bufferCount;
+    private D3D11CropCopier? _copier;
+    private Direct3DDeviceHolder? _deviceHolder;
     private Direct3D11CaptureFramePool? _framePool;
     private GraphicsCaptureSession? _captureSession;
-    private WinRtBuffer? _frameBuffer;
     private Thread? _encoderThread;
     private Task<string>? _stopTask;
     private int _frameBusy;
+    private int _reconfigureScheduled;
     private int _encodedFrames;
-    private long _lastFrameTimestamp = -1;
+    private long _droppedFrames;
+    private int _refreshCount;
+    private long _lastAcceptedTimestamp = -1;
     private long _firstTimestamp = -1;
+    private long _pausedTotal;
+    private long _pauseStartedAt = -1;
     private long _stoppedTimestamp = -1;
     private bool _captureStarted;
     private bool _encoderThreadStarted;
     private bool _disposed;
     private volatile bool _stopping;
+    private volatile bool _isPaused;
 
-    internal RecordingSession(ScreenMonitor monitor, PhysicalRect crop, string path)
+    internal RecordingSession(
+        GraphicsCaptureItem item,
+        string path,
+        RecordingPlan plan,
+        Func<PhysicalRect> cropResolver,
+        bool isWindow)
     {
-        _monitor = monitor;
-        _crop = crop;
+        _item = item;
         _path = path;
-        _captureWidth = monitor.Bounds.Width;
-        _captureHeight = monitor.Bounds.Height;
-        _frameWidth = crop.Width;
-        _frameHeight = crop.Height;
-        _frameBytes = checked(_frameWidth * _frameHeight * 4);
-        _fullFrame = new byte[checked(_captureWidth * _captureHeight * 4)];
-        _bitrate = (int)Math.Clamp((long)_frameWidth * _frameHeight * FramesPerSecond / 8, 2_000_000, 20_000_000);
+        _plan = plan;
+        _cropResolver = cropResolver;
+        _isWindow = isWindow;
+        _frameInterval = TicksPerSecond / Math.Max(1, plan.FramesPerSecond);
 
-        if (crop.Left < 0 ||
-            crop.Top < 0 ||
-            crop.Right > _captureWidth ||
-            crop.Bottom > _captureHeight)
+        if (string.IsNullOrEmpty(path))
         {
-            throw new InvalidOperationException("录制区域超出显示器范围。");
+            throw new ArgumentException("录制文件路径不能为空。", nameof(path));
         }
 
-        if ((crop.Width & 1) != 0 || (crop.Height & 1) != 0)
+        if (plan.OutputWidth < 16 || plan.OutputHeight < 16)
         {
-            throw new InvalidOperationException("录制区域尺寸必须为偶数。");
+            throw new InvalidOperationException("录制输出尺寸太小，请重新选择区域。");
         }
 
-        if (crop.Width < 16 || crop.Height < 16)
+        if ((plan.OutputWidth & 1) != 0 || (plan.OutputHeight & 1) != 0)
         {
-            throw new InvalidOperationException("录制区域太小，请选择至少 16 × 16 像素。");
+            throw new InvalidOperationException("录制输出尺寸必须为偶数。");
         }
+
+        _frameBytes = checked(plan.OutputWidth * plan.OutputHeight * 4);
+        _queueCapacity = _frameBytes > LargeFrameThresholdBytes ? 2 : MaxQueueDepth;
+        _bufferCount = _queueCapacity + 1;
     }
 
     internal event Action<Exception>? Faulted;
 
+    internal event Action? CaptureItemClosed;
+
     internal string OutputPath => _path;
+
+    internal bool IsPaused => _isPaused;
+
+    internal int OutputWidth => _plan.OutputWidth;
+
+    internal int OutputHeight => _plan.OutputHeight;
+
+    internal int FramesPerSecond => _plan.FramesPerSecond;
+
+    internal int EncodedFrames => _encodedFrames;
+
+    internal long DroppedFrames => Interlocked.Read(ref _droppedFrames);
+
+    /// <summary>录制源尺寸变化后重建捕获的次数。</summary>
+    internal int RefreshCount => Volatile.Read(ref _refreshCount);
+
+    internal bool UsesHardwareEncoder { get; private set; }
+
+    /// <summary>不含暂停时长的已录制时间，单位 100 纳秒。</summary>
+    internal long ActiveElapsed100Ns
+    {
+        get
+        {
+            var stopped = Interlocked.Read(ref _stoppedTimestamp);
+
+            if (stopped >= 0)
+            {
+                return Math.Max(0, stopped);
+            }
+
+            if (!_clock.IsRunning)
+            {
+                return 0;
+            }
+
+            return Math.Max(0, ReadTimestamp());
+        }
+    }
 
     internal async Task StartAsync()
     {
@@ -114,44 +171,10 @@ internal sealed class RecordingSession : IDisposable
                 throw new InvalidOperationException("当前系统或显卡驱动不支持 Windows 屏幕捕获。");
             }
 
-            _item = WinRtCaptureInterop.CreateItemForMonitor(_monitor.Handle);
-            var size = _item.Size;
+            _deviceHolder = WinRtCaptureInterop.CreateDirect3DDeviceHolder();
+            _copier = new D3D11CropCopier(_deviceHolder.NativeDevice, _deviceHolder.NativeContext);
 
-            if (size.Width != _captureWidth || size.Height != _captureHeight)
-            {
-                throw new InvalidOperationException("显示器分辨率已变化，请重新选择录制区域。");
-            }
-
-            _device = WinRtCaptureInterop.CreateDirect3DDevice();
-            _framePool = Direct3D11CaptureFramePool.CreateFreeThreaded(
-                _device,
-                DirectXPixelFormat.B8G8R8A8UIntNormalized,
-                2,
-                size);
-
-            _framePool.FrameArrived += OnFrameArrived;
-            _captureSession = _framePool.CreateCaptureSession(_item);
-
-            try
-            {
-                // Windows 10 2004 才加入此属性；1903/1909 上保持系统默认（包含光标）。
-                if (ApiInformation.IsPropertyPresent(
-                        "Windows.Graphics.Capture.GraphicsCaptureSession",
-                        "IsCursorCaptureEnabled"))
-                {
-                    _captureSession.IsCursorCaptureEnabled = true;
-                }
-            }
-            catch
-            {
-                // 属性查询失败时使用系统默认值。
-            }
-
-            _frameBuffer = new WinRtBuffer((uint)_fullFrame.Length)
-            {
-                Length = (uint)_fullFrame.Length
-            };
-
+            AllocateBuffers();
             StartEncoderThread();
             await _encoderReady.Task.ConfigureAwait(true);
 
@@ -161,14 +184,67 @@ internal sealed class RecordingSession : IDisposable
             }
 
             _clock.Start();
-            _captureSession.StartCapture();
-            _captureStarted = true;
+
+            lock (_captureLock)
+            {
+                StartCapture();
+            }
+
+            _item.Closed += OnItemClosed;
         }
         catch
         {
             Dispose();
             throw;
         }
+    }
+
+    internal void Pause()
+    {
+        if (_disposed || _stopping || _isPaused)
+        {
+            return;
+        }
+
+        _pauseStartedAt = ReadRawTimestamp();
+        _isPaused = true;
+    }
+
+    internal void Resume()
+    {
+        if (!_isPaused)
+        {
+            return;
+        }
+
+        var paused = ReadRawTimestamp() - _pauseStartedAt;
+
+        if (paused > 0)
+        {
+            Interlocked.Add(ref _pausedTotal, paused);
+        }
+
+        _pauseStartedAt = -1;
+        _isPaused = false;
+        _lastAcceptedTimestamp = -1;
+    }
+
+    /// <summary>录制源（窗口或显示器）尺寸变化时由服务端的轮询调用，重建捕获管线。</summary>
+    internal void RefreshIfSourceResized()
+    {
+        if (_disposed || _stopping || _reconfigureScheduled != 0)
+        {
+            return;
+        }
+
+        var size = _item.Size;
+
+        if (size.Width == _surfaceWidth && size.Height == _surfaceHeight)
+        {
+            return;
+        }
+
+        ScheduleReconfigure();
     }
 
     internal Task<string> StopAsync()
@@ -187,11 +263,20 @@ internal sealed class RecordingSession : IDisposable
         }
 
         _stopping = true;
+
+        if (_isPaused)
+        {
+            Resume();
+        }
+
+        MarkStopped();
+
+        lock (_captureLock)
+        {
+            DisposeCapture();
+        }
+
         _clock.Stop();
-        Interlocked.Exchange(
-            ref _stoppedTimestamp,
-            (long)(_clock.ElapsedTicks * (10_000_000.0 / Stopwatch.Frequency)));
-        DisposeCapture();
 
         try
         {
@@ -202,7 +287,7 @@ internal sealed class RecordingSession : IDisposable
             // 编码线程已经结束。
         }
 
-        var timeout = Task.Delay(TimeSpan.FromSeconds(20));
+        var timeout = Task.Delay(TimeSpan.FromSeconds(25));
         var finished = await Task.WhenAny(_encoderCompleted.Task, timeout).ConfigureAwait(false);
 
         if (finished != _encoderCompleted.Task)
@@ -228,6 +313,7 @@ internal sealed class RecordingSession : IDisposable
         }
 
         var info = new FileInfo(_path);
+
         if (!info.Exists || info.Length == 0)
         {
             TryDeleteFile();
@@ -235,6 +321,18 @@ internal sealed class RecordingSession : IDisposable
         }
 
         return _path;
+    }
+
+    private void AllocateBuffers()
+    {
+        _frameBuffers = new byte[_bufferCount][];
+        _frameTimestamps = new long[_bufferCount];
+
+        for (var index = 0; index < _bufferCount; index++)
+        {
+            _frameBuffers[index] = new byte[_frameBytes];
+            _freeBuffers.Enqueue(index);
+        }
     }
 
     private void StartEncoderThread()
@@ -253,6 +351,7 @@ internal sealed class RecordingSession : IDisposable
     {
         MediaFoundationWriter? writer = null;
         var comInitialized = false;
+        var pending = -1;
 
         try
         {
@@ -261,56 +360,47 @@ internal sealed class RecordingSession : IDisposable
 
             writer = new MediaFoundationWriter(
                 _path,
-                _frameWidth,
-                _frameHeight,
-                FramesPerSecond,
-                _bitrate);
+                _plan.OutputWidth,
+                _plan.OutputHeight,
+                _plan.FramesPerSecond,
+                _plan.Bitrate);
 
+            UsesHardwareEncoder = writer.UsesHardwareEncoder;
             _encoderReady.TrySetResult(true);
 
-            FramePacket? pending = null;
+            var buffers = _frameBuffers!;
+            var timestamps = _frameTimestamps!;
 
-            try
+            foreach (var index in _queue.GetConsumingEnumerable())
             {
-                foreach (var packet in _queue.GetConsumingEnumerable())
+                if (pending >= 0)
                 {
-                    if (pending is not null)
-                    {
-                        var duration = Math.Clamp(
-                            packet.Timestamp - pending.Timestamp,
-                            10_000L,
-                            1_000_000L);
-                        WritePacket(writer, pending, duration);
-                        pending = null;
-                    }
-
-                    if (_firstTimestamp < 0)
-                    {
-                        _firstTimestamp = packet.Timestamp;
-                    }
-
-                    pending = packet;
+                    var duration = Math.Clamp(
+                        timestamps[index] - timestamps[pending],
+                        10_000L,
+                        TicksPerSecond);
+                    WritePacket(writer, buffers, timestamps, pending, duration);
                 }
 
-                if (pending is not null)
+                if (_firstTimestamp < 0)
                 {
-                    // 静态画面下 WGC 可能长时间不再送帧；用最后一帧覆盖到停止时刻，
-                    // 保证 MP4 时长与录制时长一致。
-                    var stopped = Interlocked.Read(ref _stoppedTimestamp);
-                    var finalDuration = stopped > pending.Timestamp
-                        ? Math.Max(FrameDuration, stopped - pending.Timestamp)
-                        : FrameDuration;
-
-                    WritePacket(writer, pending, finalDuration);
-                    pending = null;
+                    _firstTimestamp = timestamps[index];
                 }
+
+                pending = index;
             }
-            finally
+
+            if (pending >= 0)
             {
-                if (pending is not null)
-                {
-                    ArrayPool<byte>.Shared.Return(pending.Buffer);
-                }
+                // 静态画面下 WGC 可能长时间不再送帧；用最后一帧覆盖到停止时刻，
+                // 保证 MP4 时长与录制时长一致。
+                var stopped = Interlocked.Read(ref _stoppedTimestamp);
+                var finalDuration = stopped > timestamps[pending]
+                    ? Math.Max(_frameInterval, stopped - timestamps[pending])
+                    : _frameInterval;
+
+                WritePacket(writer, buffers, timestamps, pending, finalDuration);
+                pending = -1;
             }
 
             if (_encodedFrames == 0)
@@ -334,6 +424,11 @@ internal sealed class RecordingSession : IDisposable
         }
         finally
         {
+            if (pending >= 0)
+            {
+                _freeBuffers.Enqueue(pending);
+            }
+
             if (writer is not null)
             {
                 try
@@ -353,23 +448,28 @@ internal sealed class RecordingSession : IDisposable
         }
     }
 
-    private void WritePacket(MediaFoundationWriter writer, FramePacket packet, long duration)
+    private void WritePacket(
+        MediaFoundationWriter writer,
+        byte[][] buffers,
+        long[] timestamps,
+        int index,
+        long duration)
     {
         try
         {
-            var timestamp = Math.Max(0, packet.Timestamp - _firstTimestamp);
-            writer.WriteFrame(packet.Buffer, timestamp, duration);
+            var timestamp = Math.Max(0, timestamps[index] - _firstTimestamp);
+            writer.WriteFrame(buffers[index], timestamp, duration);
             _encodedFrames++;
         }
         finally
         {
-            ArrayPool<byte>.Shared.Return(packet.Buffer);
+            _freeBuffers.Enqueue(index);
         }
     }
 
-    private async void OnFrameArrived(Direct3D11CaptureFramePool sender, object args)
+    private void OnFrameArrived(Direct3D11CaptureFramePool sender, object args)
     {
-        if (_stopping || _disposed)
+        if (_disposed || _stopping)
         {
             return;
         }
@@ -382,36 +482,50 @@ internal sealed class RecordingSession : IDisposable
         try
         {
             using var frame = sender.TryGetNextFrame();
-            if (frame is null)
+
+            if (frame is null || _isPaused)
+            {
+                // 暂停时仍要把帧取出来丢弃，否则帧池缓冲会被占满，恢复后拿到的是旧画面。
+                return;
+            }
+
+            if (!Monitor.TryEnter(_captureLock, TimeSpan.FromMilliseconds(500)))
             {
                 return;
             }
 
-            var timestamp = (long)(_clock.ElapsedTicks * (10_000_000.0 / Stopwatch.Frequency));
-
-            if (timestamp == _lastFrameTimestamp)
+            try
             {
-                return;
+                if (_disposed || _stopping || _reconfigureScheduled != 0)
+                {
+                    return;
+                }
+
+                var timestamp = ReadTimestamp();
+
+                if (timestamp - _lastAcceptedTimestamp < _frameInterval)
+                {
+                    return;
+                }
+
+                var size = _item.Size;
+
+                if (size.Width != _surfaceWidth || size.Height != _surfaceHeight)
+                {
+                    ScheduleReconfigure();
+                    return;
+                }
+
+                if (!TryBuildPacket(frame.Surface, timestamp))
+                {
+                    return;
+                }
+
+                _lastAcceptedTimestamp = timestamp;
             }
-
-            _lastFrameTimestamp = timestamp;
-
-            using var bitmap = await SoftwareBitmap.CreateCopyFromSurfaceAsync(frame.Surface);
-
-            if (_stopping || _disposed)
+            finally
             {
-                return;
-            }
-
-            var packet = ExtractFrame(bitmap, timestamp);
-            if (packet is null)
-            {
-                return;
-            }
-
-            if (!_queue.TryAdd(packet))
-            {
-                ArrayPool<byte>.Shared.Return(packet.Buffer);
+                Monitor.Exit(_captureLock);
             }
         }
         catch (Exception ex)
@@ -419,6 +533,7 @@ internal sealed class RecordingSession : IDisposable
             if (!_stopping)
             {
                 Log.Error("捕获录制画面失败", ex);
+                Faulted?.Invoke(ex);
             }
         }
         finally
@@ -427,38 +542,259 @@ internal sealed class RecordingSession : IDisposable
         }
     }
 
-    private FramePacket? ExtractFrame(SoftwareBitmap bitmap, long timestamp)
+    private bool TryBuildPacket(IDirect3DSurface surface, long timestamp)
     {
-        if (_frameBuffer is null)
+        var buffers = _frameBuffers;
+        var timestamps = _frameTimestamps;
+        var copier = _copier;
+
+        if (buffers is null || timestamps is null || copier is null)
         {
-            return null;
+            return false;
         }
 
-        if (bitmap.PixelWidth != _captureWidth || bitmap.PixelHeight != _captureHeight)
+        if (!_freeBuffers.TryDequeue(out var index))
         {
-            Log.Error($"录制帧尺寸异常：{bitmap.PixelWidth}x{bitmap.PixelHeight}，预期 {_captureWidth}x{_captureHeight}");
-            return null;
+            Interlocked.Increment(ref _droppedFrames);
+            return false;
         }
 
-        _frameBuffer.Length = (uint)_fullFrame.Length;
-        bitmap.CopyToBuffer(_frameBuffer);
-
-        using (var reader = DataReader.FromBuffer(_frameBuffer))
+        try
         {
-            reader.ReadBytes(_fullFrame);
+            var texture = WinRtCaptureInterop.GetNativeTexture(surface);
+
+            try
+            {
+                FillFrameBuffer(copier, texture, buffers[index]);
+            }
+            finally
+            {
+                Marshal.Release(texture);
+            }
+
+            timestamps[index] = timestamp;
+
+            if (_queue.IsAddingCompleted)
+            {
+                _freeBuffers.Enqueue(index);
+                return false;
+            }
+
+            _queue.Add(index);
+            return true;
+        }
+        catch
+        {
+            _freeBuffers.Enqueue(index);
+            throw;
+        }
+    }
+
+    private void FillFrameBuffer(D3D11CropCopier copier, IntPtr texture, byte[] destination)
+    {
+        var destinationStride = _plan.OutputWidth * 4;
+        var cropBox = new PhysicalRect(0, 0, _cropWidth, _cropHeight);
+        var fit = RecordingFrameScaler.ComputeFitRect(
+            _cropWidth,
+            _cropHeight,
+            _plan.OutputWidth,
+            _plan.OutputHeight);
+        var coversCanvas = fit.Left == 0 &&
+                           fit.Top == 0 &&
+                           fit.Width == _plan.OutputWidth &&
+                           fit.Height == _plan.OutputHeight;
+
+        if (coversCanvas && fit.Width == _cropWidth && fit.Height == _cropHeight)
+        {
+            copier.Copy(texture, cropBox, destination, destinationStride);
+            return;
         }
 
-        var cropped = ArrayPool<byte>.Shared.Rent(_frameBytes);
-        var sourceStride = _captureWidth * 4;
-        var targetStride = _frameWidth * 4;
+        EnsureCropScratch();
+        copier.Copy(texture, cropBox, _cropScratch!, _cropStride);
 
-        for (var row = 0; row < _frameHeight; row++)
+        if (coversCanvas)
         {
-            var sourceOffset = ((_crop.Top + row) * _captureWidth + _crop.Left) * 4;
-            System.Buffer.BlockCopy(_fullFrame, sourceOffset, cropped, row * targetStride, targetStride);
+            RecordingFrameScaler.CopyOrScale(
+                _cropScratch!,
+                _cropWidth,
+                _cropHeight,
+                _cropStride,
+                destination,
+                _plan.OutputWidth,
+                _plan.OutputHeight,
+                destinationStride,
+                0,
+                0);
+            return;
         }
 
-        return new FramePacket(cropped, timestamp);
+        RecordingFrameScaler.ClearOutside(
+            destination,
+            _plan.OutputWidth,
+            _plan.OutputHeight,
+            fit);
+
+        RecordingFrameScaler.CopyOrScale(
+            _cropScratch!,
+            _cropWidth,
+            _cropHeight,
+            _cropStride,
+            destination,
+            fit.Width,
+            fit.Height,
+            destinationStride,
+            fit.Left,
+            fit.Top);
+    }
+
+    private void EnsureCropScratch()
+    {
+        var stride = _cropWidth * 4;
+        var length = checked(stride * _cropHeight);
+
+        if (_cropScratch is not null && _cropScratch.Length == length && _cropStride == stride)
+        {
+            return;
+        }
+
+        _cropScratch = new byte[length];
+        _cropStride = stride;
+    }
+
+    private void StartCapture()
+    {
+        var size = _item.Size;
+        _surfaceWidth = size.Width;
+        _surfaceHeight = size.Height;
+        ResolveCrop();
+
+        _framePool = Direct3D11CaptureFramePool.CreateFreeThreaded(
+            _deviceHolder!.Device,
+            DirectXPixelFormat.B8G8R8A8UIntNormalized,
+            2,
+            size);
+
+        _framePool.FrameArrived += OnFrameArrived;
+        _captureSession = _framePool.CreateCaptureSession(_item);
+        ConfigureSession(_captureSession);
+        _captureSession.StartCapture();
+        _captureStarted = true;
+    }
+
+    private void ConfigureSession(GraphicsCaptureSession session)
+    {
+        try
+        {
+            // Windows 10 2004 才加入此属性；更早版本保持系统默认（包含光标）。
+            if (ApiInformation.IsPropertyPresent(
+                    "Windows.Graphics.Capture.GraphicsCaptureSession",
+                    "IsCursorCaptureEnabled"))
+            {
+                session.IsCursorCaptureEnabled = _plan.RecordCursor;
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Error("设置光标采集失败，使用系统默认。", ex);
+        }
+
+        if (_isWindow)
+        {
+            try
+            {
+                if (!WinRtCaptureInterop.TryDisableBorder(session))
+                {
+                    Log.Info("系统不允许关闭录屏彩色边框。");
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Error("关闭录屏彩色边框异常", ex);
+            }
+        }
+    }
+
+    private void ScheduleReconfigure()
+    {
+        if (Interlocked.Exchange(ref _reconfigureScheduled, 1) != 0)
+        {
+            return;
+        }
+
+        ThreadPool.QueueUserWorkItem(_ =>
+        {
+            try
+            {
+                if (_disposed || _stopping)
+                {
+                    return;
+                }
+
+                lock (_captureLock)
+                {
+                    if (_disposed || _stopping)
+                    {
+                        return;
+                    }
+
+                    DisposeCapture();
+                    StartCapture();
+                }
+
+                Log.Info($"录制源尺寸变化，已重建捕获：{_surfaceWidth}x{_surfaceHeight}");
+                Interlocked.Add(ref _refreshCount, 1);
+            }
+            catch (Exception ex)
+            {
+                Log.Error("重建录屏捕获失败", ex);
+                Faulted?.Invoke(ex);
+            }
+            finally
+            {
+                Volatile.Write(ref _reconfigureScheduled, 0);
+            }
+        });
+    }
+
+    private void ResolveCrop()
+    {
+        var crop = _cropResolver();
+        var clamped = ScreenGeometry.Intersect(
+            crop,
+            new PhysicalRect(0, 0, _surfaceWidth, _surfaceHeight));
+        var even = ScreenGeometry.MakeEven(clamped);
+
+        if (!ScreenGeometry.IsUsableSelection(even, 16))
+        {
+            throw new InvalidOperationException("录制区域太小或已移出屏幕，请重新选择。");
+        }
+
+        _cropWidth = even.Width;
+        _cropHeight = even.Height;
+        _cropScratch = null;
+        _cropStride = 0;
+    }
+
+    private long ReadRawTimestamp() =>
+        (long)(_clock.ElapsedTicks * (10_000_000.0 / Stopwatch.Frequency));
+
+    private long ReadTimestamp() =>
+        ReadRawTimestamp() - Interlocked.Read(ref _pausedTotal);
+
+    private void MarkStopped()
+    {
+        Interlocked.Exchange(ref _stoppedTimestamp, Math.Max(0, ReadTimestamp()));
+    }
+
+    private void OnItemClosed(GraphicsCaptureItem sender, object args)
+    {
+        if (_disposed || _stopping)
+        {
+            return;
+        }
+
+        CaptureItemClosed?.Invoke();
     }
 
     private void DisposeCapture()
@@ -522,11 +858,23 @@ internal sealed class RecordingSession : IDisposable
 
         _disposed = true;
         _stopping = true;
+        MarkStopped();
+
+        lock (_captureLock)
+        {
+            DisposeCapture();
+        }
+
         _clock.Stop();
-        Interlocked.Exchange(
-            ref _stoppedTimestamp,
-            (long)(_clock.ElapsedTicks * (10_000_000.0 / Stopwatch.Frequency)));
-        DisposeCapture();
+
+        try
+        {
+            _item.Closed -= OnItemClosed;
+        }
+        catch
+        {
+            // 忽略事件解绑异常。
+        }
 
         try
         {
@@ -541,7 +889,7 @@ internal sealed class RecordingSession : IDisposable
         {
             try
             {
-                _encoderCompleted.Task.Wait(TimeSpan.FromSeconds(5));
+                _encoderCompleted.Task.Wait(TimeSpan.FromSeconds(6));
             }
             catch
             {
@@ -561,9 +909,9 @@ internal sealed class RecordingSession : IDisposable
             }
         }
 
-        while (_queue.TryTake(out var packet))
+        while (_queue.TryTake(out _))
         {
-            ArrayPool<byte>.Shared.Return(packet.Buffer);
+            // 丢弃仍在队列里的帧索引。
         }
 
         if (_encoderThread is null || !_encoderThread.IsAlive)
@@ -578,29 +926,26 @@ internal sealed class RecordingSession : IDisposable
             }
         }
 
-        try
+        lock (_captureLock)
         {
-            _device?.Dispose();
-        }
-        catch
-        {
-            // 忽略设备释放异常。
-        }
-
-        _device = null;
-        _item = null;
-    }
-
-    private sealed class FramePacket
-    {
-        public FramePacket(byte[] buffer, long timestamp)
-        {
-            Buffer = buffer;
-            Timestamp = timestamp;
+            _copier?.Dispose();
+            _copier = null;
+            _deviceHolder?.Dispose();
+            _deviceHolder = null;
         }
 
-        public byte[] Buffer { get; }
-
-        public long Timestamp { get; }
+        _frameBuffers = null;
+        _frameTimestamps = null;
+        _cropScratch = null;
     }
 }
+
+/// <summary>
+/// 一次录制的编码参数：输出尺寸、帧率、码率与是否采集光标。
+/// </summary>
+internal sealed record RecordingPlan(
+    int OutputWidth,
+    int OutputHeight,
+    int FramesPerSecond,
+    int Bitrate,
+    bool RecordCursor);

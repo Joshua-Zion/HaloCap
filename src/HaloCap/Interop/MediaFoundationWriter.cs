@@ -95,6 +95,9 @@ namespace HaloCap.Interop
         [UnmanagedFunctionPointer(CallingConvention.StdCall)]
         private delegate int AddBufferDelegate(IntPtr self, IntPtr buffer);
 
+        private static readonly Guid MfReadwriteEnableHardwareTransforms =
+            new Guid("a634a91c-822b-41b9-a494-4de4643612b0");
+
         private IntPtr _sinkWriter;
         private IntPtr _outputType;
         private IntPtr _inputType;
@@ -154,9 +157,42 @@ namespace HaloCap.Interop
                     bitrate,
                     false);
 
-                Check(
-                    NativeMf.MFCreateSinkWriterFromURL(path, IntPtr.Zero, IntPtr.Zero, out _sinkWriter),
-                    "创建 MP4 写入器");
+                // 先尝试让 Media Foundation 载入硬件 H.264 编码器，失败再退回软件编码。
+                Exception? hardwareError = null;
+
+                if (!TryConfigure(path, true, out hardwareError))
+                {
+                    ReleaseSinkWriter();
+
+                    if (!TryConfigure(path, false, out var softwareError))
+                    {
+                        ReleaseSinkWriter();
+                        throw softwareError ??
+                            hardwareError ??
+                            new COMException("创建 MP4 写入器失败。");
+                    }
+                }
+                else
+                {
+                    UsesHardwareEncoder = true;
+                }
+            }
+            catch
+            {
+                Dispose();
+                throw;
+            }
+        }
+
+        public bool UsesHardwareEncoder { get; private set; }
+
+        private bool TryConfigure(string path, bool preferHardware, out Exception? error)
+        {
+            error = null;
+
+            try
+            {
+                CreateSinkWriter(path, preferHardware);
 
                 Check(
                     Invoke<AddStreamDelegate>(_sinkWriter, 3)(_sinkWriter, _outputType, out _streamIndex),
@@ -172,12 +208,50 @@ namespace HaloCap.Interop
 
                 Check(Invoke<NoArgDelegate>(_sinkWriter, 5)(_sinkWriter), "开始写入");
                 _writingStarted = true;
+                return true;
+            }
+            catch (Exception ex)
+            {
+                error = ex;
+                return false;
+            }
+        }
+
+        private void CreateSinkWriter(string path, bool preferHardware)
+        {
+            IntPtr attributes = IntPtr.Zero;
+
+            try
+            {
+                if (preferHardware)
+                {
+                    Check(NativeMf.MFCreateAttributes(out attributes, 1), "创建写入器属性");
+                    Check(
+                        SetUInt32(attributes, MfReadwriteEnableHardwareTransforms, 1),
+                        "启用硬件编码");
+                }
+
+                Check(
+                    NativeMf.MFCreateSinkWriterFromURL(path, IntPtr.Zero, attributes, out _sinkWriter),
+                    "创建 MP4 写入器");
             }
             catch
             {
-                Dispose();
+                ReleaseSinkWriter();
                 throw;
             }
+            finally
+            {
+                Release(attributes);
+            }
+        }
+
+        private void ReleaseSinkWriter()
+        {
+            Release(_sinkWriter);
+            _sinkWriter = IntPtr.Zero;
+            _streamIndex = 0;
+            _writingStarted = false;
         }
 
         public void WriteFrame(byte[] bgraTopDown, long timestamp, long duration)
@@ -422,6 +496,9 @@ namespace HaloCap.Interop
 
             [DllImport("mfplat.dll", ExactSpelling = true)]
             public static extern int MFCreateMediaType(out IntPtr mediaType);
+
+            [DllImport("mfplat.dll", ExactSpelling = true)]
+            public static extern int MFCreateAttributes(out IntPtr attributes, uint initialCapacity);
 
             [DllImport("mfplat.dll", ExactSpelling = true)]
             public static extern int MFCreateMemoryBuffer(uint maxLength, out IntPtr buffer);

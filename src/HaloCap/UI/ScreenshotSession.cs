@@ -44,12 +44,19 @@ internal sealed class ScreenshotSession : IDisposable
         _dispatcher = Dispatcher.CurrentDispatcher;
     }
 
+    /// <summary>录屏范围为「窗口」时，选区完成后按选区中心识别目标窗口。</summary>
+    internal bool RecordWindowRange { get; private set; }
+
     internal static async Task<ScreenshotSession> StartAsync(
         CaptureSessionMode mode,
-        Action<CaptureResult> completed)
+        Action<CaptureResult> completed,
+        bool windowRange = false)
     {
         var monitors = MonitorService.GetMonitors();
-        var session = new ScreenshotSession(mode, completed);
+        var session = new ScreenshotSession(mode, completed)
+        {
+            RecordWindowRange = windowRange
+        };
 
         try
         {
@@ -410,6 +417,9 @@ internal sealed class ScreenshotSession : IDisposable
         var selection = _selectionVirtual;
         var monitor = overlay.Monitor;
         var crossMonitor = IsCrossMonitorSelection;
+        var windowHandle = command == CaptureCommand.StartRecording && RecordWindowRange
+            ? overlay.FindWindowAtSelectionCenter(selection)
+            : IntPtr.Zero;
         BitmapSource? image = null;
 
         if (command != CaptureCommand.StartRecording)
@@ -470,7 +480,8 @@ internal sealed class ScreenshotSession : IDisposable
             Command = command,
             Image = image,
             PhysicalRect = selection,
-            Monitor = monitor
+            Monitor = monitor,
+            WindowHandle = windowHandle
         });
     }
 

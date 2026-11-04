@@ -1,3 +1,4 @@
+using System;
 using System.Windows.Media.Imaging;
 
 namespace HaloCap.Models;
@@ -29,4 +30,7 @@ internal sealed class CaptureResult
     public PhysicalRect PhysicalRect { get; init; }
 
     public ScreenMonitor? Monitor { get; init; }
+
+    /// <summary>窗口录制时的目标窗口句柄；区域录制为 0。</summary>
+    public IntPtr WindowHandle { get; init; }
 }

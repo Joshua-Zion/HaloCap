@@ -18,6 +18,7 @@ internal sealed class TrayIconService : IDisposable
     private string _hotkeyDisplay = string.Empty;
     private string? _balloonActionPath;
     private bool _isRecording;
+    private bool _isPaused;
     private bool _disposed;
 
     public TrayIconService()
@@ -71,7 +72,7 @@ internal sealed class TrayIconService : IDisposable
         UpdateTooltip();
     }
 
-    public void SetRecordingState(bool recording)
+    public void SetRecordingState(bool recording, bool paused = false)
     {
         if (_disposed)
         {
@@ -79,6 +80,7 @@ internal sealed class TrayIconService : IDisposable
         }
 
         _isRecording = recording;
+        _isPaused = paused;
         _notifyIcon.Icon = recording ? _recordingIcon : _idleIcon;
         UpdateTooltip();
     }
@@ -112,7 +114,9 @@ internal sealed class TrayIconService : IDisposable
     private void UpdateTooltip()
     {
         var tooltip = _isRecording
-            ? "HaloCap · 正在录制"
+            ? _isPaused
+                ? "HaloCap · 录制已暂停"
+                : "HaloCap · 正在录制"
             : _hotkeyDisplay.Length > 0
                 ? $"HaloCap · {_hotkeyDisplay}"
                 : "HaloCap 光圈";

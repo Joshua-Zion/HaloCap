@@ -44,6 +44,8 @@ public sealed class AppSettings
 
     public OcrSettings Ocr { get; set; } = new();
 
+    public RecordingSettings Recording { get; set; } = new();
+
     public HotkeyDefinition GetActionHotkey(RadialAction action) => action switch
     {
         RadialAction.Screenshot => ScreenshotHotkey,

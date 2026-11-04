@@ -1,9 +1,8 @@
 using System;
-using System.Diagnostics;
 using System.Windows;
 using System.Windows.Interop;
+using System.Windows.Media;
 using System.Windows.Media.Animation;
-using System.Windows.Threading;
 using HaloCap.Diagnostics;
 using HaloCap.Interop;
 using HaloCap.Models;
@@ -12,33 +11,35 @@ namespace HaloCap.UI;
 
 public partial class RecordingHudWindow : Window
 {
+    private static readonly Brush RecordingBrush = new SolidColorBrush(Color.FromRgb(0xFF, 0x8C, 0x8C));
+    private static readonly Brush PausedBrush = new SolidColorBrush(Color.FromRgb(0xFF, 0xC9, 0x71));
+
     private readonly ScreenMonitor _monitor;
-    private readonly PhysicalRect _selection;
-    private readonly DispatcherTimer _timer;
-    private readonly Stopwatch _clock = new();
+    private PhysicalRect _anchor;
     private IntPtr _handle;
     private bool _prepared;
     private bool _closed;
+    private bool _pausedShown;
 
-    internal RecordingHudWindow(ScreenMonitor monitor, PhysicalRect selection)
+    internal RecordingHudWindow(ScreenMonitor monitor, PhysicalRect anchor)
     {
         InitializeComponent();
 
         _monitor = monitor;
-        _selection = selection;
-
-        _timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(200) };
-        _timer.Tick += (_, _) => UpdateElapsed();
+        _anchor = anchor;
 
         Closed += (_, _) =>
         {
             _closed = true;
-            _timer.Stop();
-            _clock.Stop();
+            PulseDot.BeginAnimation(OpacityProperty, null);
         };
     }
 
     internal event EventHandler? StopRequested;
+
+    internal event EventHandler? PauseRequested;
+
+    internal event EventHandler? ResumeRequested;
 
     internal void PrepareForCapture()
     {
@@ -88,23 +89,63 @@ public partial class RecordingHudWindow : Window
 
         ApplyNonActivatingStyles(_handle);
         PlaceWindow(_handle);
-
-        _clock.Start();
-        UpdateElapsed();
-        _timer.Start();
-
-        var pulse = new DoubleAnimation(1.0, 0.35, TimeSpan.FromMilliseconds(720))
-        {
-            AutoReverse = true,
-            RepeatBehavior = RepeatBehavior.Forever,
-            EasingFunction = new SineEase { EasingMode = EasingMode.EaseInOut }
-        };
-        PulseDot.BeginAnimation(OpacityProperty, pulse);
+        StartPulse();
 
         var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
         BeginAnimation(
             OpacityProperty,
             new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(140)) { EasingFunction = ease });
+    }
+
+    /// <summary>窗口录制时跟随目标窗口移动，保持浮层贴在窗口上方。</summary>
+    internal void UpdateAnchor(PhysicalRect anchor)
+    {
+        if (_closed || anchor.Equals(_anchor))
+        {
+            return;
+        }
+
+        _anchor = anchor;
+
+        if (IsVisible)
+        {
+            PlaceWindow(_handle);
+        }
+    }
+
+    internal void UpdateState(TimeSpan elapsed, bool paused, string info)
+    {
+        if (_closed)
+        {
+            return;
+        }
+
+        TimerText.Text = elapsed.TotalHours >= 1
+            ? $"{(int)elapsed.TotalHours}:{elapsed.Minutes:00}:{elapsed.Seconds:00}"
+            : $"{elapsed.Minutes:00}:{elapsed.Seconds:00}";
+
+        InfoText.Text = info;
+
+        if (paused != _pausedShown)
+        {
+            _pausedShown = paused;
+            StateText.Text = paused ? "PAUSE" : "REC";
+            StateText.Foreground = paused ? PausedBrush : RecordingBrush;
+            PauseLabel.Text = paused ? "继续" : "暂停";
+            PauseButton.ToolTip = paused ? "继续录制" : "暂停录制";
+            System.Windows.Automation.AutomationProperties.SetName(
+                PauseButton,
+                paused ? "继续录制" : "暂停录制");
+
+            if (paused)
+            {
+                StopPulse();
+            }
+            else
+            {
+                StartPulse();
+            }
+        }
     }
 
     internal void CloseHud()
@@ -115,9 +156,26 @@ public partial class RecordingHudWindow : Window
         }
 
         _closed = true;
-        _timer.Stop();
-        _clock.Stop();
+        PulseDot.BeginAnimation(OpacityProperty, null);
         Close();
+    }
+
+    private void StartPulse()
+    {
+        PulseDot.BeginAnimation(
+            OpacityProperty,
+            new DoubleAnimation(1.0, 0.35, TimeSpan.FromMilliseconds(720))
+            {
+                AutoReverse = true,
+                RepeatBehavior = RepeatBehavior.Forever,
+                EasingFunction = new SineEase { EasingMode = EasingMode.EaseInOut }
+            });
+    }
+
+    private void StopPulse()
+    {
+        PulseDot.BeginAnimation(OpacityProperty, null);
+        PulseDot.Opacity = 0.55;
     }
 
     private static void ApplyNonActivatingStyles(IntPtr handle)
@@ -156,17 +214,17 @@ public partial class RecordingHudWindow : Window
         var height = windowRect.Height;
         const int margin = 10;
 
-        var left = _selection.Left + ((_selection.Width - width) / 2);
-        var top = _selection.Top - height - margin;
+        var left = _anchor.Left + ((_anchor.Width - width) / 2);
+        var top = _anchor.Top - height - margin;
 
         if (top < area.Top + 4)
         {
-            top = _selection.Bottom + margin;
+            top = _anchor.Bottom + margin;
         }
 
         if (top + height > area.Bottom - 4)
         {
-            top = _selection.Top + margin;
+            top = _anchor.Top + margin;
         }
 
         left = Math.Clamp(left, area.Left + 4, Math.Max(area.Left + 4, area.Right - width - 4));
@@ -182,17 +240,21 @@ public partial class RecordingHudWindow : Window
             NativeMethods.SWP_NOSIZE | NativeMethods.SWP_NOACTIVATE | NativeMethods.SWP_SHOWWINDOW);
     }
 
-    private void UpdateElapsed()
-    {
-        var elapsed = _clock.Elapsed;
-        TimerText.Text = elapsed.TotalHours >= 1
-            ? $"{(int)elapsed.TotalHours}:{elapsed.Minutes:00}:{elapsed.Seconds:00}"
-            : $"{elapsed.Minutes:00}:{elapsed.Seconds:00}";
-    }
-
     private void StopButton_Click(object sender, RoutedEventArgs e)
     {
         StopButton.IsEnabled = false;
+        PauseButton.IsEnabled = false;
         StopRequested?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void PauseButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (_pausedShown)
+        {
+            ResumeRequested?.Invoke(this, EventArgs.Empty);
+            return;
+        }
+
+        PauseRequested?.Invoke(this, EventArgs.Empty);
     }
 }

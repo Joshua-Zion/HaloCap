@@ -25,7 +25,33 @@ internal static class WindowProbe
         PhysicalRect monitorBounds,
         IntPtr excludedWindow)
     {
-        PhysicalRect? match = null;
+        if (!TryFindCandidate(screenX, screenY, excludedWindow, out _, out var visible))
+        {
+            return null;
+        }
+
+        var local = ScreenGeometry.Intersect(
+            ScreenGeometry.ToLocal(visible, monitorBounds),
+            new PhysicalRect(0, 0, monitorBounds.Width, monitorBounds.Height));
+
+        return IsCandidateSize(local) ? local : null;
+    }
+
+    /// <summary>
+    /// 找到光标处最靠前的可录制窗口，窗口录制用它拿到句柄与可见区域。
+    /// </summary>
+    public static bool TryFindCandidate(
+        int screenX,
+        int screenY,
+        IntPtr excludedWindow,
+        out IntPtr handle,
+        out PhysicalRect visibleRect)
+    {
+        handle = IntPtr.Zero;
+        visibleRect = default;
+        var found = false;
+        IntPtr foundHandle = IntPtr.Zero;
+        var foundRect = default(PhysicalRect);
 
         NativeMethods.EnumWindowsProc callback = (hwnd, _) =>
         {
@@ -36,31 +62,30 @@ internal static class WindowProbe
                 return true;
             }
 
-            var local = ScreenGeometry.Intersect(
-                ScreenGeometry.ToLocal(PhysicalRect.FromNative(frame), monitorBounds),
-                new PhysicalRect(0, 0, monitorBounds.Width, monitorBounds.Height));
-
-            if (!IsCandidateSize(local))
-            {
-                return true;
-            }
-
-            match = local;
+            foundHandle = hwnd;
+            foundRect = frame;
+            found = true;
             return false;
         };
 
         NativeMethods.EnumWindows(callback, IntPtr.Zero);
         GC.KeepAlive(callback);
 
-        return match;
+        if (found)
+        {
+            handle = foundHandle;
+            visibleRect = foundRect;
+        }
+
+        return found;
     }
 
     internal static bool IsCandidateSize(PhysicalRect region) =>
         region.Width >= MinimumRegionSize && region.Height >= MinimumRegionSize;
 
-    private static bool IsCandidate(IntPtr hwnd, int screenX, int screenY, out NativeMethods.RECT frame)
+    private static bool IsCandidate(IntPtr hwnd, int screenX, int screenY, out PhysicalRect visible)
     {
-        frame = default;
+        visible = default;
 
         if (!NativeMethods.IsWindowVisible(hwnd))
         {
@@ -81,17 +106,14 @@ internal static class WindowProbe
             return false;
         }
 
-        if (!TryGetFrame(hwnd, out frame) ||
-            frame.Width < MinimumRegionSize ||
-            frame.Height < MinimumRegionSize)
+        if (!WindowGeometry.TryGetVisibleRect(hwnd, out visible) ||
+            visible.Width < MinimumRegionSize ||
+            visible.Height < MinimumRegionSize)
         {
             return false;
         }
 
-        if (screenX < frame.Left ||
-            screenX >= frame.Right ||
-            screenY < frame.Top ||
-            screenY >= frame.Bottom)
+        if (!visible.Contains(screenX, screenY))
         {
             return false;
         }
@@ -119,22 +141,6 @@ internal static class WindowProbe
                    out int cloaked,
                    sizeof(int)) == 0 &&
                cloaked != 0;
-    }
-
-    private static bool TryGetFrame(IntPtr hwnd, out NativeMethods.RECT rect)
-    {
-        if (NativeMethods.DwmGetWindowAttribute(
-                hwnd,
-                NativeMethods.DWMWA_EXTENDED_FRAME_BOUNDS,
-                out rect,
-                Marshal.SizeOf<NativeMethods.RECT>()) == 0 &&
-            rect.Width > 0 &&
-            rect.Height > 0)
-        {
-            return true;
-        }
-
-        return NativeMethods.GetWindowRect(hwnd, out rect);
     }
 
     private static string ReadClassName(IntPtr hwnd)

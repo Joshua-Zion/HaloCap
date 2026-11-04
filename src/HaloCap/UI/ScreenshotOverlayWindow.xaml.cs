@@ -737,7 +737,9 @@ public partial class ScreenshotOverlayWindow : Window
         {
             case CaptureSessionMode.Record:
                 accent = Color.FromRgb(0xFF, 0x7A, 0x7A);
-                HintText.Text = "拖动框选（单屏） · Enter 开始录制 · Esc 取消";
+                HintText.Text = _session.RecordWindowRange
+                    ? "单击或框选窗口 · Enter 开始录制 · Esc 取消"
+                    : "拖动框选（单屏） · Enter 开始录制 · Esc 取消";
                 ToolGroup.Visibility = Visibility.Collapsed;
                 HistorySeparator.Visibility = Visibility.Collapsed;
                 HistoryGroup.Visibility = Visibility.Collapsed;
@@ -2259,6 +2261,27 @@ public partial class ScreenshotOverlayWindow : Window
         }
 
         ShowElementHoverOrFullScreen(region);
+    }
+
+    /// <summary>
+    /// 窗口录制时按选区中心识别目标窗口；识别不到返回 0，由调用方提示重新选择。
+    /// </summary>
+    internal IntPtr FindWindowAtSelectionCenter(PhysicalRect selectionVirtual)
+    {
+        var centerX = selectionVirtual.Left + (selectionVirtual.Width / 2);
+        var centerY = selectionVirtual.Top + (selectionVirtual.Height / 2);
+
+        try
+        {
+            return WindowProbe.TryFindCandidate(centerX, centerY, _handle, out var hwnd, out _)
+                ? hwnd
+                : IntPtr.Zero;
+        }
+        catch (Exception ex)
+        {
+            Log.Error("识别录制目标窗口失败", ex);
+            return IntPtr.Zero;
+        }
     }
 
     private void ShowElementHoverOrFullScreen(PhysicalRect? region)

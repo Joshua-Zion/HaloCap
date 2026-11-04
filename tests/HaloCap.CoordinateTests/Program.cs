@@ -6,7 +6,9 @@ using System.Linq;
 using System.Reflection;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Threading;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
@@ -89,6 +91,13 @@ internal static class Program
             ("OCR result window exposes engines and search", OcrResultWindowExposesControls),
             ("OCR result window searches and switches views", OcrResultWindowSearchesAndSwitchesViews),
             ("OCR settings window binds and saves OCR values", OcrSettingsWindowBindsAndSaves),
+            ("Recording settings resolve sizes and bitrates", RecordingSettingsResolveSizesAndBitrates),
+            ("Recording frame scaler fits and averages pixels", RecordingFrameScalerFitsAndAverages),
+            ("Recording settings window binds and saves values", RecordingSettingsWindowBindsAndSaves),
+            ("Window capture target crops the invisible border", WindowCaptureTargetCropsInvisibleBorder),
+            ("Region recording writes the requested MP4", RegionRecordingWritesRequestedMp4),
+            ("Window recording follows the visible window", WindowRecordingFollowsVisibleWindow),
+            ("GPU crop matches the screen pixels", GpuCropMatchesScreenPixels),
             ("OCR native engine recognizes a rendered text image", OcrNativeEngineRecognizesRenderedText),
             ("OCR model engine recognizes a rendered text image", OcrModelEngineRecognizesRenderedText),
             ("OCR model engine handles a dark background", OcrModelEngineHandlesDarkBackground),
@@ -1384,6 +1393,8 @@ internal static class Program
             ToolbarHoverTintsPreserveActiveBackgrounds();
             PinOutlineAndLightMenuBehaveConsistently(pin);
             PinOcrUsesOriginalImage();
+            RecordWindowRangeChangesHintAndProbe();
+            RecordingHudAndCountdownRenderOffscreen();
 
             void ArrangeShell()
             {
@@ -2525,7 +2536,7 @@ internal static class Program
         }
 
         var menu = new TrayMenu("v1.2.4", "Ctrl + Alt + D", DefaultActionHotkeys(),
-            autoStart: true, recording: false, pinAvailable: true);
+            autoStart: true, recording: false, recordingPaused: false, pinAvailable: true);
         True(!menu.StaysOpen, "the tray menu should close automatically when clicking outside");
         menu.ApplyTemplate();
         var actionItems = menu.Items.OfType<MenuItem>()
@@ -2552,21 +2563,42 @@ internal static class Program
         True(!menu.IsOpen, "choosing an action should close the tray menu");
 
         var recordingMenu = new TrayMenu("v1.2.4", "Ctrl + Alt + D", DefaultActionHotkeys(),
-            autoStart: true, recording: true, pinAvailable: true);
+            autoStart: true, recording: true, recordingPaused: false, pinAvailable: true);
         recordingMenu.ApplyTemplate();
         var recordingItems = recordingMenu.Items.OfType<MenuItem>()
             .Where(item => AutomationProperties.GetAutomationId(item).StartsWith("tray.action.", StringComparison.Ordinal))
+            .Where(item => AutomationProperties.GetAutomationId(item) != "tray.action.pauseRecording")
             .ToList();
         Equal("停止录制", recordingItems[2].Header as string);
         True(recordingItems[2].IsEnabled, "the record row should stop recording while it is running");
         True(!recordingItems[0].IsEnabled && !recordingItems[1].IsEnabled && !recordingItems[3].IsEnabled,
             "capture actions and pin should stay disabled while recording");
+
+        var pauseRow = recordingMenu.Items.OfType<MenuItem>()
+            .First(item => AutomationProperties.GetAutomationId(item) == "tray.action.pauseRecording");
+        Equal("暂停录制", pauseRow.Header as string);
+        True(pauseRow.IsEnabled, "the tray menu should offer pausing while recording");
+        var pauseRequested = false;
+        recordingMenu.PauseRecordingRequested += (_, _) => pauseRequested = true;
+        pauseRow.RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+        True(pauseRequested, "clicking the tray pause row should request pausing");
+        True(!recordingMenu.IsOpen, "requesting pause should close the tray menu");
+
+        var pausedMenu = new TrayMenu("v1.2.4", "Ctrl + Alt + D", DefaultActionHotkeys(),
+            autoStart: true, recording: true, recordingPaused: true, pinAvailable: true);
+        pausedMenu.ApplyTemplate();
+        Equal(
+            "继续录制",
+            pausedMenu.Items.OfType<MenuItem>()
+                .First(item => AutomationProperties.GetAutomationId(item) == "tray.action.pauseRecording")
+                .Header as string);
+
         True(!recordingMenu.Items.OfType<MenuItem>()
                 .First(item => AutomationProperties.GetAutomationId(item) == "tray.item.autoStart").IsEnabled,
             "auto-start should stay disabled while recording");
 
         var emptyClipboardMenu = new TrayMenu("v1.2.4", "Ctrl + Alt + D", DefaultActionHotkeys(),
-            autoStart: false, recording: false, pinAvailable: false);
+            autoStart: false, recording: false, recordingPaused: false, pinAvailable: false);
         emptyClipboardMenu.ApplyTemplate();
         var pinRow = emptyClipboardMenu.Items.OfType<MenuItem>()
             .First(item => AutomationProperties.GetAutomationId(item) == "tray.action.pin");
@@ -2859,6 +2891,808 @@ internal static class Program
                 window.Close();
             }
         });
+    }
+
+    private static void RecordingSettingsResolveSizesAndBitrates()
+    {
+        var defaults = new RecordingSettings();
+        True(defaults.Resolution == RecordingResolution.Original, "the default resolution should be original");
+        True(defaults.FrameRate == RecordingFrameRate.Thirty, "the default frame rate should be 30fps");
+        True(defaults.Quality == RecordingQuality.Balanced, "the default quality should be balanced");
+        True(defaults.RecordCursor, "the cursor should be recorded by default");
+        Equal(3, defaults.CountdownSeconds);
+        Equal(30, defaults.FramesPerSecond);
+        True(defaults.Range == RecordingRange.Region, "the default range should be region");
+
+        Equal(new PhysicalRect(0, 0, 1920, 1080), ToRect(defaults.ResolveOutputSize(1920, 1080)));
+        Equal(new PhysicalRect(0, 0, 1918, 1078), ToRect(defaults.ResolveOutputSize(1919, 1079)));
+
+        var tenEighty = new RecordingSettings { Resolution = RecordingResolution.P1080 };
+        Equal(new PhysicalRect(0, 0, 1920, 1080), ToRect(tenEighty.ResolveOutputSize(2560, 1440)));
+        Equal(new PhysicalRect(0, 0, 1366, 768), ToRect(tenEighty.ResolveOutputSize(1366, 768)));
+
+        var sevenTwenty = new RecordingSettings { Resolution = RecordingResolution.P720 };
+        Equal(new PhysicalRect(0, 0, 1280, 720), ToRect(sevenTwenty.ResolveOutputSize(3840, 2160)));
+
+        var compact = new RecordingSettings { Quality = RecordingQuality.Compact };
+        var high = new RecordingSettings { Quality = RecordingQuality.High };
+        var balancedBitrate = defaults.ComputeBitrate(1920, 1080);
+        True(compact.ComputeBitrate(1920, 1080) < balancedBitrate, "compact should use a lower bitrate");
+        True(high.ComputeBitrate(1920, 1080) > balancedBitrate, "high should use a larger bitrate");
+        True(compact.ComputeBitrate(64, 64) >= 1_000_000, "the bitrate should keep a usable floor");
+
+        var sixty = new RecordingSettings
+        {
+            FrameRate = RecordingFrameRate.Sixty,
+            Resolution = RecordingResolution.P2160
+        };
+        Equal(60, sixty.FramesPerSecond);
+        True(sixty.ComputeBitrate(3840, 2160) <= 45_000_000, "the bitrate should stay capped for 4K60");
+
+        var broken = new RecordingSettings
+        {
+            Resolution = (RecordingResolution)99,
+            FrameRate = (RecordingFrameRate)7,
+            Quality = (RecordingQuality)(-3),
+            Countdown = (RecordingCountdown)4,
+            Range = (RecordingRange)8
+        };
+        broken.Normalize();
+        True(broken.Resolution == RecordingResolution.Original &&
+             broken.FrameRate == RecordingFrameRate.Thirty &&
+             broken.Quality == RecordingQuality.Balanced &&
+             broken.Countdown == RecordingCountdown.ThreeSeconds &&
+             broken.Range == RecordingRange.Region,
+            "normalising should repair unknown recording option values");
+
+        var loaded = JsonSerializer.Deserialize<RecordingSettings>(
+            "{\"resolution\":\"P1440\",\"frameRate\":\"Sixty\",\"quality\":\"Compact\",\"recordCursor\":false,\"countdown\":\"FiveSeconds\",\"range\":\"Window\"}",
+            new JsonSerializerOptions
+            {
+                PropertyNameCaseInsensitive = true,
+                Converters = { new JsonStringEnumConverter() }
+            });
+        True(loaded is not null, "recording settings should deserialize from settings.json");
+        True(loaded!.Resolution == RecordingResolution.P1440 &&
+             loaded.FrameRate == RecordingFrameRate.Sixty &&
+             loaded.Quality == RecordingQuality.Compact &&
+             !loaded.RecordCursor &&
+             loaded.CountdownSeconds == 5 &&
+             loaded.Range == RecordingRange.Window,
+            "every recording option should round trip through json");
+    }
+
+    private static void RecordingFrameScalerFitsAndAverages()
+    {
+        Equal(new PhysicalRect(0, 0, 1920, 1080),
+              RecordingFrameScaler.ComputeFitRect(1920, 1080, 1920, 1080));
+        Equal(new PhysicalRect(240, 0, 1440, 1080),
+              RecordingFrameScaler.ComputeFitRect(800, 600, 1920, 1080));
+        Equal(new PhysicalRect(420, 0, 1080, 1080),
+              RecordingFrameScaler.ComputeFitRect(1000, 1000, 1920, 1080));
+        Equal(new PhysicalRect(0, 0, 0, 0),
+              RecordingFrameScaler.ComputeFitRect(0, 600, 1920, 1080));
+
+        var source = new byte[4 * 4 * 4];
+        for (var i = 0; i < source.Length; i += 4)
+        {
+            source[i] = 10;
+            source[i + 1] = 20;
+            source[i + 2] = 30;
+            source[i + 3] = 255;
+        }
+
+        var same = new byte[source.Length];
+        RecordingFrameScaler.CopyOrScale(source, 4, 4, 16, same, 4, 4, 16, 0, 0);
+        True(same.SequenceEqual(source), "an identical-size copy should keep every pixel");
+
+        var quarter = new byte[2 * 2 * 4];
+        RecordingFrameScaler.CopyOrScale(source, 4, 4, 16, quarter, 2, 2, 8, 0, 0);
+        True(quarter[0] == 10 && quarter[1] == 20 && quarter[2] == 30 && quarter[3] == 255,
+            "box downsampling should average to the same flat colour");
+
+        var mixed = new byte[2 * 2 * 4];
+        mixed[0] = 0;
+        mixed[1] = 0;
+        mixed[2] = 0;
+        mixed[3] = 255;
+        mixed[4] = 200;
+        mixed[5] = 100;
+        mixed[6] = 50;
+        mixed[7] = 255;
+        mixed[8] = 200;
+        mixed[9] = 100;
+        mixed[10] = 50;
+        mixed[11] = 255;
+        mixed[12] = 0;
+        mixed[13] = 0;
+        mixed[14] = 0;
+        mixed[15] = 255;
+
+        var blended = new byte[4];
+        RecordingFrameScaler.CopyOrScale(mixed, 2, 2, 8, blended, 1, 1, 4, 0, 0);
+        Equal(100, blended[0]);
+        Equal(50, blended[1]);
+        Equal(25, blended[2]);
+        Equal(255, blended[3]);
+
+        var canvas = new byte[4 * 2 * 4];
+        for (var i = 0; i < canvas.Length; i++)
+        {
+            canvas[i] = 77;
+        }
+
+        RecordingFrameScaler.ClearOutside(canvas, 4, 2, new PhysicalRect(1, 0, 2, 2));
+        Equal(0, canvas[0]);
+        Equal(255, canvas[3]);
+        Equal(77, canvas[4]);
+        Equal(77, canvas[8]);
+        Equal(0, canvas[12]);
+        Equal(0, canvas[16]);
+        Equal(77, canvas[20]);
+        Equal(77, canvas[24]);
+        Equal(0, canvas[28]);
+
+        var offset = new byte[4 * 4 * 4];
+        RecordingFrameScaler.CopyOrScale(source, 4, 4, 16, offset, 2, 2, 16, 1, 1);
+        Equal(10, offset[16 + 4]);
+    }
+
+    private static void RecordingSettingsWindowBindsAndSaves()
+    {
+        RunSta(() =>
+        {
+            RecordingSettings? applied = null;
+            var initial = new RecordingSettings
+            {
+                Resolution = RecordingResolution.P1080,
+                FrameRate = RecordingFrameRate.Sixty,
+                Quality = RecordingQuality.Compact,
+                RecordCursor = false,
+                Countdown = RecordingCountdown.Off,
+                Range = RecordingRange.Window
+            };
+
+            var window = new SettingsWindow(
+                HotkeyDefinition.Default,
+                DefaultActionHotkeys(),
+                autoStartEnabled: false,
+                ScreenshotImageFormat.Png,
+                RadialMenuSize.Medium,
+                string.Empty,
+                convertFilePathsToImages: true,
+                (_, _) => null,
+                _ => null,
+                _ => null,
+                _ => null,
+                _ => null,
+                _ => null,
+                null,
+                null,
+                initial,
+                settings =>
+                {
+                    applied = settings;
+                    return null;
+                });
+
+            try
+            {
+                ((RadioButton)window.FindName("NavRecording")).IsChecked = true;
+                True(((FrameworkElement)window.FindName("RecordingPane")).Visibility == Visibility.Visible,
+                    "selecting the recording navigation item should show the recording pane");
+                True(((RadioButton)window.FindName("RecordResolution1080Radio")).IsChecked == true,
+                    "the settings window should show the current resolution");
+                True(((RadioButton)window.FindName("RecordFps60Radio")).IsChecked == true,
+                    "the settings window should show the current frame rate");
+                True(((RadioButton)window.FindName("RecordQualityCompactRadio")).IsChecked == true,
+                    "the settings window should show the current quality");
+                True(((RadioButton)window.FindName("RecordRangeWindowRadio")).IsChecked == true,
+                    "the settings window should show the current range");
+                True(((ToggleButton)window.FindName("RecordCursorToggle")).IsChecked == false,
+                    "the settings window should show the cursor option");
+                True(((RadioButton)window.FindName("RecordCountdownOffRadio")).IsChecked == true,
+                    "the settings window should show the countdown option");
+                True(((TextBlock)window.FindName("RecordingSummaryText")).Text.Length > 0,
+                    "the recording pane should summarise the current choices");
+                True(((TextBlock)window.FindName("RecordingSummaryText")).Text.Contains("录制窗口", StringComparison.Ordinal),
+                    "the summary should follow the selected range");
+
+                ((RadioButton)window.FindName("RecordResolution720Radio")).IsChecked = true;
+                ((RadioButton)window.FindName("RecordFps30Radio")).IsChecked = true;
+                ((RadioButton)window.FindName("RecordQualityHighRadio")).IsChecked = true;
+                ((RadioButton)window.FindName("RecordCountdown5Radio")).IsChecked = true;
+                ((RadioButton)window.FindName("RecordRangeRegionRadio")).IsChecked = true;
+                ((ToggleButton)window.FindName("RecordCursorToggle")).IsChecked = true;
+
+                True(((TextBlock)window.FindName("RecordingSummaryText")).Text.Contains("录制区域", StringComparison.Ordinal),
+                    "changing the range should update the summary");
+
+                ((Button)window.FindName("SaveButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+
+                True(applied is not null, "saving settings should hand the recording values back to the app");
+                True(applied!.Resolution == RecordingResolution.P720 &&
+                     applied.FrameRate == RecordingFrameRate.Thirty &&
+                     applied.Quality == RecordingQuality.High &&
+                     applied.Countdown == RecordingCountdown.FiveSeconds &&
+                     applied.Range == RecordingRange.Region &&
+                     applied.RecordCursor,
+                    "every recording option should be saved");
+            }
+            finally
+            {
+                window.Close();
+            }
+        });
+    }
+
+    private static void WindowCaptureTargetCropsInvisibleBorder()
+    {
+        var target = new WindowCaptureTarget(
+            new IntPtr(1234),
+            new PhysicalRect(100, 50, 1000, 620),
+            new PhysicalRect(107, 57, 986, 606));
+
+        Equal(new PhysicalRect(7, 7, 986, 606), target.CropInSurface);
+        True(target.IsUsable, "a window with a visible area inside the surface should be usable");
+
+        var tiny = new WindowCaptureTarget(
+            new IntPtr(1234),
+            new PhysicalRect(0, 0, 10, 10),
+            new PhysicalRect(2, 2, 6, 6));
+        True(!tiny.IsUsable, "a window smaller than 16 pixels should be rejected");
+
+        var noHandle = new WindowCaptureTarget(
+            IntPtr.Zero,
+            new PhysicalRect(0, 0, 800, 600),
+            new PhysicalRect(0, 0, 800, 600));
+        True(!noHandle.IsUsable, "a window without a handle should be rejected");
+
+        var settings = new RecordingSettings { Resolution = RecordingResolution.P720 };
+        var scaled = settings.ResolveOutputSize(target.CropInSurface.Width, target.CropInSurface.Height);
+        Equal(new PhysicalRect(0, 0, 986, 606), ToRect(scaled));
+
+        var large = new WindowCaptureTarget(
+            new IntPtr(4321),
+            new PhysicalRect(0, 0, 2560, 1446),
+            new PhysicalRect(8, 8, 2544, 1430));
+        var downscaled = settings.ResolveOutputSize(large.CropInSurface.Width, large.CropInSurface.Height);
+        Equal(720, downscaled.Height);
+        True(downscaled.Width < large.CropInSurface.Width,
+            "a window taller than the target height should be downsampled, never upscaled");
+    }
+
+    private static void RecordingHudAndCountdownRenderOffscreen()
+    {
+        var monitor = new ScreenMonitor
+        {
+            Handle = new IntPtr(1),
+            DeviceName = "\\\\.\\TEST",
+            Bounds = new PhysicalRect(0, 0, 1920, 1080),
+            WorkArea = new PhysicalRect(0, 0, 1920, 1040),
+            Scale = 1.0
+        };
+
+        var hud = new RecordingHudWindow(monitor, new PhysicalRect(200, 200, 640, 360));
+        var countdown = new RecordingCountdownWindow(new PhysicalRect(200, 200, 640, 360), 5);
+
+        try
+        {
+            // 只做离屏排版，不 Show，避免打扰前台使用。
+            var hudRoot = (FrameworkElement)hud.Content;
+            hudRoot.Measure(new Size(360, 46));
+            hudRoot.Arrange(new Rect(0, 0, 360, 46));
+            hudRoot.UpdateLayout();
+
+            hud.UpdateState(TimeSpan.FromSeconds(75), false, "1280×720 · 30fps · 4.2 MB");
+            Equal("01:15", ((TextBlock)hud.FindName("TimerText")).Text);
+            Equal("REC", ((TextBlock)hud.FindName("StateText")).Text);
+            True(((TextBlock)hud.FindName("InfoText")).Text.Contains("1280×720", StringComparison.Ordinal),
+                "the hud should show the output summary");
+            Equal("暂停", ((TextBlock)hud.FindName("PauseLabel")).Text);
+
+            hud.UpdateState(TimeSpan.FromSeconds(76), true, "1280×720 · 30fps · 4.2 MB");
+            Equal("PAUSE", ((TextBlock)hud.FindName("StateText")).Text);
+            Equal("继续", ((TextBlock)hud.FindName("PauseLabel")).Text);
+
+            var pauseRaised = false;
+            var resumeRaised = false;
+            hud.PauseRequested += (_, _) => pauseRaised = true;
+            hud.ResumeRequested += (_, _) => resumeRaised = true;
+            ((Button)hud.FindName("PauseButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            True(resumeRaised && !pauseRaised, "a paused hud should offer to resume");
+            hud.UpdateState(TimeSpan.FromSeconds(77), false, string.Empty);
+            ((Button)hud.FindName("PauseButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            True(pauseRaised, "a recording hud should offer to pause");
+
+            var countdownRoot = (FrameworkElement)countdown.Content;
+            countdownRoot.Measure(new Size(148, 148));
+            countdownRoot.Arrange(new Rect(0, 0, 148, 148));
+            countdownRoot.UpdateLayout();
+            Equal("5", ((TextBlock)countdown.FindName("CountText")).Text);
+            True(countdownRoot.RenderSize.Width > 100, "the countdown card should lay out");
+        }
+        finally
+        {
+            countdown.Cancel();
+            hud.CloseHud();
+        }    }
+
+    private static void RecordWindowRangeChangesHintAndProbe()
+    {
+        const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
+
+        ScreenMonitor NewMonitor() => new()
+        {
+            Handle = new IntPtr(1),
+            DeviceName = "\\\\.\\TEST",
+            Bounds = new PhysicalRect(0, 0, 600, 400),
+            WorkArea = new PhysicalRect(0, 0, 600, 400),
+            Scale = 1.0
+        };
+
+        ScreenshotSession CreateSession(bool windowRange)
+        {
+            var session = (ScreenshotSession)Activator.CreateInstance(
+                typeof(ScreenshotSession),
+                flags,
+                null,
+                new object[] { CaptureSessionMode.Record, (Action<CaptureResult>)(_ => { }) },
+                CultureInfo.InvariantCulture)!;
+            typeof(ScreenshotSession)
+                .GetProperty("RecordWindowRange", flags)!
+                .SetValue(session, windowRange);
+            return session;
+        }
+
+        using var regionSession = CreateSession(false);
+        var regionOverlay = new ScreenshotOverlayWindow(
+            regionSession, NewMonitor(), CaptureSessionMode.Record, null);
+        using var windowSession = CreateSession(true);
+        var windowOverlay = new ScreenshotOverlayWindow(
+            windowSession, NewMonitor(), CaptureSessionMode.Record, null);
+
+        try
+        {
+            var regionHint = ((TextBlock)regionOverlay.FindName("HintText")).Text;
+            var windowHint = ((TextBlock)windowOverlay.FindName("HintText")).Text;
+
+            True(regionHint.Contains("拖动框选") && !regionHint.Contains("窗口"),
+                $"the region hint should describe dragging but was: {regionHint}");
+            True(windowHint.Contains("窗口"),
+                $"the window hint should describe picking a window but was: {windowHint}");
+
+            True(windowOverlay.FindWindowAtSelectionCenter(
+                    new PhysicalRect(-40000, -40000, 200, 120)) == IntPtr.Zero,
+                "no window should be found far outside the virtual desktop");
+        }
+        finally
+        {
+            regionOverlay.CloseOverlay();
+            windowOverlay.CloseOverlay();
+        }
+    }
+
+    private static void RegionRecordingWritesRequestedMp4()
+    {
+        var monitor = MonitorService.GetMonitors().FirstOrDefault();
+
+        if (monitor is null || !Windows.Graphics.Capture.GraphicsCaptureSession.IsSupported())
+        {
+            True(false, "no monitor with Windows Graphics Capture support was found");
+            return;
+        }
+
+        var crop = new PhysicalRect(0, 0, 640, 360);
+        var path = Path.Combine(Path.GetTempPath(), $"halocap-region-{Guid.NewGuid():N}.mp4");
+        var plan = new RecordingPlan(640, 360, 30, 4_000_000, true);
+
+        try
+        {
+            using var session = new RecordingSession(
+                WinRtCaptureInterop.CreateItemForMonitor(monitor.Handle),
+                path,
+                plan,
+                () => crop,
+                isWindow: false);
+
+            session.StartAsync().GetAwaiter().GetResult();
+
+            Thread.Sleep(600);
+            session.Pause();
+            True(session.IsPaused, "the session should report the paused state");
+            Thread.Sleep(700);
+            session.Resume();
+            True(!session.IsPaused, "the session should resume recording");
+            Thread.Sleep(600);
+
+            var activeElapsed = session.ActiveElapsed100Ns;
+            var saved = session.StopAsync().GetAwaiter().GetResult();
+
+            True(File.Exists(saved), "stopping the session should leave an mp4 file");
+            True(new FileInfo(saved).Length > 512, "the mp4 should contain more than a header");
+            True(session.EncodedFrames >= 1, "at least one frame should be encoded");
+
+            var info = Mp4Probe.Read(saved);
+            Equal(640, info.Width);
+            Equal(360, info.Height);
+            True(session.EncodedFrames >= 1, "the track should contain samples");
+
+            var expectedSeconds = activeElapsed / 10_000_000.0;
+            var actualSeconds = (double)info.Duration / info.Timescale;
+            True(expectedSeconds > 0.8 && expectedSeconds < 1.6,
+                $"the active timeline should be about 1.2s but was {expectedSeconds:0.##}s");
+            True(Math.Abs(actualSeconds - expectedSeconds) < 0.35,
+                $"the mp4 duration should match the active timeline: file {actualSeconds:0.##}s vs timeline {expectedSeconds:0.##}s");
+        }
+        finally
+        {
+            TryDeleteFile(path);
+        }
+    }
+
+    private static void WindowRecordingFollowsVisibleWindow()
+    {
+        RunSta(() =>
+        {
+            if (!Windows.Graphics.Capture.GraphicsCaptureSession.IsSupported())
+            {
+                True(false, "Windows Graphics Capture is not available on this machine");
+                return;
+            }
+
+            var rectangle = new System.Windows.Shapes.Rectangle
+            {
+                Width = 320,
+                Height = 200,
+                Fill = Brushes.DarkSlateBlue
+            };
+
+            var target = new Window
+            {
+                Width = 360,
+                Height = 240,
+                Left = 0,
+                Top = 0,
+                Opacity = 0,
+                ShowActivated = false,
+                ShowInTaskbar = false,
+                WindowStyle = WindowStyle.ToolWindow,
+                Content = rectangle
+            };
+
+            target.Show();
+            PumpDispatcher(150);
+
+            var handle = new System.Windows.Interop.WindowInteropHelper(target).Handle;
+            var path = Path.Combine(Path.GetTempPath(), $"halocap-window-{Guid.NewGuid():N}.mp4");
+
+            try
+            {
+                True(WindowGeometry.TryGet(handle, out var before), "the offscreen window should be measurable");
+                True(before.SurfaceRect.Width >= before.VisibleRect.Width,
+                    "the capture surface should include the invisible window border");
+
+                var settings = new RecordingSettings();
+                var crop = before.CropInSurface;
+                var (outputWidth, outputHeight) = settings.ResolveOutputSize(crop.Width, crop.Height);
+                var plan = new RecordingPlan(
+                    outputWidth,
+                    outputHeight,
+                    settings.FramesPerSecond,
+                    settings.ComputeBitrate(outputWidth, outputHeight),
+                    true);
+
+                using var session = new RecordingSession(
+                    WinRtCaptureInterop.CreateItemForWindow(handle),
+                    path,
+                    plan,
+                    () => WindowGeometry.TryGet(handle, out var live)
+                        ? live.CropInSurface
+                        : crop,
+                    isWindow: true);
+
+                AwaitWithPump(() => session.StartAsync(), 10_000);
+
+                var flips = 0;
+                var flicker = new System.Windows.Threading.DispatcherTimer
+                {
+                    Interval = TimeSpan.FromMilliseconds(90)
+                };
+                flicker.Tick += (_, _) =>
+                {
+                    rectangle.Fill = flips++ % 2 == 0 ? Brushes.Orange : Brushes.DarkSlateBlue;
+
+                    if (flips == 4)
+                    {
+                        // 录制过程中改一次窗口尺寸，验证捕获管线会重建并继续出帧。
+                        target.Width = 420;
+                        target.Height = 280;
+                    }
+                };
+                flicker.Start();
+                PumpDispatcher(900);
+                flicker.Stop();
+
+                AwaitWithPump(() => session.StopAsync(), 25_000);
+
+                True(File.Exists(path) && new FileInfo(path).Length > 512,
+                    "window recording should save a playable file");
+                True(session.EncodedFrames >= 3,
+                    $"an animating and resizing window should keep delivering frames but encoded {session.EncodedFrames}");
+                True(session.RefreshCount >= 1, "the session should rebuild capture after the window resized");
+
+                var info = Mp4Probe.Read(path);
+                Equal(outputWidth, info.Width);
+                Equal(outputHeight, info.Height);
+                True(info.Samples >= 2, $"the track should hold the recorded frames but held {info.Samples}");
+            }
+            finally
+            {
+                target.Close();
+                TryDeleteFile(path);
+            }
+        });
+    }
+
+    private static void PumpDispatcher(int milliseconds)
+    {
+        var frame = new System.Windows.Threading.DispatcherFrame();
+        var timer = new System.Windows.Threading.DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(Math.Max(10, milliseconds))
+        };
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+            frame.Continue = false;
+        };
+        timer.Start();
+        System.Windows.Threading.Dispatcher.PushFrame(frame);
+    }
+
+    private static void AwaitWithPump(Func<Task> action, int timeoutMs) =>
+        AwaitTaskWithPump(action(), timeoutMs);
+
+    private static void AwaitWithPump<T>(Func<Task<T>> action, int timeoutMs) =>
+        AwaitTaskWithPump(action(), timeoutMs);
+
+    private static void AwaitTaskWithPump(Task task, int timeoutMs)
+    {
+        var waited = 0;
+
+        while (!task.IsCompleted && waited < timeoutMs)
+        {
+            PumpDispatcher(50);
+            waited += 50;
+        }
+
+        if (!task.IsCompleted)
+        {
+            throw new TimeoutException("等待录屏异步操作超时。");
+        }
+
+        if (task.IsFaulted)
+        {
+            throw task.Exception!.InnerExceptions[0];
+        }
+
+        task.GetAwaiter().GetResult();
+    }
+
+    private static void GpuCropMatchesScreenPixels()
+    {
+        var monitor = MonitorService.GetMonitors().FirstOrDefault();
+
+        if (monitor is null || !Windows.Graphics.Capture.GraphicsCaptureSession.IsSupported())
+        {
+            True(false, "no monitor with Windows Graphics Capture support was found");
+            return;
+        }
+
+        var region = new PhysicalRect(48, 48, 192, 120);
+        var stride = region.Width * 4;
+        var pixels = new byte[stride * region.Height];
+
+        using var holder = WinRtCaptureInterop.CreateDirect3DDeviceHolder();
+        var item = WinRtCaptureInterop.CreateItemForMonitor(monitor.Handle);
+        using var pool = Windows.Graphics.Capture.Direct3D11CaptureFramePool.CreateFreeThreaded(
+            holder.Device,
+            Windows.Graphics.DirectX.DirectXPixelFormat.B8G8R8A8UIntNormalized,
+            2,
+            item.Size);
+        using var copier = new D3D11CropCopier(holder.NativeDevice, holder.NativeContext);
+
+        var firstFrame = new TaskCompletionSource<Windows.Graphics.Capture.Direct3D11CaptureFrame>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        pool.FrameArrived += (_, _) =>
+        {
+            var frame = pool.TryGetNextFrame();
+
+            if (frame is not null)
+            {
+                firstFrame.TrySetResult(frame);
+            }
+        };
+
+        using var session = pool.CreateCaptureSession(item);
+
+        try
+        {
+            session.IsCursorCaptureEnabled = false;
+        }
+        catch
+        {
+            // 老系统没有该属性，保持默认。
+        }
+
+        session.StartCapture();
+
+        if (!firstFrame.Task.Wait(TimeSpan.FromSeconds(4)))
+        {
+            True(false, "Windows Graphics Capture did not deliver a frame");
+            return;
+        }
+
+        using var captured = firstFrame.Task.Result;
+        var texture = WinRtCaptureInterop.GetNativeTexture(captured.Surface);
+
+        try
+        {
+            copier.Copy(texture, region, pixels, stride);
+        }
+        finally
+        {
+            System.Runtime.InteropServices.Marshal.Release(texture);
+        }
+
+        var screenRegion = new PhysicalRect(
+            monitor.Bounds.Left + region.Left,
+            monitor.Bounds.Top + region.Top,
+            region.Width,
+            region.Height);
+
+        using var reference = ScreenCaptureService.Capture(screenRegion);
+        var referenceMeans = new double[3];
+        var samples = 0;
+
+        for (var y = 0; y < region.Height; y += 3)
+        {
+            for (var x = 0; x < region.Width; x += 3)
+            {
+                var color = reference.GetPixel(x, y);
+                referenceMeans[0] += color.B;
+                referenceMeans[1] += color.G;
+                referenceMeans[2] += color.R;
+                samples++;
+            }
+        }
+
+        var gpuMeans = new double[3];
+
+        for (var y = 0; y < region.Height; y += 3)
+        {
+            for (var x = 0; x < region.Width; x += 3)
+            {
+                var offset = (y * stride) + (x * 4);
+                gpuMeans[0] += pixels[offset];
+                gpuMeans[1] += pixels[offset + 1];
+                gpuMeans[2] += pixels[offset + 2];
+            }
+        }
+
+        for (var channel = 0; channel < 3; channel++)
+        {
+            gpuMeans[channel] /= samples;
+            referenceMeans[channel] /= samples;
+        }
+
+        for (var channel = 0; channel < 3; channel++)
+        {
+            True(Math.Abs(gpuMeans[channel] - referenceMeans[channel]) < 26,
+                $"the GPU crop channel {channel} should match the screen: gpu {gpuMeans[channel]:0.#} vs screen {referenceMeans[channel]:0.#}");
+        }
+    }
+
+    private static PhysicalRect ToRect((int Width, int Height) size) =>
+        new(0, 0, size.Width, size.Height);
+
+    private static void TryDeleteFile(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        catch
+        {
+            // 测试清理失败不影响结果。
+        }
+    }
+
+    private static class Mp4Probe
+    {
+        internal readonly record struct Info(int Width, int Height, long Timescale, long Duration, long Samples);
+
+        internal static Info Read(string path)
+        {
+            var data = File.ReadAllBytes(path);
+            var mvhd = FindBoxContent(data, "mvhd");
+            var tkhd = FindBoxContent(data, "tkhd");
+            var mdhd = FindBoxContent(data, "mdhd");
+            var stts = FindBoxContent(data, "stts");
+
+            True(mvhd > 0, "the mp4 should contain a movie header");
+            True(tkhd > 0, "the mp4 should contain a track header");
+            True(stts > 0, "the mp4 should contain sample counts");
+
+            var timescale = BeUInt32(data, mvhd + 12);
+            var duration = BeUInt32(data, mvhd + 16);
+            var version = data[tkhd];
+            var offset = version == 1 ? tkhd + 88 : tkhd + 76;
+            var width = (int)(BeUInt32(data, offset) >> 16);
+            var height = (int)(BeUInt32(data, offset + 4) >> 16);
+
+            if (width <= 0 || height <= 0)
+            {
+                // 有些编码器只在 tkhd 里给出像素尺寸的一半精度，退回 mdhd + stsd 不现实，直接判定失败。
+                True(false, $"the mp4 track header should carry pixel sizes but reported {width}x{height}");
+            }
+
+            var entries = (int)BeUInt32(data, stts + 4);
+            long samples = 0;
+
+            for (var i = 0; i < entries && stts + 8 + (i * 8) + 4 < data.Length; i++)
+            {
+                samples += BeUInt32(data, stts + 8 + (i * 8));
+            }
+
+            True(timescale > 0, "the mp4 timescale should be positive");
+            True(mdhd > 0, "the mp4 should contain a media header");
+
+            return new Info(width, height, (long)timescale, (long)duration, samples);
+        }
+
+        private static int FindBoxContent(byte[] data, string type)
+        {
+            var needle = Encoding.ASCII.GetBytes(type);
+
+            for (var i = 8; i + 4 <= data.Length; i++)
+            {
+                var match = true;
+
+                for (var j = 0; j < 4; j++)
+                {
+                    if (data[i + j] != needle[j])
+                    {
+                        match = false;
+                        break;
+                    }
+                }
+
+                if (match)
+                {
+                    return i + 4;
+                }
+            }
+
+            return -1;
+        }
+
+        private static uint BeUInt32(byte[] data, int offset)
+        {
+            if (offset < 0 || offset + 4 > data.Length)
+            {
+                throw new InvalidDataException($"mp4 读取越界：{offset}");
+            }
+
+            return ((uint)data[offset] << 24) |
+                   ((uint)data[offset + 1] << 16) |
+                   ((uint)data[offset + 2] << 8) |
+                   data[offset + 3];
+        }
     }
 
     private static void PinOcrUsesOriginalImage()

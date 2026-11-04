@@ -2,7 +2,7 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="HaloCap 录制中"
-        Width="246"
+        Width="360"
         Height="46"
         WindowStyle="None"
         AllowsTransparency="True"
@@ -46,6 +46,33 @@
                 </Setter.Value>
             </Setter>
         </Style>
+
+        <Style x:Key="HudPauseButtonStyle" TargetType="Button" BasedOn="{StaticResource HudStopButtonStyle}">
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Host"
+                                Background="{TemplateBinding Background}"
+                                CornerRadius="7"
+                                Padding="8,5"
+                                SnapsToDevicePixels="True">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Host" Property="Background" Value="#33FFFFFF" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="Host" Property="Background" Value="#22FFFFFF" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.4" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
     </Window.Resources>
 
     <Grid>
@@ -64,6 +91,7 @@
                     <ColumnDefinition Width="Auto" />
                     <ColumnDefinition Width="*" />
                     <ColumnDefinition Width="Auto" />
+                    <ColumnDefinition Width="Auto" />
                 </Grid.ColumnDefinitions>
 
                 <Grid Width="15" Height="15" VerticalAlignment="Center">
@@ -80,7 +108,8 @@
                             Orientation="Horizontal"
                             VerticalAlignment="Center"
                             Margin="8,0,0,0">
-                    <TextBlock Text="REC"
+                    <TextBlock x:Name="StateText"
+                               Text="REC"
                                FontSize="9.5"
                                FontWeight="Bold"
                                FontFamily="Consolas"
@@ -95,8 +124,32 @@
                                VerticalAlignment="Center" />
                 </StackPanel>
 
-                <Button x:Name="StopButton"
+                <TextBlock x:Name="InfoText"
+                           Grid.Column="2"
+                           Text=""
+                           FontSize="10"
+                           Foreground="#99E4EAF4"
+                           Margin="10,0,10,0"
+                           VerticalAlignment="Center"
+                           TextTrimming="CharacterEllipsis" />
+
+                <Button x:Name="PauseButton"
                         Grid.Column="3"
+                        Style="{StaticResource HudPauseButtonStyle}"
+                        VerticalAlignment="Center"
+                        Margin="0,0,6,0"
+                        ToolTip="暂停录制"
+                        AutomationProperties.Name="暂停录制"
+                        Click="PauseButton_Click">
+                    <StackPanel Orientation="Horizontal">
+                        <Rectangle Width="3" Height="8" Fill="#FFE8EDF5" />
+                        <Rectangle Width="3" Height="8" Fill="#FFE8EDF5" Margin="2,0,0,0" />
+                        <TextBlock x:Name="PauseLabel" Text="暂停" Margin="6,0,0,0" VerticalAlignment="Center" />
+                    </StackPanel>
+                </Button>
+
+                <Button x:Name="StopButton"
+                        Grid.Column="4"
                         Style="{StaticResource HudStopButtonStyle}"
                         VerticalAlignment="Center"
                         ToolTip="停止录制"
@@ -111,3 +164,4 @@
         </Border>
     </Grid>
 </Window>
+

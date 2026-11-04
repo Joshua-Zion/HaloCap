@@ -29,6 +29,8 @@ public partial class SettingsWindow : Window
     private readonly Func<bool, string?> _applyConvertFilePathsToImages;
     private readonly Func<OcrSettings, string?>? _applyOcrSettings;
     private readonly OcrSettings _ocrSettings;
+    private readonly Func<RecordingSettings, string?>? _applyRecordingSettings;
+    private readonly RecordingSettings _recordingSettings;
     private readonly Dictionary<HotkeySlot, HotkeyDefinition> _hotkeys = new();
     private readonly Dictionary<HotkeySlot, Button> _hotkeyButtons = new();
     private readonly Dictionary<HotkeySlot, TextBlock> _hotkeyValues = new();
@@ -38,6 +40,7 @@ public partial class SettingsWindow : Window
     private OcrEngineKind _ocrEngine;
     private bool _autoStartEnabled;
     private bool _suppressOcrUi;
+    private bool _suppressRecordingUi;
 
     internal bool IsCapturingHotkey => _capturingSlot is not null;
 
@@ -56,7 +59,9 @@ public partial class SettingsWindow : Window
         Func<string, string?> applyRecordingDirectory,
         Func<bool, string?> applyConvertFilePathsToImages,
         OcrSettings? ocrSettings = null,
-        Func<OcrSettings, string?>? applyOcrSettings = null)
+        Func<OcrSettings, string?>? applyOcrSettings = null,
+        RecordingSettings? recordingSettings = null,
+        Func<RecordingSettings, string?>? applyRecordingSettings = null)
     {
         InitializeComponent();
 
@@ -88,6 +93,9 @@ public partial class SettingsWindow : Window
         _ocrSettings = (ocrSettings ?? new OcrSettings()).Clone();
         _ocrSettings.Normalize();
         _ocrEngine = _ocrSettings.Engine;
+        _applyRecordingSettings = applyRecordingSettings;
+        _recordingSettings = (recordingSettings ?? new RecordingSettings()).Clone();
+        _recordingSettings.Normalize();
         _autoStartEnabled = autoStartEnabled;
         _format = screenshotFormat;
         _menuSize = menuSize;
@@ -113,6 +121,8 @@ public partial class SettingsWindow : Window
         OcrAutoCopyToggle.IsChecked = _ocrSettings.AutoCopy;
         PinOcrToggle.IsChecked = _ocrSettings.PinOcrEnabled;
         _suppressOcrUi = false;
+
+        ApplyRecordingUi();
 
         AutoStartToggle.Checked += AutoStartToggle_Changed;
         AutoStartToggle.Unchecked += AutoStartToggle_Changed;
@@ -351,6 +361,98 @@ public partial class SettingsWindow : Window
         PinOcrEnabled = PinOcrToggle.IsChecked == true
     };
 
+    private void ApplyRecordingUi()
+    {
+        _suppressRecordingUi = true;
+        RecordResolutionOriginalRadio.IsChecked = _recordingSettings.Resolution == RecordingResolution.Original;
+        RecordResolution2160Radio.IsChecked = _recordingSettings.Resolution == RecordingResolution.P2160;
+        RecordResolution1440Radio.IsChecked = _recordingSettings.Resolution == RecordingResolution.P1440;
+        RecordResolution1080Radio.IsChecked = _recordingSettings.Resolution == RecordingResolution.P1080;
+        RecordResolution720Radio.IsChecked = _recordingSettings.Resolution == RecordingResolution.P720;
+        RecordFps30Radio.IsChecked = _recordingSettings.FrameRate == RecordingFrameRate.Thirty;
+        RecordFps60Radio.IsChecked = _recordingSettings.FrameRate == RecordingFrameRate.Sixty;
+        RecordQualityHighRadio.IsChecked = _recordingSettings.Quality == RecordingQuality.High;
+        RecordQualityBalancedRadio.IsChecked = _recordingSettings.Quality == RecordingQuality.Balanced;
+        RecordQualityCompactRadio.IsChecked = _recordingSettings.Quality == RecordingQuality.Compact;
+        RecordRangeRegionRadio.IsChecked = _recordingSettings.Range == RecordingRange.Region;
+        RecordRangeWindowRadio.IsChecked = _recordingSettings.Range == RecordingRange.Window;
+        RecordCountdownOffRadio.IsChecked = _recordingSettings.Countdown == RecordingCountdown.Off;
+        RecordCountdown3Radio.IsChecked = _recordingSettings.Countdown == RecordingCountdown.ThreeSeconds;
+        RecordCountdown5Radio.IsChecked = _recordingSettings.Countdown == RecordingCountdown.FiveSeconds;
+        RecordCursorToggle.IsChecked = _recordingSettings.RecordCursor;
+        _suppressRecordingUi = false;
+
+        UpdateRecordingSummary();
+    }
+
+    private void RecordOptionRadio_Checked(object sender, RoutedEventArgs e)
+    {
+        if (_suppressRecordingUi || sender is not RadioButton { Tag: string tag })
+        {
+            return;
+        }
+
+        switch (((RadioButton)sender).GroupName)
+        {
+            case "RecordResolution" when Enum.TryParse<RecordingResolution>(tag, out var resolution):
+                _recordingSettings.Resolution = resolution;
+                break;
+            case "RecordFrameRate" when Enum.TryParse<RecordingFrameRate>(tag, out var frameRate):
+                _recordingSettings.FrameRate = frameRate;
+                break;
+            case "RecordQuality" when Enum.TryParse<RecordingQuality>(tag, out var quality):
+                _recordingSettings.Quality = quality;
+                break;
+            case "RecordRange" when Enum.TryParse<RecordingRange>(tag, out var range):
+                _recordingSettings.Range = range;
+                break;
+            case "RecordCountdown" when Enum.TryParse<RecordingCountdown>(tag, out var countdown):
+                _recordingSettings.Countdown = countdown;
+                break;
+            default:
+                return;
+        }
+
+        ClearError();
+        UpdateRecordingSummary();
+    }
+
+    private RecordingSettings BuildRecordingSettings() => new()
+    {
+        Resolution = _recordingSettings.Resolution,
+        FrameRate = _recordingSettings.FrameRate,
+        Quality = _recordingSettings.Quality,
+        RecordCursor = RecordCursorToggle.IsChecked == true,
+        Countdown = _recordingSettings.Countdown,
+        Range = _recordingSettings.Range
+    };
+
+    private void UpdateRecordingSummary()
+    {
+        var preview = _recordingSettings.ResolveOutputSize(1920, 1080);
+        var bitrate = _recordingSettings.ComputeBitrate(preview.Width, preview.Height);
+        var megabits = bitrate / 1_000_000.0;
+
+        FrameRateDescText.Text = _recordingSettings.FrameRate == RecordingFrameRate.Sixty
+            ? "60fps 更顺滑，高负载时建议改回 30fps"
+            : "30fps 足够流畅，也更省磁盘";
+
+        QualityDescText.Text = _recordingSettings.Quality switch
+        {
+            RecordingQuality.High => "高：细节最多，文件明显更大",
+            RecordingQuality.Compact => "紧凑：文件最小，快速移动的画面可能出现块状",
+            _ => "均衡：日常分享与录课够用，码率自动计算"
+        };
+
+        RecordingSummaryText.Text =
+            $"{(_recordingSettings.Range == RecordingRange.Window ? "录制窗口" : "录制区域")}" +
+            $" · 1080p 选区输出 {preview.Width}×{preview.Height}" +
+            $" · 约 {megabits:0.#} Mbps" +
+            $" · {_recordingSettings.FramesPerSecond}fps" +
+            $" · {(_recordingSettings.CountdownSeconds > 0 ? $"倒计时 {_recordingSettings.CountdownSeconds} 秒" : "不倒计时")}" +
+            $" · {(_recordingSettings.RecordCursor ? "含光标" : "不含光标")}";
+    }
+
     private void RecordingDirectoryBox_TextChanged(object sender, TextChangedEventArgs e)
     {
         ClearError();
@@ -467,6 +569,17 @@ public partial class SettingsWindow : Window
                 if (!string.IsNullOrEmpty(ocrError))
                 {
                     ShowError("其他设置已更新；" + ocrError + " 请修正后重试。");
+                    return;
+                }
+            }
+
+            if (_applyRecordingSettings is not null)
+            {
+                var recordingError = _applyRecordingSettings(BuildRecordingSettings());
+
+                if (!string.IsNullOrEmpty(recordingError))
+                {
+                    ShowError("其他设置已更新；" + recordingError + " 请修正后重试。");
                     return;
                 }
             }

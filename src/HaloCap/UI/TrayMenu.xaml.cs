@@ -43,11 +43,12 @@ public partial class TrayMenu : ContextMenu
         IReadOnlyDictionary<RadialAction, HotkeyDefinition> actionHotkeys,
         bool autoStart,
         bool recording,
+        bool recordingPaused,
         bool pinAvailable)
     {
         InitializeComponent();
         Tag = versionLabel;
-        BuildMenu(hotkeyDisplay, actionHotkeys, autoStart, recording, pinAvailable);
+        BuildMenu(hotkeyDisplay, actionHotkeys, autoStart, recording, recordingPaused, pinAvailable);
 
         // 点击菜单外部或托盘区域收起时自动关闭，避免菜单长期停留。
         StaysOpen = false;
@@ -81,6 +82,8 @@ public partial class TrayMenu : ContextMenu
 
     public event Action<bool>? AutoStartToggleRequested;
 
+    public event EventHandler? PauseRecordingRequested;
+
     public void ShowAtCursor()
     {
         Placement = PlacementMode.MousePoint;
@@ -94,6 +97,7 @@ public partial class TrayMenu : ContextMenu
         IReadOnlyDictionary<RadialAction, HotkeyDefinition> actionHotkeys,
         bool autoStart,
         bool recording,
+        bool recordingPaused,
         bool pinAvailable)
     {
         foreach (var action in ActionOrder)
@@ -126,6 +130,25 @@ public partial class TrayMenu : ContextMenu
                 $"tray.action.{action.ToString().ToLowerInvariant()}");
             item.Click += (_, _) => ActivateAction(capturedAction);
             Items.Add(item);
+
+            if (stopping)
+            {
+                var pause = CreateItem(
+                    recordingPaused ? "继续录制" : "暂停录制",
+                    string.Empty,
+                    recordingPaused
+                        ? "M8.5 5.5L18 12L8.5 18.5Z"
+                        : "M8 5.5H10.5V18.5H8Z M13.5 5.5H16V18.5H13.5Z",
+                    enabled: true,
+                    filled: false,
+                    iconBrush: RecordingBrush);
+
+                System.Windows.Automation.AutomationProperties.SetAutomationId(
+                    pause,
+                    "tray.action.pauseRecording");
+                pause.Click += (_, _) => Activate(PauseRecordingRequested);
+                Items.Add(pause);
+            }
         }
 
         Items.Add(CreateSeparator());

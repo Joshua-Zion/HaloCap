@@ -4,8 +4,8 @@ using System.Runtime.InteropServices;
 namespace HaloCap.Interop;
 
 /// <summary>
-/// 描述 IEEE float PCM 的 WAVEFORMATEXTENSIBLE 字节块，WASAPI 初始化与
-/// Media Foundation 创建音频媒体类型都用同一份定义。
+/// 录制音频用到的 WAVEFORMATEX 字节块：WASAPI 初始化要 IEEE float 的
+/// WAVEFORMATEXTENSIBLE，Media Foundation 的 AAC 编码器要 16 位整数 PCM。
 /// </summary>
 internal static class WaveFormatHelper
 {

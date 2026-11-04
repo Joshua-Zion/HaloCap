@@ -113,31 +113,34 @@ public partial class RecordingHudWindow : Window
         }
     }
 
-    internal void UpdateState(TimeSpan elapsed, bool paused, string info)
+    internal void UpdateState(RecordingHudState state)
     {
         if (_closed)
         {
             return;
         }
 
+        var elapsed = state.Elapsed;
+
         TimerText.Text = elapsed.TotalHours >= 1
             ? $"{(int)elapsed.TotalHours}:{elapsed.Minutes:00}:{elapsed.Seconds:00}"
             : $"{elapsed.Minutes:00}:{elapsed.Seconds:00}";
 
-        InfoText.Text = info;
+        InfoText.Text = state.Info;
+        UpdateLevels(state);
 
-        if (paused != _pausedShown)
+        if (state.Paused != _pausedShown)
         {
-            _pausedShown = paused;
-            StateText.Text = paused ? "PAUSE" : "REC";
-            StateText.Foreground = paused ? PausedBrush : RecordingBrush;
-            PauseLabel.Text = paused ? "继续" : "暂停";
-            PauseButton.ToolTip = paused ? "继续录制" : "暂停录制";
+            _pausedShown = state.Paused;
+            StateText.Text = state.Paused ? "PAUSE" : "REC";
+            StateText.Foreground = state.Paused ? PausedBrush : RecordingBrush;
+            PauseLabel.Text = state.Paused ? "继续" : "暂停";
+            PauseButton.ToolTip = state.Paused ? "继续录制" : "暂停录制";
             System.Windows.Automation.AutomationProperties.SetName(
                 PauseButton,
-                paused ? "继续录制" : "暂停录制");
+                state.Paused ? "继续录制" : "暂停录制");
 
-            if (paused)
+            if (state.Paused)
             {
                 StopPulse();
             }
@@ -146,6 +149,33 @@ public partial class RecordingHudWindow : Window
                 StartPulse();
             }
         }
+    }
+
+    private void UpdateLevels(RecordingHudState state)
+    {
+        var showSystem = state.ShowSystemLevel;
+        var showMic = state.ShowMicLevel;
+
+        SystemMeterTrack.Visibility = showSystem ? Visibility.Visible : Visibility.Collapsed;
+        MicMeterTrack.Visibility = showMic ? Visibility.Visible : Visibility.Collapsed;
+        LevelRow.Visibility = showSystem || showMic ? Visibility.Visible : Visibility.Collapsed;
+
+        if (showSystem)
+        {
+            SystemMeter.Width = MeterWidth(state.SystemLevel);
+        }
+
+        if (showMic)
+        {
+            MicMeter.Width = MeterWidth(state.MicLevel);
+        }
+    }
+
+    private static double MeterWidth(float level)
+    {
+        const double track = 46;
+        var value = level < 0f ? 0f : level > 1f ? 1f : level;
+        return Math.Round(track * Math.Sqrt(value) * 10) / 10;
     }
 
     internal void CloseHud()
@@ -258,3 +288,13 @@ public partial class RecordingHudWindow : Window
         PauseRequested?.Invoke(this, EventArgs.Empty);
     }
 }
+
+/// <summary>录制浮层一次刷新需要的状态。</summary>
+internal readonly record struct RecordingHudState(
+    TimeSpan Elapsed,
+    bool Paused,
+    string Info,
+    bool ShowSystemLevel,
+    float SystemLevel,
+    bool ShowMicLevel,
+    float MicLevel);

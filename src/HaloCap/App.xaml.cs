@@ -109,6 +109,7 @@ public partial class App : Application
         _recording.StateChanged += OnRecordingStateChanged;
         _recording.Saved += OnRecordingSaved;
         _recording.Failed += OnRecordingFailed;
+        _recording.AudioFailed += OnRecordingAudioFailed;
 
         _hotkeyService = new HotkeyService();
         _hotkeyService.Pressed += (_, _) => Defer(ToggleRadialFromHotkey);
@@ -1357,15 +1358,17 @@ public partial class App : Application
             var dropped = output.DroppedFrames > 0
                 ? $" · 丢帧 {output.DroppedFrames}"
                 : string.Empty;
+            var audio = output.Audio ? string.Empty : " · 无音轨";
 
             _tray?.ShowNotificationWithAction(
                 "录屏已保存",
-                $"{Path.GetFileName(output.Path)} · {duration} · {output.Width}×{output.Height}{size}{dropped} · 单击定位文件",
+                $"{Path.GetFileName(output.Path)} · {duration} · {output.Width}×{output.Height}{size}{audio}{dropped} · 单击定位文件",
                 output.Path,
                 Forms.ToolTipIcon.Info);
             Log.Info(
                 $"录屏已保存：{output.Path}（{duration}，{output.EncodedFrames} 帧，" +
-                $"{(output.HardwareEncoder ? "硬件" : "软件")}编码{dropped}）");
+                $"{(output.HardwareEncoder ? "硬件" : "软件")}编码，" +
+                $"{(output.Audio ? "含音频" : "无音轨")}，音频丢弃 {output.DroppedAudioSamples}{dropped}）");
         }
         catch (Exception ex)
         {
@@ -1377,6 +1380,11 @@ public partial class App : Application
     {
         _tray?.ShowNotification("录屏未完成", message, Forms.ToolTipIcon.Warning);
         Log.Error("录屏失败：" + message);
+    }
+
+    private void OnRecordingAudioFailed(string message)
+    {
+        _tray?.ShowNotification("录屏音频不完整", message, Forms.ToolTipIcon.Warning);
     }
 
     private void ExitApplication()

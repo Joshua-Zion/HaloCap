@@ -33,6 +33,8 @@ internal sealed record RecordingOutput(
     int EncodedFrames,
     long DroppedFrames,
     bool HardwareEncoder,
+    bool Audio,
+    long DroppedAudioSamples,
     long Bytes);
 
 internal sealed class RecordingService : IDisposable
@@ -49,6 +51,8 @@ internal sealed class RecordingService : IDisposable
     private DispatcherTimer? _hudTimer;
     private Task? _stopTask;
     private IntPtr _windowHandle;
+    private bool _audioSystem;
+    private bool _audioMicrophone;
     private volatile bool _isRecording;
     private bool _disposed;
 
@@ -66,6 +70,9 @@ internal sealed class RecordingService : IDisposable
     internal event Action<RecordingOutput>? Saved;
 
     internal event Action<string>? Failed;
+
+    /// <summary>某一路音频不可用时的一次性提示，录制本身继续。</summary>
+    internal event Action<string>? AudioFailed;
 
     internal async Task StartAsync(RecordingRequest request)
     {
@@ -145,7 +152,10 @@ internal sealed class RecordingService : IDisposable
             outputHeight,
             settings.FramesPerSecond,
             bitrate,
-            settings.RecordCursor);
+            settings.RecordCursor,
+            settings.SystemAudio,
+            settings.Microphone,
+            settings.AudioBitrateValue);
 
         GraphicsCaptureItem? item = null;
         RecordingSession? session = null;
@@ -175,6 +185,7 @@ internal sealed class RecordingService : IDisposable
 
             session.Faulted += OnSessionFaulted;
             session.CaptureItemClosed += OnCaptureItemClosed;
+            session.AudioUnavailable += OnSessionAudioUnavailable;
             hud.StopRequested += OnHudStopRequested;
             hud.PauseRequested += OnHudPauseRequested;
             hud.ResumeRequested += OnHudResumeRequested;
@@ -195,6 +206,8 @@ internal sealed class RecordingService : IDisposable
             _hud = hud;
             _frame = frame;
             _windowHandle = isWindow ? request.WindowHandle : IntPtr.Zero;
+            _audioSystem = settings.SystemAudio;
+            _audioMicrophone = settings.Microphone;
             _isRecording = true;
 
             StartHudTimer();
@@ -213,6 +226,8 @@ internal sealed class RecordingService : IDisposable
             _hud = null;
             _frame = null;
             _windowHandle = IntPtr.Zero;
+            _audioSystem = false;
+            _audioMicrophone = false;
             _isRecording = false;
 
             StopHudTimer();
@@ -221,6 +236,7 @@ internal sealed class RecordingService : IDisposable
             {
                 session.Faulted -= OnSessionFaulted;
                 session.CaptureItemClosed -= OnCaptureItemClosed;
+                session.AudioUnavailable -= OnSessionAudioUnavailable;
                 session.Dispose();
             }
 
@@ -390,6 +406,7 @@ internal sealed class RecordingService : IDisposable
 
             session.Faulted -= OnSessionFaulted;
             session.CaptureItemClosed -= OnCaptureItemClosed;
+            session.AudioUnavailable -= OnSessionAudioUnavailable;
 
             try
             {
@@ -484,6 +501,8 @@ internal sealed class RecordingService : IDisposable
             session.EncodedFrames,
             session.DroppedFrames,
             session.UsesHardwareEncoder,
+            session.AudioEncoded,
+            session.DroppedAudioSamples,
             bytes);
     }
 
@@ -564,13 +583,17 @@ internal sealed class RecordingService : IDisposable
             return;
         }
 
-        _hud.UpdateState(
+        _hud.UpdateState(new RecordingHudState(
             TimeSpan.FromTicks(session.ActiveElapsed100Ns / 100),
             session.IsPaused,
-            BuildHudInfo(session));
+            BuildHudInfo(session),
+            session.SystemAudioActive,
+            session.SystemAudioLevel,
+            session.MicrophoneActive,
+            session.MicrophoneLevel));
     }
 
-    private static string BuildHudInfo(RecordingSession session)
+    private string BuildHudInfo(RecordingSession session)
     {
         var size = string.Empty;
 
@@ -584,7 +607,30 @@ internal sealed class RecordingService : IDisposable
             // 文件尚未创建时不显示大小。
         }
 
-        return $"{session.OutputWidth}×{session.OutputHeight} · {session.FramesPerSecond}fps{size}";
+        return $"{session.OutputWidth}×{session.OutputHeight} · {session.FramesPerSecond}fps{size}{BuildAudioLabel(session)}";
+    }
+
+    /// <summary>按当前真正在采集的音源写浮层标签，两路都失败时直说没有音轨。</summary>
+    private string BuildAudioLabel(RecordingSession session)
+    {
+        if (!_audioSystem && !_audioMicrophone)
+        {
+            return string.Empty;
+        }
+
+        var system = session.SystemAudioActive;
+        var microphone = session.MicrophoneActive;
+
+        if (!system && !microphone)
+        {
+            return " · 无音轨";
+        }
+
+        return system && microphone
+            ? " · 系统+麦"
+            : system
+                ? " · 系统声音"
+                : " · 麦克风";
     }
 
     private static void EnsureFreeSpace(string path, int bitrate)
@@ -629,6 +675,24 @@ internal sealed class RecordingService : IDisposable
         bytes >= 1024L * 1024 * 1024
             ? $"{bytes / 1024.0 / 1024.0 / 1024.0:0.##} GB"
             : $"{bytes / 1024.0 / 1024.0:0.##} MB";
+
+    private void OnSessionAudioUnavailable(string message)
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _dispatcher.BeginInvoke(
+            DispatcherPriority.Input,
+            new Action(() =>
+            {
+                if (!_disposed)
+                {
+                    AudioFailed?.Invoke(message);
+                }
+            }));
+    }
 
     private void OnSessionFaulted(Exception exception)
     {
@@ -731,6 +795,8 @@ internal sealed class RecordingService : IDisposable
         StopHudTimer();
         _hud = null;
         _frame = null;
+        _audioSystem = false;
+        _audioMicrophone = false;
         _session?.Dispose();
         _session = null;
         _isRecording = false;

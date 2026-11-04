@@ -1398,6 +1398,105 @@
                                             </StackPanel>
                                         </Border>
 
+                                        <TextBlock Text="声音" Style="{StaticResource GroupLabelStyle}" />
+                                        <Border Style="{StaticResource CardStyle}">
+                                            <StackPanel>
+                                                <Border Padding="16,13">
+                                                    <Grid>
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="*" />
+                                                            <ColumnDefinition Width="Auto" />
+                                                        </Grid.ColumnDefinitions>
+
+                                                        <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
+                                                            <TextBlock Text="系统声音"
+                                                                       Style="{StaticResource SettingTitleStyle}" />
+                                                            <TextBlock Text="录制本机播放的声音（loopback），不含受保护内容"
+                                                                       Style="{StaticResource SettingDescStyle}" />
+                                                        </StackPanel>
+
+                                                        <ToggleButton x:Name="SystemAudioToggle"
+                                                                      Grid.Column="1"
+                                                                      VerticalAlignment="Center"
+                                                                      Style="{StaticResource ToggleSwitchStyle}"
+                                                                      ToolTip="把系统播放的声音录进视频"
+                                                                      AutomationProperties.Name="录制系统声音" />
+                                                    </Grid>
+                                                </Border>
+
+                                                <Rectangle Style="{StaticResource RowDividerStyle}" />
+
+                                                <Border Padding="16,13">
+                                                    <Grid>
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="*" />
+                                                            <ColumnDefinition Width="Auto" />
+                                                        </Grid.ColumnDefinitions>
+
+                                                        <StackPanel VerticalAlignment="Center" Margin="0,0,16,0">
+                                                            <TextBlock Text="麦克风"
+                                                                       Style="{StaticResource SettingTitleStyle}" />
+                                                            <TextBlock Text="使用系统默认录音设备；被隐私设置拒绝时会提示并继续录制"
+                                                                       Style="{StaticResource SettingDescStyle}" />
+                                                        </StackPanel>
+
+                                                        <ToggleButton x:Name="MicrophoneToggle"
+                                                                      Grid.Column="1"
+                                                                      VerticalAlignment="Center"
+                                                                      Style="{StaticResource ToggleSwitchStyle}"
+                                                                      ToolTip="把麦克风声音录进视频"
+                                                                      AutomationProperties.Name="录制麦克风" />
+                                                    </Grid>
+                                                </Border>
+
+                                                <Rectangle Style="{StaticResource RowDividerStyle}" />
+
+                                                <Border Padding="16,14">
+                                                    <Grid>
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="*" />
+                                                            <ColumnDefinition Width="Auto" />
+                                                        </Grid.ColumnDefinitions>
+
+                                                        <StackPanel VerticalAlignment="Center"
+                                                                    Margin="0,0,18,0">
+                                                            <TextBlock Text="音频码率"
+                                                                       Style="{StaticResource SettingTitleStyle}" />
+                                                            <TextBlock Text="48kHz 立体声 AAC；192kbps 更清楚，128kbps 文件更小"
+                                                                       Style="{StaticResource SettingDescStyle}" />
+                                                        </StackPanel>
+
+                                                        <Border Grid.Column="1"
+                                                                Background="#FFF0F0F3"
+                                                                BorderBrush="#FFE2E2E7"
+                                                                BorderThickness="1"
+                                                                CornerRadius="8"
+                                                                Padding="2"
+                                                                VerticalAlignment="Center">
+                                                            <StackPanel Orientation="Horizontal">
+                                                                <RadioButton x:Name="AudioBitrate128Radio"
+                                                                             GroupName="RecordAudioBitrate"
+                                                                             Tag="K128"
+                                                                             Content="128 kbps"
+                                                                             Width="78"
+                                                                             Style="{StaticResource SegmentOptionStyle}"
+                                                                             Checked="RecordOptionRadio_Checked"
+                                                                             AutomationProperties.Name="128 kbps 音频" />
+                                                                <RadioButton x:Name="AudioBitrate192Radio"
+                                                                             GroupName="RecordAudioBitrate"
+                                                                             Tag="K192"
+                                                                             Content="192 kbps"
+                                                                             Width="78"
+                                                                             Style="{StaticResource SegmentOptionStyle}"
+                                                                             Checked="RecordOptionRadio_Checked"
+                                                                             AutomationProperties.Name="192 kbps 音频" />
+                                                            </StackPanel>
+                                                        </Border>
+                                                    </Grid>
+                                                </Border>
+                                            </StackPanel>
+                                        </Border>
+
                                         <TextBlock Text="存储" Style="{StaticResource GroupLabelStyle}" />
                                         <Border Style="{StaticResource CardStyle}">
                                             <StackPanel Margin="16,14">

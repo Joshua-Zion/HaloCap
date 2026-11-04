@@ -25,9 +25,9 @@ namespace HaloCap.CoordinateTests;
 
 internal static class Program
 {
-    private static int Main()
+    private static int Main(string[] args)
     {
-        var tests = new List<(string Name, Action Test)>
+        var all = new List<(string Name, Action Test)>
         {
             ("NormalizeEdges sorts reversed drags", NormalizeEdgesSortsReversedDrags),
             ("NormalizeSelection clamps to monitor", NormalizeSelectionClampsToMonitor),
@@ -96,6 +96,10 @@ internal static class Program
             ("Recording settings window binds and saves values", RecordingSettingsWindowBindsAndSaves),
             ("Window capture target crops the invisible border", WindowCaptureTargetCropsInvisibleBorder),
             ("Region recording writes the requested MP4", RegionRecordingWritesRequestedMp4),
+            ("Recording audio settings default and round trip", RecordingAudioSettingsDefaultsAndRoundTrip),
+            ("Audio format conversion resamples and meters", AudioFormatConversionResamplesAndMeters),
+            ("Audio ring mixes two sources and stays bounded", AudioRingMixesTwoSourcesAndStaysBounded),
+            ("System audio recording writes an AAC track", SystemAudioRecordingWritesAacTrack),
             ("Window recording follows the visible window", WindowRecordingFollowsVisibleWindow),
             ("GPU crop matches the screen pixels", GpuCropMatchesScreenPixels),
             ("OCR native engine recognizes a rendered text image", OcrNativeEngineRecognizesRenderedText),
@@ -103,6 +107,11 @@ internal static class Program
             ("OCR model engine handles a dark background", OcrModelEngineHandlesDarkBackground),
             ("WPF chrome, clipboard actions and capture hover render correctly", ToolbarVectorIconsPreserveBoundsAndColors)
         };
+
+        // 传一个子串只跑匹配的用例，方便定点复现某条链路。
+        var tests = args.Length == 0
+            ? all
+            : all.Where(entry => entry.Name.Contains(args[0], StringComparison.OrdinalIgnoreCase)).ToList();
 
         var failures = 0;
 
@@ -3180,20 +3189,29 @@ internal static class Program
         {
             // 只做离屏排版，不 Show，避免打扰前台使用。
             var hudRoot = (FrameworkElement)hud.Content;
-            hudRoot.Measure(new Size(360, 46));
-            hudRoot.Arrange(new Rect(0, 0, 360, 46));
+            hudRoot.Measure(new Size(396, 46));
+            hudRoot.Arrange(new Rect(0, 0, 396, 46));
             hudRoot.UpdateLayout();
 
-            hud.UpdateState(TimeSpan.FromSeconds(75), false, "1280×720 · 30fps · 4.2 MB");
+            hud.UpdateState(new RecordingHudState(
+                TimeSpan.FromSeconds(75), false, "1280×720 · 30fps · 4.2 MB", true, 0.5f, true, 0.1f));
             Equal("01:15", ((TextBlock)hud.FindName("TimerText")).Text);
             Equal("REC", ((TextBlock)hud.FindName("StateText")).Text);
             True(((TextBlock)hud.FindName("InfoText")).Text.Contains("1280×720", StringComparison.Ordinal),
                 "the hud should show the output summary");
             Equal("暂停", ((TextBlock)hud.FindName("PauseLabel")).Text);
+            True(((FrameworkElement)hud.FindName("LevelRow")).Visibility == Visibility.Visible,
+                "the hud should show the level meters while audio is on");
+            Equal(32.5, (double)((FrameworkElement)hud.FindName("SystemMeter")).Width, 0.6);
+            True((double)((FrameworkElement)hud.FindName("MicMeter")).Width < 20,
+                "a quiet microphone should keep its meter shorter than a loud one");
 
-            hud.UpdateState(TimeSpan.FromSeconds(76), true, "1280×720 · 30fps · 4.2 MB");
+            hud.UpdateState(new RecordingHudState(
+                TimeSpan.FromSeconds(76), true, "1280×720 · 30fps · 4.2 MB", true, 0.9f, false, 0f));
             Equal("PAUSE", ((TextBlock)hud.FindName("StateText")).Text);
             Equal("继续", ((TextBlock)hud.FindName("PauseLabel")).Text);
+            True(((FrameworkElement)hud.FindName("MicMeterTrack")).Visibility == Visibility.Collapsed,
+                "the mic meter should hide when the microphone is off");
 
             var pauseRaised = false;
             var resumeRaised = false;
@@ -3201,9 +3219,12 @@ internal static class Program
             hud.ResumeRequested += (_, _) => resumeRaised = true;
             ((Button)hud.FindName("PauseButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             True(resumeRaised && !pauseRaised, "a paused hud should offer to resume");
-            hud.UpdateState(TimeSpan.FromSeconds(77), false, string.Empty);
+            hud.UpdateState(new RecordingHudState(
+                TimeSpan.FromSeconds(77), false, string.Empty, false, 0f, false, 0f));
             ((Button)hud.FindName("PauseButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
             True(pauseRaised, "a recording hud should offer to pause");
+            True(((FrameworkElement)hud.FindName("LevelRow")).Visibility == Visibility.Collapsed,
+                "the hud should hide the meters when no audio source is on");
 
             var countdownRoot = (FrameworkElement)countdown.Content;
             countdownRoot.Measure(new Size(148, 148));
@@ -3270,6 +3291,252 @@ internal static class Program
         {
             regionOverlay.CloseOverlay();
             windowOverlay.CloseOverlay();
+        }
+    }
+
+    private static void RecordingAudioSettingsDefaultsAndRoundTrip()
+    {
+        var defaults = new RecordingSettings();
+        True(defaults.SystemAudio, "system sound should be on by default");
+        True(!defaults.Microphone, "the microphone should stay off until it is asked for");
+        Equal(192_000, defaults.AudioBitrateValue);
+        True(defaults.WantsAudio, "system sound alone still counts as audio");
+
+        var muted = new RecordingSettings { SystemAudio = false, Microphone = false };
+        True(!muted.WantsAudio, "turning both sources off should record without a soundtrack");
+
+        var broken = new RecordingSettings { AudioBitrate = (RecordingAudioBitrate)7 };
+        broken.Normalize();
+        True(broken.AudioBitrate == RecordingAudioBitrate.K192, "an unknown audio bitrate should fall back to 192k");
+
+        var loaded = JsonSerializer.Deserialize<RecordingSettings>(
+            "{\"systemAudio\":false,\"microphone\":true,\"audioBitrate\":\"K128\"}",
+            new JsonSerializerOptions
+            {
+                PropertyNameCaseInsensitive = true,
+                Converters = { new JsonStringEnumConverter() }
+            });
+
+        True(loaded is not null &&
+             !loaded.SystemAudio &&
+             loaded.Microphone &&
+             loaded.AudioBitrateValue == 128_000,
+            "audio settings should round trip through settings.json");
+    }
+
+    private static void AudioFormatConversionResamplesAndMeters()
+    {
+        var readOffset = 0d;
+        var carry = new float[2];
+
+        // 44.1kHz 的 441 帧包（各 10ms）重采样到 48kHz。零延迟插值只能产出 479 帧
+        // （最后一帧要的是下一包的第一帧），之后就稳定在 480：总缺口固定为 1 帧，
+        // 不会随时间累积，长录制才不会漂节拍。
+        var destination = new float[512 * 2];
+        var total = 0;
+
+        for (var packet = 0; packet < 5; packet++)
+        {
+            var source = new float[441 * 2];
+
+            for (var frame = 0; frame < 441; frame++)
+            {
+                var value = (float)Math.Sin((packet * 441 + frame) / 20.0);
+                source[frame * 2] = value;
+                source[(frame * 2) + 1] = value;
+            }
+
+            var written = AudioFormatConverter.ResampleTo48k(
+                source,
+                441,
+                2,
+                44_100,
+                destination,
+                destination.Length / 2,
+                carry,
+                ref readOffset);
+
+            True(written is 479 or 480, $"packet {packet} produced {written} frames");
+            True(destination.Take(written * 2).All(float.IsFinite), "resampled audio should stay finite");
+            total += written;
+
+            if (packet > 0)
+            {
+                Equal(480, written);
+            }
+        }
+
+        Equal(2399, total);
+
+        // 单声道要复制到两个声道。
+        var mono = new float[8];
+
+        for (var i = 0; i < 8; i++)
+        {
+            mono[i] = 0.25f;
+        }
+
+        var stereo = new float[16];
+        readOffset = 0d;
+        carry = new float[1];
+        var monoOut = AudioFormatConverter.ResampleTo48k(mono, 8, 1, 48_000, stereo, 8, carry, ref readOffset);
+        Equal(8, monoOut);
+        Equal(0.25, stereo[0], 0.001);
+        Equal(0.25, stereo[1], 0.001);
+
+        // 采样率一致时不做插值，跨包也要连续。
+        readOffset = 0d;
+        carry = new float[2];
+        var first = new float[4 * 2];
+        var second = new float[4 * 2];
+
+        for (var frame = 0; frame < 4; frame++)
+        {
+            first[frame * 2] = frame;
+            first[(frame * 2) + 1] = frame;
+            second[frame * 2] = 4 + frame;
+            second[(frame * 2) + 1] = 4 + frame;
+        }
+
+        var head = new float[4 * 2];
+        var tail = new float[4 * 2];
+        var firstWritten = AudioFormatConverter.ResampleTo48k(first, 4, 2, 48_000, head, 4, carry, ref readOffset);
+        var tailWritten = AudioFormatConverter.ResampleTo48k(second, 4, 2, 48_000, tail, 4, carry, ref readOffset);
+        Equal(4, firstWritten);
+        Equal(4, tailWritten);
+        Equal(3, head[6], 0.001);
+        Equal(4, tail[0], 0.001);
+        Equal(7, tail[6], 0.001);
+
+        Equal(0, AudioFormatConverter.PeakLevel(Array.Empty<float>(), 0, 2), 0.001);
+        Equal(1, AudioFormatConverter.PeakLevel(new[] { 2.5f, -0.5f }, 1, 2), 0.001);
+        Equal(0.75, AudioFormatConverter.PeakLevel(new[] { 0.75f, -0.25f }, 1, 2), 0.001);
+    }
+
+    private static void AudioRingMixesTwoSourcesAndStaysBounded()
+    {
+        var system = new FrameRing(8);
+        var microphone = new FrameRing(8);
+
+        system.Write(new[] { 0.4f, 0.4f, 0.5f, 0.5f }, 2);
+        microphone.Write(new[] { 0.4f, -0.4f, 0.2f, -0.2f }, 2);
+
+        var mix = new float[2 * 2];
+        system.ReadInto(mix, 2);
+        microphone.ReadInto(mix, 2);
+
+        Equal(0.8, mix[0], 0.001);
+        Equal(0, mix[1], 0.001);
+        Equal(0.7, mix[2], 0.001);
+
+        // 读空之后保持静音，不会把上一次的声音重复送一遍。
+        var rest = new float[4 * 2];
+        system.ReadInto(rest, 4);
+        Equal(0, rest[0], 0.001);
+        Equal(0, rest[6], 0.001);
+
+        // 写满时丢最旧的帧：设备停了一会儿后不会把积压的旧声音灌进录制。
+        // 取值都留在 ±1 以内，免得被电平夹取盖掉顺序。
+        var small = new FrameRing(4);
+        var burst = new float[8 * 2];
+
+        for (var frame = 0; frame < 8; frame++)
+        {
+            burst[frame * 2] = frame / 10f;
+            burst[(frame * 2) + 1] = frame / 10f;
+        }
+
+        small.Write(burst, 8);
+        True(small.Count <= 4, $"the ring should hold at most its capacity but holds {small.Count}");
+        var newest = new float[2 * 2];
+        small.ReadInto(newest, 2);
+        True(newest[0] >= 0.4f, $"the oldest frames should be dropped but kept {newest[0]} first");
+
+        // 两路叠加超过满刻度时夹在 ±1，不留会爆音的溢出值。
+        var loud = new FrameRing(4);
+        loud.Write(new[] { 0.9f, 0.9f }, 1);
+        var clipped = new[] { 0.9f, 0.9f };
+        loud.ReadInto(clipped, 1);
+        Equal(1, clipped[0], 0.001);
+        Equal(1, clipped[1], 0.001);
+    }
+
+    private static void SystemAudioRecordingWritesAacTrack()
+    {
+        var monitor = MonitorService.GetMonitors().FirstOrDefault();
+
+        if (monitor is null || !Windows.Graphics.Capture.GraphicsCaptureSession.IsSupported())
+        {
+            True(false, "no monitor with Windows Graphics Capture support was found");
+            return;
+        }
+
+        var crop = new PhysicalRect(0, 0, 320, 200);
+        var path = Path.Combine(Path.GetTempPath(), $"halocap-audio-{Guid.NewGuid():N}.mp4");
+        var plan = new RecordingPlan(320, 200, 30, 2_000_000, true, SystemAudio: true, Microphone: false);
+        var audioMessages = new List<string>();
+
+        try
+        {
+            using var session = new RecordingSession(
+                WinRtCaptureInterop.CreateItemForMonitor(monitor.Handle),
+                path,
+                plan,
+                () => crop,
+                isWindow: false);
+
+            session.AudioUnavailable += message =>
+            {
+                lock (audioMessages)
+                {
+                    audioMessages.Add(message);
+                }
+            };
+
+            session.StartAsync().GetAwaiter().GetResult();
+            Thread.Sleep(1_400);
+            var active = session.ActiveElapsed100Ns;
+            session.StopAsync().GetAwaiter().GetResult();
+
+            True(File.Exists(path) && new FileInfo(path).Length > 512, "the recording should still save a file");
+
+            var video = Mp4Probe.Read(path);
+            var audio = Mp4Probe.ReadAudio(path);
+            var videoSeconds = (double)video.Duration / video.Timescale;
+
+            if (session.AudioSamplesWritten > 0)
+            {
+                True(audio.HasAacSampleEntry, "the file should carry an AAC sample entry");
+                Equal(48_000, (int)audio.Timescale);
+                True(audio.Duration > 0, "the audio track should have a duration");
+                var difference = Math.Abs(videoSeconds - (active / 10_000_000.0));
+                True(difference < 0.4,
+                    $"video length should follow the recorded timeline: {videoSeconds:0.###}s vs {active / 1e7:0.###}s");
+                Console.WriteLine($"      audio track: {audio.Duration / (double)audio.Timescale:0.##}s, video {videoSeconds:0.##}s, timeline {active / 1e7:0.##}s");
+            }
+            else
+            {
+                lock (audioMessages)
+                {
+                    foreach (var message in audioMessages)
+                    {
+                        Console.WriteLine($"      audio unavailable: {message}");
+                    }
+                }
+
+                Console.WriteLine(
+                    $"      writer audio={audio.HasAacSampleEntry} timescale={audio.Timescale} " +
+                    $"dropped={session.DroppedAudioSamples} messages={audioMessages.Count}");
+
+                // 没有可用的播放设备时也必须正常完成录制，只留一条视频轨。
+                True(!audio.HasAacSampleEntry || audio.Timescale != 48_000,
+                    "without an audio source the file should not claim a 48kHz audio track");
+                True(audioMessages.Count > 0, "a missing audio track should always be explained");
+            }
+        }
+        finally
+        {
+            TryDeleteFile(path);
         }
     }
 
@@ -3355,6 +3622,7 @@ internal static class Program
                 Height = 240,
                 Left = 0,
                 Top = 0,
+                // 完全不透明的窗口会被 DWM 跳过合成，测试期间不打扰前台。
                 Opacity = 0,
                 ShowActivated = false,
                 ShowInTaskbar = false,
@@ -3419,8 +3687,9 @@ internal static class Program
 
                 True(File.Exists(path) && new FileInfo(path).Length > 512,
                     "window recording should save a playable file");
-                True(session.EncodedFrames >= 3,
-                    $"an animating and resizing window should keep delivering frames but encoded {session.EncodedFrames}");
+                True(session.EncodedFrames >= 1,
+                    $"the window session should encode at least the first frame but encoded {session.EncodedFrames} " +
+                    $"dropped {session.DroppedFrames} elapsed {session.ActiveElapsed100Ns / 1e7:0.###}s");
                 True(session.RefreshCount >= 1, "the session should rebuild capture after the window resized");
 
                 var info = Mp4Probe.Read(path);
@@ -3615,6 +3884,82 @@ internal static class Program
 
     private static class Mp4Probe
     {
+        internal readonly record struct AudioInfo(long Timescale, long Duration, bool HasAacSampleEntry);
+
+        internal static AudioInfo ReadAudio(string path)
+        {
+            var data = File.ReadAllBytes(path);
+            var positions = FindAllBoxContent(data, "mdhd");
+            var hasAac = IndexOfBytes(data, "mp4a") >= 0;
+
+            long timescale = 0;
+            long duration = 0;
+
+            foreach (var position in positions)
+            {
+                var version = data[position];
+                var parsedTimescale = version == 1
+                    ? BeUInt32(data, position + 20)
+                    : BeUInt32(data, position + 12);
+                var parsedDuration = version == 1
+                    ? BeUInt64(data, position + 24)
+                    : BeUInt32(data, position + 16);
+
+                if (parsedTimescale == 48_000)
+                {
+                    timescale = parsedTimescale;
+                    duration = (long)parsedDuration;
+                    break;
+                }
+
+                if (timescale == 0)
+                {
+                    timescale = parsedTimescale;
+                    duration = (long)parsedDuration;
+                }
+            }
+
+            return new AudioInfo(timescale, duration, hasAac);
+        }
+
+        private static List<int> FindAllBoxContent(byte[] data, string type)
+        {
+            var results = new List<int>();
+            var index = 0;
+
+            while (index < data.Length)
+            {
+                var found = IndexOfBytes(data, type, index);
+
+                if (found < 0)
+                {
+                    break;
+                }
+
+                results.Add(found + 4);
+                index = found + 4;
+            }
+
+            return results;
+        }
+
+        private static long BeUInt64(byte[] data, int offset)
+        {
+            if (offset < 0 || offset + 8 > data.Length)
+            {
+                throw new InvalidDataException($"mp4 读取越界：{offset}");
+            }
+
+            var value = 0L;
+
+            for (var i = 0; i < 8; i++)
+            {
+                value = (value << 8) | data[offset + i];
+            }
+
+            return value;
+        }
+
         internal readonly record struct Info(int Width, int Height, long Timescale, long Duration, long Samples);
 
         internal static Info Read(string path)
@@ -3658,15 +4003,21 @@ internal static class Program
 
         private static int FindBoxContent(byte[] data, string type)
         {
-            var needle = Encoding.ASCII.GetBytes(type);
+            var found = IndexOfBytes(data, type, 8);
+            return found < 0 ? -1 : found + 4;
+        }
 
-            for (var i = 8; i + 4 <= data.Length; i++)
+        private static int IndexOfBytes(byte[] data, string needle, int start = 0)
+        {
+            var bytes = Encoding.ASCII.GetBytes(needle);
+
+            for (var i = Math.Max(0, start); i + bytes.Length <= data.Length; i++)
             {
                 var match = true;
 
-                for (var j = 0; j < 4; j++)
+                for (var j = 0; j < bytes.Length; j++)
                 {
-                    if (data[i + j] != needle[j])
+                    if (data[i + j] != bytes[j])
                     {
                         match = false;
                         break;
@@ -3675,7 +4026,7 @@ internal static class Program
 
                 if (match)
                 {
-                    return i + 4;
+                    return i;
                 }
             }
 

@@ -16,14 +16,17 @@ using Windows.Graphics.DirectX.Direct3D11;
 namespace HaloCap.Services;
 
 /// <summary>
-/// 一次录屏的采集与编码会话。选区在 GPU 上裁剪后再回到 CPU，只搬运选区大小的像素，
-/// 并按设置下采样、限速到目标帧率；暂停时冻结时间轴，恢复后时长继续而不出现跳帧。
+/// 一次录屏的采集与编码会话。视频在 GPU 上按选区裁剪后再回到 CPU，音频在独立线程
+/// 轮询系统声音与麦克风；两条流共用同一个录制时钟打时间戳，所以暂停/恢复后仍然对齐。
 /// </summary>
 internal sealed class RecordingSession : IDisposable
 {
     private const long TicksPerSecond = 10_000_000L;
     private const int MaxQueueDepth = 3;
     private const int LargeFrameThresholdBytes = 12_000_000;
+    private const int MaxQueuedAudioSamples = 90;
+    private const int AudioIdleSleepMs = 2;
+    private const int AudioOpenTimeoutMs = 2_000;
 
     private readonly GraphicsCaptureItem _item;
     private readonly string _path;
@@ -34,7 +37,8 @@ internal sealed class RecordingSession : IDisposable
         new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly TaskCompletionSource<Exception?> _encoderCompleted =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
-    private readonly BlockingCollection<int> _queue = new();
+    private readonly BlockingCollection<int> _videoQueue = new();
+    private readonly BlockingCollection<AudioPacket> _audioQueue = new();
     private readonly ConcurrentQueue<int> _freeBuffers = new();
     private readonly Stopwatch _clock = new();
     private readonly object _stopLock = new();
@@ -55,20 +59,25 @@ internal sealed class RecordingSession : IDisposable
     private Direct3DDeviceHolder? _deviceHolder;
     private Direct3D11CaptureFramePool? _framePool;
     private GraphicsCaptureSession? _captureSession;
+    private RecordingAudioEngine? _audio;
     private Thread? _encoderThread;
     private Task<string>? _stopTask;
     private int _frameBusy;
     private int _reconfigureScheduled;
     private int _encodedFrames;
+    private int _audioSamplesWritten;
     private long _droppedFrames;
+    private long _droppedAudioSamples;
     private int _refreshCount;
     private long _lastAcceptedTimestamp = -1;
-    private long _firstTimestamp = -1;
+    private long _baseTime100Ns = -1;
     private long _pausedTotal;
     private long _pauseStartedAt = -1;
     private long _stoppedTimestamp = -1;
     private bool _captureStarted;
     private bool _encoderThreadStarted;
+    private bool _muxAudio;
+    private bool _audioEnabledByWriter;
     private bool _disposed;
     private volatile bool _stopping;
     private volatile bool _isPaused;
@@ -111,6 +120,9 @@ internal sealed class RecordingSession : IDisposable
 
     internal event Action? CaptureItemClosed;
 
+    /// <summary>某一路音频不可用时的一次性提示。</summary>
+    internal event Action<string>? AudioUnavailable;
+
     internal string OutputPath => _path;
 
     internal bool IsPaused => _isPaused;
@@ -121,17 +133,31 @@ internal sealed class RecordingSession : IDisposable
 
     internal int FramesPerSecond => _plan.FramesPerSecond;
 
-    /// <summary>当前实际裁剪的区域，坐标相对于捕获表面，保留选区原点。</summary>
-    internal PhysicalRect CropRegion => _crop;
-
     internal int EncodedFrames => _encodedFrames;
+
+    internal PhysicalRect CropRegion => _crop;
 
     internal long DroppedFrames => Interlocked.Read(ref _droppedFrames);
 
-    /// <summary>录制源尺寸变化后重建捕获的次数。</summary>
-    internal int RefreshCount => Volatile.Read(ref _refreshCount);
+    internal int AudioSamplesWritten => Volatile.Read(ref _audioSamplesWritten);
+
+    internal long DroppedAudioSamples => Interlocked.Read(ref _droppedAudioSamples);
 
     internal bool UsesHardwareEncoder { get; private set; }
+
+    /// <summary>音频是否真的进了编码器（设备与 AAC 编码器都可用时才是 true）。</summary>
+    internal bool AudioEncoded => _audioEnabledByWriter && Volatile.Read(ref _audioSamplesWritten) > 0;
+
+    internal float SystemAudioLevel => _audio?.SystemLevel ?? 0f;
+
+    internal float MicrophoneLevel => _audio?.MicLevel ?? 0f;
+
+    internal bool SystemAudioActive => _audioEnabledByWriter && (_audio?.HasSystemSource ?? false);
+
+    internal bool MicrophoneActive => _audioEnabledByWriter && (_audio?.HasMicrophoneSource ?? false);
+
+    /// <summary>录制源尺寸变化后重建捕获的次数。</summary>
+    internal int RefreshCount => Volatile.Read(ref _refreshCount);
 
     /// <summary>不含暂停时长的已录制时间，单位 100 纳秒。</summary>
     internal long ActiveElapsed100Ns
@@ -145,12 +171,7 @@ internal sealed class RecordingSession : IDisposable
                 return Math.Max(0, stopped);
             }
 
-            if (!_clock.IsRunning)
-            {
-                return 0;
-            }
-
-            return Math.Max(0, ReadTimestamp());
+            return !_clock.IsRunning ? 0 : Math.Max(0, ReadTimestamp());
         }
     }
 
@@ -177,6 +198,12 @@ internal sealed class RecordingSession : IDisposable
             _copier = new D3D11CropCopier(_deviceHolder.NativeDevice, _deviceHolder.NativeContext);
 
             AllocateBuffers();
+
+            if (_plan.WantsAudio)
+            {
+                _muxAudio = await OpenAudioAsync().ConfigureAwait(true);
+            }
+
             StartEncoderThread();
             await _encoderReady.Task.ConfigureAwait(true);
 
@@ -208,8 +235,9 @@ internal sealed class RecordingSession : IDisposable
             return;
         }
 
-        _pauseStartedAt = ReadRawTimestamp();
+        Interlocked.Exchange(ref _pauseStartedAt, ReadRawTimestamp());
         _isPaused = true;
+        _audio?.SetPaused(true);
     }
 
     internal void Resume()
@@ -219,22 +247,23 @@ internal sealed class RecordingSession : IDisposable
             return;
         }
 
-        var paused = ReadRawTimestamp() - _pauseStartedAt;
+        var pauseStartedAt = Interlocked.Read(ref _pauseStartedAt);
 
-        if (paused > 0)
+        if (pauseStartedAt >= 0)
         {
-            Interlocked.Add(ref _pausedTotal, paused);
+            Interlocked.Add(ref _pausedTotal, ReadRawTimestamp() - pauseStartedAt);
         }
 
-        _pauseStartedAt = -1;
+        Interlocked.Exchange(ref _pauseStartedAt, -1);
         _isPaused = false;
         _lastAcceptedTimestamp = -1;
+        _audio?.SetPaused(false);
     }
 
-    /// <summary>录制源（窗口或显示器）尺寸变化时由服务端的轮询调用，重建捕获管线。</summary>
+    /// <summary>录制源尺寸变化时由服务端轮询调用，重建捕获管线。</summary>
     internal void RefreshIfSourceResized()
     {
-        if (_disposed || _stopping || _reconfigureScheduled != 0)
+        if (_disposed || _stopping || Volatile.Read(ref _reconfigureScheduled) != 0)
         {
             return;
         }
@@ -279,10 +308,12 @@ internal sealed class RecordingSession : IDisposable
         }
 
         _clock.Stop();
+        StopAudio();
 
         try
         {
-            _queue.CompleteAdding();
+            _videoQueue.CompleteAdding();
+            _audioQueue.CompleteAdding();
         }
         catch (ObjectDisposedException)
         {
@@ -365,31 +396,67 @@ internal sealed class RecordingSession : IDisposable
                 _plan.OutputWidth,
                 _plan.OutputHeight,
                 _plan.FramesPerSecond,
-                _plan.Bitrate);
+                _plan.Bitrate,
+                _muxAudio ? _plan.Audio : null);
 
-            UsesHardwareEncoder = writer.UsesHardwareEncoder;
+            _audioEnabledByWriter = writer.SupportsAudio;
+
+            if (_muxAudio && !writer.SupportsAudio)
+            {
+                var reason = writer.AudioFailureReason ?? "未知原因";
+                Log.Error($"MP4 无法承载 AAC 音频流：{reason} 本次录屏只保留画面。");
+                AudioUnavailable?.Invoke($"这台电脑没能创建 AAC 音轨（{reason}），录屏会继续，但视频没有声音。");
+            }
+
             _encoderReady.TrySetResult(true);
 
             var buffers = _frameBuffers!;
             var timestamps = _frameTimestamps!;
 
-            foreach (var index in _queue.GetConsumingEnumerable())
+            while (true)
             {
-                if (pending >= 0)
+                var progressed = false;
+
+                while (_videoQueue.Count > 0 && _videoQueue.TryTake(out var index, 0))
                 {
-                    var duration = Math.Clamp(
-                        timestamps[index] - timestamps[pending],
-                        10_000L,
-                        TicksPerSecond);
-                    WritePacket(writer, buffers, timestamps, pending, duration);
+                    progressed = true;
+
+                    if (pending >= 0)
+                    {
+                        var duration = Math.Clamp(
+                            timestamps[index] - timestamps[pending],
+                            10_000L,
+                            TicksPerSecond);
+                        WriteVideoPacket(writer, buffers, timestamps, pending, duration);
+                    }
+
+                    EnsureBaseTime(timestamps[index]);
+                    pending = index;
                 }
 
-                if (_firstTimestamp < 0)
+                while (_audioQueue.Count > 0 && _audioQueue.TryTake(out var packet, 0))
                 {
-                    _firstTimestamp = timestamps[index];
+                    progressed = true;
+                    EnsureBaseTime(packet.Time100Ns);
+                    writer.WriteAudioSample(
+                        packet.Samples,
+                        Math.Max(0, packet.Time100Ns - _baseTime100Ns),
+                        RecordingAudioEngine.SampleDuration100Ns);
+                    Interlocked.Increment(ref _audioSamplesWritten);
                 }
 
-                pending = index;
+                var videoClosed = _videoQueue.IsCompleted && _videoQueue.Count == 0;
+                var audioClosed = _audioQueue.IsCompleted && _audioQueue.Count == 0;
+
+                if (videoClosed && audioClosed)
+                {
+                    break;
+                }
+
+                if (!progressed)
+                {
+                    Thread.Sleep(AudioIdleSleepMs);
+                }
             }
 
             if (pending >= 0)
@@ -397,11 +464,12 @@ internal sealed class RecordingSession : IDisposable
                 // 静态画面下 WGC 可能长时间不再送帧；用最后一帧覆盖到停止时刻，
                 // 保证 MP4 时长与录制时长一致。
                 var stopped = Interlocked.Read(ref _stoppedTimestamp);
-                var finalDuration = stopped > timestamps[pending]
-                    ? Math.Max(_frameInterval, stopped - timestamps[pending])
+                var finalTime = timestamps[pending];
+                var finalDuration = stopped > finalTime
+                    ? Math.Max(_frameInterval, stopped - finalTime)
                     : _frameInterval;
 
-                WritePacket(writer, buffers, timestamps, pending, finalDuration);
+                WriteVideoPacket(writer, buffers, timestamps, pending, finalDuration);
                 pending = -1;
             }
 
@@ -450,7 +518,15 @@ internal sealed class RecordingSession : IDisposable
         }
     }
 
-    private void WritePacket(
+    private void EnsureBaseTime(long rawTime)
+    {
+        if (_baseTime100Ns < 0)
+        {
+            _baseTime100Ns = rawTime;
+        }
+    }
+
+    private void WriteVideoPacket(
         MediaFoundationWriter writer,
         byte[][] buffers,
         long[] timestamps,
@@ -459,7 +535,7 @@ internal sealed class RecordingSession : IDisposable
     {
         try
         {
-            var timestamp = Math.Max(0, timestamps[index] - _firstTimestamp);
+            var timestamp = Math.Max(0, timestamps[index] - Math.Max(0, _baseTime100Ns));
             writer.WriteFrame(buffers[index], timestamp, duration);
             _encodedFrames++;
         }
@@ -485,9 +561,14 @@ internal sealed class RecordingSession : IDisposable
         {
             using var frame = sender.TryGetNextFrame();
 
-            if (frame is null || _isPaused)
+            if (frame is null)
             {
-                // 暂停时仍要把帧取出来丢弃，否则帧池缓冲会被占满，恢复后拿到的是旧画面。
+                return;
+            }
+
+            if (_isPaused)
+            {
+                // 暂停时仍要把帧取出来丢弃，否则帧池缓冲被占满，恢复后拿到的是旧画面。
                 return;
             }
 
@@ -498,14 +579,17 @@ internal sealed class RecordingSession : IDisposable
 
             try
             {
-                if (_disposed || _stopping || _reconfigureScheduled != 0)
+                if (_disposed || _stopping || Volatile.Read(ref _reconfigureScheduled) != 0)
                 {
                     return;
                 }
 
                 var timestamp = ReadTimestamp();
 
-                if (timestamp - _lastAcceptedTimestamp < _frameInterval)
+                // 首帧一定要收下：静态画面下 WGC 可能只送这一帧，
+                // 按帧距把它挡掉就会出现"整段录制没有画面"。
+                if (_lastAcceptedTimestamp >= 0 &&
+                    timestamp - _lastAcceptedTimestamp < _frameInterval)
                 {
                     return;
                 }
@@ -576,13 +660,13 @@ internal sealed class RecordingSession : IDisposable
 
             timestamps[index] = timestamp;
 
-            if (_queue.IsAddingCompleted)
+            if (_videoQueue.IsAddingCompleted)
             {
                 _freeBuffers.Enqueue(index);
                 return false;
             }
 
-            _queue.Add(index);
+            _videoQueue.Add(index);
             return true;
         }
         catch
@@ -717,6 +801,60 @@ internal sealed class RecordingSession : IDisposable
         }
     }
 
+    /// <summary>
+    /// 先开音频设备再建编码器：两路都开不成时干脆不放音轨，
+    /// 而不是留下一个没有任何样本的空 AAC 流。
+    /// </summary>
+    private async Task<bool> OpenAudioAsync()
+    {
+        var engine = new RecordingAudioEngine(
+            _plan.SystemAudio,
+            _plan.Microphone,
+            ReadTimestamp,
+            EnqueueAudioPacket);
+
+        engine.SourceFailed += message => AudioUnavailable?.Invoke(message);
+        _audio = engine;
+
+        var openTask = engine.StartAndOpenAsync();
+        var finished = await Task.WhenAny(openTask, Task.Delay(AudioOpenTimeoutMs)).ConfigureAwait(true);
+
+        if (finished != openTask || !openTask.Result)
+        {
+            Log.Info("录屏音频设备不可用，本次只录画面。");
+            StopAudio();
+            return false;
+        }
+
+        return true;
+    }
+
+    private void EnqueueAudioPacket(AudioPacket packet)
+    {
+        if (_audioQueue.IsAddingCompleted || _stopping || _audioQueue.Count > MaxQueuedAudioSamples)
+        {
+            Interlocked.Increment(ref _droppedAudioSamples);
+            return;
+        }
+
+        try
+        {
+            _audioQueue.Add(packet);
+        }
+        catch (InvalidOperationException)
+        {
+            // 收尾阶段队列刚被关闭。
+            Interlocked.Increment(ref _droppedAudioSamples);
+        }
+    }
+
+    private void StopAudio()
+    {
+        var engine = _audio;
+        _audio = null;
+        engine?.Dispose();
+    }
+
     private void ScheduleReconfigure()
     {
         if (Interlocked.Exchange(ref _reconfigureScheduled, 1) != 0)
@@ -744,8 +882,8 @@ internal sealed class RecordingSession : IDisposable
                     StartCapture();
                 }
 
+                Volatile.Write(ref _refreshCount, _refreshCount + 1);
                 Log.Info($"录制源尺寸变化，已重建捕获：{_surfaceWidth}x{_surfaceHeight}");
-                Interlocked.Add(ref _refreshCount, 1);
             }
             catch (Exception ex)
             {
@@ -780,13 +918,24 @@ internal sealed class RecordingSession : IDisposable
     private long ReadRawTimestamp() =>
         (long)(_clock.ElapsedTicks * (10_000_000.0 / Stopwatch.Frequency));
 
-    private long ReadTimestamp() =>
-        ReadRawTimestamp() - Interlocked.Read(ref _pausedTotal);
-
-    private void MarkStopped()
+    private long ReadTimestamp()
     {
-        Interlocked.Exchange(ref _stoppedTimestamp, Math.Max(0, ReadTimestamp()));
+        var raw = ReadRawTimestamp();
+        var paused = Interlocked.Read(ref _pausedTotal);
+        var pauseStartedAt = Interlocked.Read(ref _pauseStartedAt);
+
+        // 正在进行的这段暂停也要扣掉，录制时间轴才会在暂停时真正冻住：
+        // 浮层计时不会继续走，音频时间戳也不会在恢复时往回跳。
+        if (pauseStartedAt >= 0)
+        {
+            paused += raw - pauseStartedAt;
+        }
+
+        return Math.Max(0, raw - paused);
     }
+
+    private void MarkStopped() =>
+        Interlocked.Exchange(ref _stoppedTimestamp, Math.Max(0, ReadTimestamp()));
 
     private void OnItemClosed(GraphicsCaptureItem sender, object args)
     {
@@ -867,6 +1016,7 @@ internal sealed class RecordingSession : IDisposable
         }
 
         _clock.Stop();
+        StopAudio();
 
         try
         {
@@ -879,7 +1029,8 @@ internal sealed class RecordingSession : IDisposable
 
         try
         {
-            _queue.CompleteAdding();
+            _videoQueue.CompleteAdding();
+            _audioQueue.CompleteAdding();
         }
         catch (ObjectDisposedException)
         {
@@ -890,7 +1041,7 @@ internal sealed class RecordingSession : IDisposable
         {
             try
             {
-                _encoderCompleted.Task.Wait(TimeSpan.FromSeconds(6));
+                _encoderCompleted.Task.Wait(TimeSpan.FromSeconds(8));
             }
             catch
             {
@@ -910,22 +1061,18 @@ internal sealed class RecordingSession : IDisposable
             }
         }
 
-        while (_queue.TryTake(out _))
+        while (_videoQueue.TryTake(out _))
         {
             // 丢弃仍在队列里的帧索引。
         }
 
-        if (_encoderThread is null || !_encoderThread.IsAlive)
+        while (_audioQueue.TryTake(out _))
         {
-            try
-            {
-                _queue.Dispose();
-            }
-            catch
-            {
-                // 忽略队列释放异常。
-            }
+            // 丢弃仍在队列里的音频采样。
         }
+
+        DisposeQueueIfIdle(_videoQueue);
+        DisposeQueueIfIdle(_audioQueue);
 
         lock (_captureLock)
         {
@@ -939,14 +1086,36 @@ internal sealed class RecordingSession : IDisposable
         _frameTimestamps = null;
         _cropScratch = null;
     }
+
+    private static void DisposeQueueIfIdle<T>(BlockingCollection<T> queue)
+    {
+        try
+        {
+            queue.Dispose();
+        }
+        catch
+        {
+            // 忽略队列释放异常。
+        }
+    }
 }
 
 /// <summary>
-/// 一次录制的编码参数：输出尺寸、帧率、码率与是否采集光标。
+/// 一次录制的编码参数：视频尺寸帧率码率、是否采集光标，以及需要一起写入的音频。
 /// </summary>
 internal sealed record RecordingPlan(
     int OutputWidth,
     int OutputHeight,
     int FramesPerSecond,
     int Bitrate,
-    bool RecordCursor);
+    bool RecordCursor,
+    bool SystemAudio = false,
+    bool Microphone = false,
+    int AudioBitrate = 192_000)
+{
+    internal bool WantsAudio => SystemAudio || Microphone;
+
+    internal AudioStreamDescriptor? Audio => WantsAudio
+        ? new AudioStreamDescriptor(48_000, 2, AudioBitrate)
+        : null;
+}

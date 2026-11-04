@@ -98,10 +98,31 @@ namespace HaloCap.Interop
         private static readonly Guid MfReadwriteEnableHardwareTransforms =
             new Guid("a634a91c-822b-41b9-a494-4de4643612b0");
 
+        private static readonly Guid MfAudioMediaType =
+            new Guid("73647561-0000-0010-8000-00AA00389B71");
+
+        // MFAudioFormat_AAC 的 Data1 是 WAVE_FORMAT_MPEG_HEAAC（0x1610），
+        // 不是 0x00FF（那个是 MFAudioFormat_RAW）；写成 0x00FF 时写入器找不到 AAC 编码器。
+        private static readonly Guid MfAudioFormatAac =
+            new Guid("00001610-0000-0010-8000-00AA00389B71");
+
+        private static readonly Guid MfMtAudioNumChannels =
+            new Guid("37e48bf5-645e-4c5b-89de-ada9e29b696a");
+
+        private static readonly Guid MfMtAudioSamplesPerSecond =
+            new Guid("5faeeae7-0290-4c31-9e8a-c534f68d9dba");
+
+        private static readonly Guid MfSinkWriterDisableThrottling =
+            new Guid("08b845d8-2b74-4afe-9d53-be16d2d5ae4f");
+
         private IntPtr _sinkWriter;
         private IntPtr _outputType;
         private IntPtr _inputType;
-        private int _streamIndex;
+        private IntPtr _audioOutputType;
+        private IntPtr _audioInputType;
+        private int _videoStreamIndex;
+        private int _audioStreamIndex = -1;
+        private short[]? _pcmScratch;
         private bool _writingStarted;
         private bool _finalized;
         private bool _disposed;
@@ -110,7 +131,13 @@ namespace HaloCap.Interop
         private readonly int _height;
         private readonly int _frameBytes;
 
-        public MediaFoundationWriter(string path, int width, int height, int framesPerSecond, int bitrate)
+        public MediaFoundationWriter(
+            string path,
+            int width,
+            int height,
+            int framesPerSecond,
+            int bitrate,
+            AudioStreamDescriptor? audio)
         {
             if (string.IsNullOrEmpty(path))
             {
@@ -157,25 +184,42 @@ namespace HaloCap.Interop
                     bitrate,
                     false);
 
-                // 先尝试让 Media Foundation 载入硬件 H.264 编码器，失败再退回软件编码。
-                Exception? hardwareError = null;
-
-                if (!TryConfigure(path, true, out hardwareError))
+                if (audio is not null)
                 {
+                    CreateAudioTypes(audio);
+                }
+
+                // 依次尝试：硬件编码 + 音频、软件编码 + 音频、只留视频。
+                // 机器上没有可用的 AAC 编码器时，宁可只录画面也不让整次录制失败。
+                var attempts = audio is null
+                    ? new[] { (hardware: true, audio: false), (hardware: false, audio: false) }
+                    : new[]
+                    {
+                        (hardware: true, audio: true),
+                        (hardware: false, audio: true),
+                        (hardware: false, audio: false)
+                    };
+
+                Exception? lastError = null;
+
+                foreach (var attempt in attempts)
+                {
+                    if (TryConfigure(path, attempt.hardware, attempt.audio, out lastError))
+                    {
+                        UsesHardwareEncoder = attempt.hardware;
+                        SupportsAudio = attempt.audio && _audioStreamIndex >= 0;
+                        return;
+                    }
+
                     ReleaseSinkWriter();
 
-                    if (!TryConfigure(path, false, out var softwareError))
+                    if (attempt.audio)
                     {
-                        ReleaseSinkWriter();
-                        throw softwareError ??
-                            hardwareError ??
-                            new COMException("创建 MP4 写入器失败。");
+                        AudioFailureReason = lastError?.Message ?? "未知错误";
                     }
                 }
-                else
-                {
-                    UsesHardwareEncoder = true;
-                }
+
+                throw lastError ?? new COMException("创建 MP4 写入器失败。");
             }
             catch
             {
@@ -186,7 +230,49 @@ namespace HaloCap.Interop
 
         public bool UsesHardwareEncoder { get; private set; }
 
-        private bool TryConfigure(string path, bool preferHardware, out Exception? error)
+        public bool SupportsAudio { get; private set; }
+
+        /// <summary>音频流没能加进 MP4 的原因；为空表示没有失败过。</summary>
+        public string? AudioFailureReason { get; private set; }
+
+        public int AudioStreamIndex => _audioStreamIndex;
+
+        private void CreateAudioTypes(AudioStreamDescriptor audio)
+        {
+            // 输入端用 16 位整数 PCM：这是 Media Foundation AAC 编码器普遍接受的格式，
+            // 32 位 float 的 WAVEFORMATEXTENSIBLE 在部分机器上会被 SetInputMediaType 拒掉。
+            var formatBytes = WaveFormatHelper.BuildPcm16(audio.SampleRate, audio.Channels);
+            var handle = GCHandle.Alloc(formatBytes, GCHandleType.Pinned);
+
+            try
+            {
+                // 输入端交给编码器的是 16 位整数 PCM，属性由 MF 从 WAVEFORMATEX 自己推导。
+                Check(
+                    NativeMf.MFCreateAudioMediaType(handle.AddrOfPinnedObject(), out _audioInputType),
+                    "创建音频输入格式");
+
+                // 输出端只描述 AAC 流本身：主类型、子类型、码率、声道、采样率。
+                // 把 PCM 的成帧属性（块对齐/位深/平均字节数）一起带进来反而谈不成编码器。
+                Check(NativeMf.MFCreateMediaType(out _audioOutputType), "创建音频输出格式");
+                Check(SetGuid(_audioOutputType, MfMtMajorType, MfAudioMediaType), "设置音频主类型");
+                Check(SetGuid(_audioOutputType, MfMtSubtype, MfAudioFormatAac), "设置 AAC 子类型");
+                Check(
+                    SetUInt32(_audioOutputType, MfMtAvgBitrate, (uint)Math.Max(32_000, audio.Bitrate)),
+                    "设置音频码率");
+                Check(
+                    SetUInt32(_audioOutputType, MfMtAudioNumChannels, (uint)audio.Channels),
+                    "设置音频声道数");
+                Check(
+                    SetUInt32(_audioOutputType, MfMtAudioSamplesPerSecond, (uint)audio.SampleRate),
+                    "设置音频采样率");
+            }
+            finally
+            {
+                handle.Free();
+            }
+        }
+
+        private bool TryConfigure(string path, bool preferHardware, bool withAudio, out Exception? error)
         {
             error = null;
 
@@ -195,16 +281,33 @@ namespace HaloCap.Interop
                 CreateSinkWriter(path, preferHardware);
 
                 Check(
-                    Invoke<AddStreamDelegate>(_sinkWriter, 3)(_sinkWriter, _outputType, out _streamIndex),
+                    Invoke<AddStreamDelegate>(_sinkWriter, 3)(_sinkWriter, _outputType, out _videoStreamIndex),
                     "添加 H.264 视频流");
 
                 Check(
                     Invoke<SetInputMediaTypeDelegate>(_sinkWriter, 4)(
                         _sinkWriter,
-                        _streamIndex,
+                        _videoStreamIndex,
                         _inputType,
                         IntPtr.Zero),
                     "设置视频输入格式");
+
+                _audioStreamIndex = -1;
+
+                if (withAudio)
+                {
+                    Check(
+                        Invoke<AddStreamDelegate>(_sinkWriter, 3)(_sinkWriter, _audioOutputType, out _audioStreamIndex),
+                        "添加 AAC 音频流");
+
+                    Check(
+                        Invoke<SetInputMediaTypeDelegate>(_sinkWriter, 4)(
+                            _sinkWriter,
+                            _audioStreamIndex,
+                            _audioInputType,
+                            IntPtr.Zero),
+                        "设置音频输入格式");
+                }
 
                 Check(Invoke<NoArgDelegate>(_sinkWriter, 5)(_sinkWriter), "开始写入");
                 _writingStarted = true;
@@ -223,9 +326,15 @@ namespace HaloCap.Interop
 
             try
             {
+                Check(NativeMf.MFCreateAttributes(out attributes, 1), "创建写入器属性");
+
+                // 录屏是实时喂数据的，去掉写入器自带的限速，避免音频追赶视频时卡住。
+                Check(
+                    SetUInt32(attributes, MfSinkWriterDisableThrottling, 1),
+                    "关闭写入器限速");
+
                 if (preferHardware)
                 {
-                    Check(NativeMf.MFCreateAttributes(out attributes, 1), "创建写入器属性");
                     Check(
                         SetUInt32(attributes, MfReadwriteEnableHardwareTransforms, 1),
                         "启用硬件编码");
@@ -250,25 +359,95 @@ namespace HaloCap.Interop
         {
             Release(_sinkWriter);
             _sinkWriter = IntPtr.Zero;
-            _streamIndex = 0;
+            _videoStreamIndex = 0;
+            _audioStreamIndex = -1;
             _writingStarted = false;
         }
 
         public void WriteFrame(byte[] bgraTopDown, long timestamp, long duration)
+        {
+            if (bgraTopDown == null || bgraTopDown.Length < _frameBytes)
+            {
+                throw new ArgumentException("视频帧缓冲区太小。", "bgraTopDown");
+            }
+
+            WriteStreamSample(
+                _videoStreamIndex,
+                _frameBytes,
+                bgraTopDown,
+                null,
+                0,
+                timestamp,
+                duration,
+                "视频帧");
+        }
+
+        public void WriteAudioSample(float[] interleavedFloat, long timestamp, long duration)
+        {
+            if (!SupportsAudio || _audioStreamIndex < 0)
+            {
+                return;
+            }
+
+            if (interleavedFloat == null || interleavedFloat.Length == 0)
+            {
+                throw new ArgumentException("音频采样为空。", "interleavedFloat");
+            }
+
+            if (interleavedFloat.Length % 2 != 0)
+            {
+                throw new ArgumentException("音频长度不是整帧边界。", "interleavedFloat");
+            }
+
+            if (_pcmScratch is null || _pcmScratch.Length < interleavedFloat.Length)
+            {
+                _pcmScratch = new short[interleavedFloat.Length];
+            }
+
+            var samples = interleavedFloat.Length;
+
+            for (var i = 0; i < samples; i++)
+            {
+                var value = interleavedFloat[i];
+
+                if (!float.IsFinite(value))
+                {
+                    value = 0f;
+                }
+
+                var scaled = value >= 1f ? short.MaxValue : value <= -1f ? (short)-32768 : (short)(value * 32767f);
+                _pcmScratch[i] = scaled;
+            }
+
+            WriteStreamSample(
+                _audioStreamIndex,
+                checked(samples * 2),
+                null,
+                _pcmScratch,
+                samples,
+                timestamp,
+                duration,
+                "音频帧");
+        }
+
+        private void WriteStreamSample(
+            int streamIndex,
+            int length,
+            byte[]? videoBytes,
+            short[]? pcmSamples,
+            int pcmCount,
+            long timestamp,
+            long duration,
+            string label)
         {
             if (_disposed || _finalized || !_writingStarted || _sinkWriter == IntPtr.Zero)
             {
                 throw new InvalidOperationException("录制写入器已经结束。");
             }
 
-            if (bgraTopDown == null || bgraTopDown.Length < _frameBytes)
-            {
-                throw new ArgumentException("视频帧缓冲区太小。", "bgraTopDown");
-            }
-
             if (timestamp < 0 || duration <= 0)
             {
-                throw new ArgumentException("视频帧时间戳无效。");
+                throw new ArgumentException(label + "时间戳无效。");
             }
 
             IntPtr buffer = IntPtr.Zero;
@@ -277,29 +456,37 @@ namespace HaloCap.Interop
             try
             {
                 Check(
-                    NativeMf.MFCreateMemoryBuffer((uint)_frameBytes, out buffer),
-                    "创建视频帧缓冲区");
+                    NativeMf.MFCreateMemoryBuffer((uint)length, out buffer),
+                    "创建" + label + "缓冲区");
 
                 IntPtr destination;
                 uint maxLength;
                 uint currentLength;
                 Check(
                     Invoke<LockDelegate>(buffer, 3)(buffer, out destination, out maxLength, out currentLength),
-                    "锁定视频帧缓冲区");
+                    "锁定" + label + "缓冲区");
 
-                Marshal.Copy(bgraTopDown, 0, destination, _frameBytes);
-                Check(Invoke<NoArgDelegate>(buffer, 4)(buffer), "解锁视频帧缓冲区");
+                if (videoBytes is not null)
+                {
+                    Marshal.Copy(videoBytes, 0, destination, length);
+                }
+                else
+                {
+                    Marshal.Copy(pcmSamples!, 0, destination, pcmCount);
+                }
+
+                Check(Invoke<NoArgDelegate>(buffer, 4)(buffer), "解锁" + label + "缓冲区");
                 Check(
-                    Invoke<SetCurrentLengthDelegate>(buffer, 6)(buffer, (uint)_frameBytes),
-                    "设置视频帧长度");
+                    Invoke<SetCurrentLengthDelegate>(buffer, 6)(buffer, (uint)length),
+                    "设置" + label + "长度");
 
-                Check(NativeMf.MFCreateSample(out sample), "创建视频帧样本");
-                Check(Invoke<AddBufferDelegate>(sample, 42)(sample, buffer), "添加视频帧缓冲");
+                Check(NativeMf.MFCreateSample(out sample), "创建" + label + "样本");
+                Check(Invoke<AddBufferDelegate>(sample, 42)(sample, buffer), "添加" + label + "缓冲");
                 Check(Invoke<SetSampleTimeDelegate>(sample, 36)(sample, timestamp), "设置帧时间戳");
                 Check(Invoke<SetSampleTimeDelegate>(sample, 38)(sample, duration), "设置帧时长");
                 Check(
-                    Invoke<WriteSampleDelegate>(_sinkWriter, 6)(_sinkWriter, _streamIndex, sample),
-                    "写入视频帧");
+                    Invoke<WriteSampleDelegate>(_sinkWriter, 6)(_sinkWriter, streamIndex, sample),
+                    "写入" + label);
             }
             finally
             {
@@ -469,6 +656,13 @@ namespace HaloCap.Interop
             Release(_inputType);
             _inputType = IntPtr.Zero;
 
+            Release(_audioOutputType);
+            _audioOutputType = IntPtr.Zero;
+
+            Release(_audioInputType);
+            _audioInputType = IntPtr.Zero;
+
+            _audioStreamIndex = -1;
             _writingStarted = false;
 
             if (_mfStarted)
@@ -498,6 +692,9 @@ namespace HaloCap.Interop
             public static extern int MFCreateMediaType(out IntPtr mediaType);
 
             [DllImport("mfplat.dll", ExactSpelling = true)]
+            public static extern int MFCreateAudioMediaType(IntPtr audioFormat, out IntPtr mediaType);
+
+            [DllImport("mfplat.dll", ExactSpelling = true)]
             public static extern int MFCreateAttributes(out IntPtr attributes, uint initialCapacity);
 
             [DllImport("mfplat.dll", ExactSpelling = true)]
@@ -514,4 +711,7 @@ namespace HaloCap.Interop
                 out IntPtr sinkWriter);
         }
     }
+
+    /// <summary>MP4 里要一起写入的音频流参数。</summary>
+    internal sealed record AudioStreamDescriptor(int SampleRate, int Channels, int Bitrate);
 }

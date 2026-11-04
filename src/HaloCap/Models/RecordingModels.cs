@@ -37,6 +37,12 @@ public enum RecordingRange
     Window = 1
 }
 
+public enum RecordingAudioBitrate
+{
+    K128 = 128_000,
+    K192 = 192_000
+}
+
 public sealed class RecordingSettings
 {
     public RecordingResolution Resolution { get; set; } = RecordingResolution.Original;
@@ -51,9 +57,19 @@ public sealed class RecordingSettings
 
     public RecordingRange Range { get; set; } = RecordingRange.Region;
 
+    public bool SystemAudio { get; set; } = true;
+
+    public bool Microphone { get; set; }
+
+    public RecordingAudioBitrate AudioBitrate { get; set; } = RecordingAudioBitrate.K192;
+
     public int FramesPerSecond => (int)FrameRate;
 
     public int CountdownSeconds => (int)Countdown;
+
+    public int AudioBitrateValue => (int)AudioBitrate;
+
+    public bool WantsAudio => SystemAudio || Microphone;
 
     public RecordingSettings Clone() => new()
     {
@@ -62,7 +78,10 @@ public sealed class RecordingSettings
         Quality = Quality,
         RecordCursor = RecordCursor,
         Countdown = Countdown,
-        Range = Range
+        Range = Range,
+        SystemAudio = SystemAudio,
+        Microphone = Microphone,
+        AudioBitrate = AudioBitrate
     };
 
     public void Normalize()
@@ -91,6 +110,11 @@ public sealed class RecordingSettings
         {
             Range = RecordingRange.Region;
         }
+
+        if (!Enum.IsDefined(typeof(RecordingAudioBitrate), AudioBitrate))
+        {
+            AudioBitrate = RecordingAudioBitrate.K192;
+        }
     }
 
     public bool ValueEquals(RecordingSettings? other) =>
@@ -100,7 +124,10 @@ public sealed class RecordingSettings
         Quality == other.Quality &&
         RecordCursor == other.RecordCursor &&
         Countdown == other.Countdown &&
-        Range == other.Range;
+        Range == other.Range &&
+        SystemAudio == other.SystemAudio &&
+        Microphone == other.Microphone &&
+        AudioBitrate == other.AudioBitrate;
 
     public static int GetTargetHeight(RecordingResolution resolution) => resolution switch
     {

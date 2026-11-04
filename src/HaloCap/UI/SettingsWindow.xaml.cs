@@ -380,6 +380,10 @@ public partial class SettingsWindow : Window
         RecordCountdown3Radio.IsChecked = _recordingSettings.Countdown == RecordingCountdown.ThreeSeconds;
         RecordCountdown5Radio.IsChecked = _recordingSettings.Countdown == RecordingCountdown.FiveSeconds;
         RecordCursorToggle.IsChecked = _recordingSettings.RecordCursor;
+        SystemAudioToggle.IsChecked = _recordingSettings.SystemAudio;
+        MicrophoneToggle.IsChecked = _recordingSettings.Microphone;
+        AudioBitrate128Radio.IsChecked = _recordingSettings.AudioBitrate == RecordingAudioBitrate.K128;
+        AudioBitrate192Radio.IsChecked = _recordingSettings.AudioBitrate == RecordingAudioBitrate.K192;
         _suppressRecordingUi = false;
 
         UpdateRecordingSummary();
@@ -409,6 +413,9 @@ public partial class SettingsWindow : Window
             case "RecordCountdown" when Enum.TryParse<RecordingCountdown>(tag, out var countdown):
                 _recordingSettings.Countdown = countdown;
                 break;
+            case "RecordAudioBitrate" when Enum.TryParse<RecordingAudioBitrate>(tag, out var audioBitrate):
+                _recordingSettings.AudioBitrate = audioBitrate;
+                break;
             default:
                 return;
         }
@@ -424,7 +431,10 @@ public partial class SettingsWindow : Window
         Quality = _recordingSettings.Quality,
         RecordCursor = RecordCursorToggle.IsChecked == true,
         Countdown = _recordingSettings.Countdown,
-        Range = _recordingSettings.Range
+        Range = _recordingSettings.Range,
+        SystemAudio = SystemAudioToggle.IsChecked == true,
+        Microphone = MicrophoneToggle.IsChecked == true,
+        AudioBitrate = _recordingSettings.AudioBitrate
     };
 
     private void UpdateRecordingSummary()
@@ -444,10 +454,18 @@ public partial class SettingsWindow : Window
             _ => "均衡：日常分享与录课够用，码率自动计算"
         };
 
+        var audio = (SystemAudioToggle.IsChecked == true, MicrophoneToggle.IsChecked == true) switch
+        {
+            (true, true) => "系统声音+麦克风",
+            (true, false) => "仅系统声音",
+            (false, true) => "仅麦克风",
+            _ => "静音"
+        };
+
         RecordingSummaryText.Text =
             $"{(_recordingSettings.Range == RecordingRange.Window ? "录制窗口" : "录制区域")}" +
             $" · 1080p 选区输出 {preview.Width}×{preview.Height}" +
-            $" · 约 {megabits:0.#} Mbps" +
+            $" · 视频约 {megabits:0.#} Mbps · {audio} {_recordingSettings.AudioBitrateValue / 1000} kbps" +
             $" · {_recordingSettings.FramesPerSecond}fps" +
             $" · {(_recordingSettings.CountdownSeconds > 0 ? $"倒计时 {_recordingSettings.CountdownSeconds} 秒" : "不倒计时")}" +
             $" · {(_recordingSettings.RecordCursor ? "含光标" : "不含光标")}";

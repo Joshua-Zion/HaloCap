@@ -19,13 +19,13 @@
                 Width="118"
                 Height="118"
                 CornerRadius="30"
-                Background="#E610141C"
-                BorderBrush="#45FFFFFF"
+                Background="#F2FFFFFF"
+                BorderBrush="#1F000000"
                 BorderThickness="1"
                 HorizontalAlignment="Center"
                 VerticalAlignment="Center">
             <Border.Effect>
-                <DropShadowEffect Color="#FF000000" BlurRadius="26" ShadowDepth="6" Opacity="0.5" />
+                <DropShadowEffect Color="#FF8A8F9C" BlurRadius="22" ShadowDepth="4" Opacity="0.35" />
             </Border.Effect>
 
             <Grid>
@@ -33,13 +33,13 @@
                            Text="3"
                            FontSize="54"
                            FontWeight="SemiBold"
-                           Foreground="#F5F8FC"
+                           Foreground="#FF1C1E24"
                            HorizontalAlignment="Center"
                            VerticalAlignment="Center"
                            Margin="0,-8,0,0" />
                 <TextBlock Text="开始录屏"
                            FontSize="10.5"
-                           Foreground="#99E4EAF4"
+                           Foreground="#FF757A88"
                            HorizontalAlignment="Center"
                            VerticalAlignment="Bottom"
                            Margin="0,0,0,17" />

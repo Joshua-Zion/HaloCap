@@ -159,7 +159,7 @@ internal sealed class RecordingSession : IDisposable
     /// <summary>录制源尺寸变化后重建捕获的次数。</summary>
     internal int RefreshCount => Volatile.Read(ref _refreshCount);
 
-    /// <summary>不含暂停时长的已录制时间，单位 100 纳秒。</summary>
+    /// <summary>不含暂停时长的已录制时间，单位 100 纳秒（等于 TimeSpan 的 Tick）。</summary>
     internal long ActiveElapsed100Ns
     {
         get
@@ -174,6 +174,12 @@ internal sealed class RecordingSession : IDisposable
             return !_clock.IsRunning ? 0 : Math.Max(0, ReadTimestamp());
         }
     }
+
+    /// <summary>
+    /// 已录制时长。换算放在这里，是为了让调用方不会再按自己的单位猜一次——
+    /// 之前浮层和完成通知都把 100 纳秒当成了毫秒，计时看起来一直停在 0。
+    /// </summary>
+    internal TimeSpan ActiveElapsed => TimeSpan.FromTicks(ActiveElapsed100Ns);
 
     internal async Task StartAsync()
     {

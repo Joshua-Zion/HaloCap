@@ -3592,6 +3592,14 @@ internal static class Program
                 $"the active timeline should be about 1.2s but was {expectedSeconds:0.##}s");
             True(Math.Abs(actualSeconds - expectedSeconds) < 0.35,
                 $"the mp4 duration should match the active timeline: file {actualSeconds:0.##}s vs timeline {expectedSeconds:0.##}s");
+
+            // 服务层曾把 100 纳秒当成毫秒来换算，浮层计时就一直停在 00:00。
+            // ActiveElapsed 必须原样按 TimeSpan 的 Tick 解释同一个计数器。
+            var activeSpan = session.ActiveElapsed;
+            True(Math.Abs(activeSpan.Ticks - activeElapsed) < activeElapsed / 50,
+                $"ActiveElapsed should read the 100ns counter without rescaling: {activeSpan.Ticks} vs {activeElapsed}");
+            True(Math.Abs(activeSpan.TotalSeconds - expectedSeconds) < 0.2,
+                $"the elapsed timespan should be about {expectedSeconds:0.##}s but was {activeSpan.TotalSeconds:0.##}s");
         }
         finally
         {

@@ -131,32 +131,6 @@ internal sealed class RecordingService : IDisposable
         var path = AppPaths.CreateRecordingPath(request.ConfiguredDirectory, DateTime.Now);
         EnsureFreeSpace(path, bitrate);
 
-        if (settings.CountdownSeconds > 0)
-        {
-            await RunCountdownAsync(request.Anchor, settings.CountdownSeconds).ConfigureAwait(true);
-        }
-
-        if (_disposed)
-        {
-            throw new OperationCanceledException("应用正在退出。");
-        }
-
-        if (isWindow && !WindowGeometry.TryGet(request.WindowHandle, out target))
-        {
-            throw new InvalidOperationException("倒计时期间目标窗口已关闭。");
-        }
-
-        var monitor = isWindow ? WindowGeometry.GetMonitor(target) : request.Monitor;
-        var plan = new RecordingPlan(
-            outputWidth,
-            outputHeight,
-            settings.FramesPerSecond,
-            bitrate,
-            settings.RecordCursor,
-            settings.SystemAudio,
-            settings.Microphone,
-            settings.AudioBitrateValue);
-
         GraphicsCaptureItem? item = null;
         RecordingSession? session = null;
         RecordingHudWindow? hud = null;
@@ -164,6 +138,46 @@ internal sealed class RecordingService : IDisposable
 
         try
         {
+            var monitor = isWindow ? WindowGeometry.GetMonitor(target) : request.Monitor;
+
+            // 倒计时期间先把选区边框挂出来，用户能确认要录的就是这一块。
+            frame = new RecordingFrameWindow(
+                isWindow ? target.VisibleRect : ScreenGeometry.ToVirtual(crop, monitor.Bounds));
+            frame.PrepareForCapture();
+            frame.ShowFrame();
+
+            if (settings.CountdownSeconds > 0)
+            {
+                await RunCountdownAsync(request.Anchor, settings.CountdownSeconds).ConfigureAwait(true);
+            }
+
+            if (_disposed)
+            {
+                throw new OperationCanceledException("应用正在退出。");
+            }
+
+            // 倒计时期间目标窗口可能已经关闭或挪走。
+            if (isWindow)
+            {
+                if (!WindowGeometry.TryGet(request.WindowHandle, out target))
+                {
+                    throw new InvalidOperationException("倒计时期间目标窗口已关闭。");
+                }
+
+                monitor = WindowGeometry.GetMonitor(target);
+                frame.UpdateCrop(target.VisibleRect);
+            }
+
+            var plan = new RecordingPlan(
+                outputWidth,
+                outputHeight,
+                settings.FramesPerSecond,
+                bitrate,
+                settings.RecordCursor,
+                settings.SystemAudio,
+                settings.Microphone,
+                settings.AudioBitrateValue);
+
             item = isWindow
                 ? WinRtCaptureInterop.CreateItemForWindow(request.WindowHandle)
                 : WinRtCaptureInterop.CreateItemForMonitor(monitor.Handle);
@@ -180,8 +194,6 @@ internal sealed class RecordingService : IDisposable
                 isWindow);
 
             hud = new RecordingHudWindow(monitor, request.Anchor);
-            frame = new RecordingFrameWindow(
-                isWindow ? target.VisibleRect : ScreenGeometry.ToVirtual(crop, monitor.Bounds));
 
             session.Faulted += OnSessionFaulted;
             session.CaptureItemClosed += OnCaptureItemClosed;
@@ -191,7 +203,6 @@ internal sealed class RecordingService : IDisposable
             hud.ResumeRequested += OnHudResumeRequested;
 
             hud.PrepareForCapture();
-            frame.PrepareForCapture();
             await session.StartAsync();
 
             if (_disposed)
@@ -200,7 +211,6 @@ internal sealed class RecordingService : IDisposable
             }
 
             hud.ShowHud();
-            frame.ShowFrame();
 
             _session = session;
             _hud = hud;
@@ -388,7 +398,7 @@ internal sealed class RecordingService : IDisposable
                 hud.ResumeRequested -= OnHudResumeRequested;
             }
 
-            var elapsed = TimeSpan.FromTicks(session.ActiveElapsed100Ns / 100);
+            var elapsed = session.ActiveElapsed;
             string? savedPath = null;
             Exception? error = cause;
 
@@ -584,7 +594,7 @@ internal sealed class RecordingService : IDisposable
         }
 
         _hud.UpdateState(new RecordingHudState(
-            TimeSpan.FromTicks(session.ActiveElapsed100Ns / 100),
+            session.ActiveElapsed,
             session.IsPaused,
             BuildHudInfo(session),
             session.SystemAudioActive,

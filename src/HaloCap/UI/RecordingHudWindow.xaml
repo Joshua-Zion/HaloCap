@@ -17,8 +17,8 @@
     <Window.Resources>
         <Style x:Key="HudStopButtonStyle" TargetType="Button">
             <Setter Property="FocusVisualStyle" Value="{x:Null}" />
-            <Setter Property="Foreground" Value="#F0F4FA" />
-            <Setter Property="Background" Value="#14FFFFFF" />
+            <Setter Property="Foreground" Value="#FF2A2E37" />
+            <Setter Property="Background" Value="#0A000000" />
             <Setter Property="Cursor" Value="Hand" />
             <Setter Property="FontSize" Value="11" />
             <Setter Property="Template">
@@ -33,10 +33,10 @@
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Host" Property="Background" Value="#33FF7A7A" />
+                                <Setter TargetName="Host" Property="Background" Value="#1FE0312B" />
                             </Trigger>
                             <Trigger Property="IsPressed" Value="True">
-                                <Setter TargetName="Host" Property="Background" Value="#22FF7A7A" />
+                                <Setter TargetName="Host" Property="Background" Value="#14E0312B" />
                             </Trigger>
                             <Trigger Property="IsEnabled" Value="False">
                                 <Setter Property="Opacity" Value="0.4" />
@@ -60,10 +60,10 @@
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="Host" Property="Background" Value="#33FFFFFF" />
+                                <Setter TargetName="Host" Property="Background" Value="#14000000" />
                             </Trigger>
                             <Trigger Property="IsPressed" Value="True">
-                                <Setter TargetName="Host" Property="Background" Value="#22FFFFFF" />
+                                <Setter TargetName="Host" Property="Background" Value="#0A000000" />
                             </Trigger>
                             <Trigger Property="IsEnabled" Value="False">
                                 <Setter Property="Opacity" Value="0.4" />
@@ -77,12 +77,12 @@
 
     <Grid>
         <Border CornerRadius="13"
-                Background="#F210141C"
-                BorderBrush="#38FFFFFF"
+                Background="#F2FFFFFF"
+                BorderBrush="#1F000000"
                 BorderThickness="1"
                 Padding="13,0">
             <Border.Effect>
-                <DropShadowEffect Color="#FF000000" BlurRadius="22" ShadowDepth="5" Opacity="0.5" />
+                <DropShadowEffect Color="#FF8A8F9C" BlurRadius="18" ShadowDepth="3" Opacity="0.35" />
             </Border.Effect>
 
             <Grid>
@@ -95,11 +95,11 @@
                 </Grid.ColumnDefinitions>
 
                 <Grid Width="15" Height="15" VerticalAlignment="Center">
-                    <Ellipse Width="15" Height="15" Fill="#33FF6B6B" />
+                    <Ellipse Width="15" Height="15" Fill="#33E0312B" />
                     <Ellipse x:Name="PulseDot"
                              Width="8"
                              Height="8"
-                             Fill="#FFFF6B6B"
+                             Fill="#FFE0312B"
                              HorizontalAlignment="Center"
                              VerticalAlignment="Center" />
                 </Grid>
@@ -113,13 +113,13 @@
                                FontSize="9.5"
                                FontWeight="Bold"
                                FontFamily="Consolas"
-                               Foreground="#FFFF8C8C"
+                               Foreground="#FFE0312B"
                                VerticalAlignment="Center" />
                     <TextBlock x:Name="TimerText"
                                Text="00:00"
                                FontSize="12.5"
                                FontFamily="Consolas"
-                               Foreground="#F2F6FA"
+                               Foreground="#FF1C1E24"
                                Margin="8,0,0,0"
                                VerticalAlignment="Center" />
                 </StackPanel>
@@ -128,7 +128,7 @@
                     <TextBlock x:Name="InfoText"
                                Text=""
                                FontSize="10"
-                               Foreground="#99E4EAF4"
+                               Foreground="#FF757A88"
                                TextTrimming="CharacterEllipsis" />
                     <StackPanel x:Name="LevelRow"
                                 Orientation="Horizontal"
@@ -137,26 +137,26 @@
                         <Border x:Name="SystemMeterTrack"
                                 Width="46"
                                 Height="3"
-                                Background="#26FFFFFF"
+                                Background="#14000000"
                                 CornerRadius="1.5"
                                 Margin="0,0,4,0"
                                 ToolTip="系统声音电平">
                             <Border x:Name="SystemMeter"
                                     Width="0"
-                                    Background="#FF7BE0A0"
+                                    Background="#FF18A05B"
                                     CornerRadius="1.5"
                                     HorizontalAlignment="Left" />
                         </Border>
                         <Border x:Name="MicMeterTrack"
                                 Width="46"
                                 Height="3"
-                                Background="#26FFFFFF"
+                                Background="#14000000"
                                 CornerRadius="1.5"
                                 Visibility="Collapsed"
                                 ToolTip="麦克风电平">
                             <Border x:Name="MicMeter"
                                     Width="0"
-                                    Background="#FFFFC971"
+                                    Background="#FFE08A00"
                                     CornerRadius="1.5"
                                     HorizontalAlignment="Left" />
                         </Border>
@@ -172,8 +172,8 @@
                         AutomationProperties.Name="暂停录制"
                         Click="PauseButton_Click">
                     <StackPanel Orientation="Horizontal">
-                        <Rectangle Width="3" Height="8" Fill="#FFE8EDF5" />
-                        <Rectangle Width="3" Height="8" Fill="#FFE8EDF5" Margin="2,0,0,0" />
+                        <Rectangle Width="3" Height="8" Fill="#FF2A2E37" />
+                        <Rectangle Width="3" Height="8" Fill="#FF2A2E37" Margin="2,0,0,0" />
                         <TextBlock x:Name="PauseLabel" Text="暂停" Margin="6,0,0,0" VerticalAlignment="Center" />
                     </StackPanel>
                 </Button>
@@ -186,7 +186,7 @@
                         AutomationProperties.Name="停止录制"
                         Click="StopButton_Click">
                     <StackPanel Orientation="Horizontal">
-                        <Rectangle Width="8" Height="8" Fill="#FFE8EDF5" RadiusX="1.5" RadiusY="1.5" />
+                        <Rectangle Width="8" Height="8" Fill="#FF2A2E37" RadiusX="1.5" RadiusY="1.5" />
                         <TextBlock Text="停止" Margin="6,0,0,0" VerticalAlignment="Center" />
                     </StackPanel>
                 </Button>

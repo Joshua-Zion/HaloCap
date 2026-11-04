@@ -11,8 +11,8 @@ namespace HaloCap.UI;
 
 public partial class RecordingHudWindow : Window
 {
-    private static readonly Brush RecordingBrush = new SolidColorBrush(Color.FromRgb(0xFF, 0x8C, 0x8C));
-    private static readonly Brush PausedBrush = new SolidColorBrush(Color.FromRgb(0xFF, 0xC9, 0x71));
+    private static readonly Brush RecordingBrush = new SolidColorBrush(Color.FromRgb(0xE0, 0x31, 0x2B));
+    private static readonly Brush PausedBrush = new SolidColorBrush(Color.FromRgb(0xE0, 0x8A, 0x00));
 
     private readonly ScreenMonitor _monitor;
     private PhysicalRect _anchor;

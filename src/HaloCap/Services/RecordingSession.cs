@@ -45,8 +45,7 @@ internal sealed class RecordingSession : IDisposable
     private long[]? _frameTimestamps;
     private byte[]? _cropScratch;
     private int _cropStride;
-    private int _cropWidth;
-    private int _cropHeight;
+    private PhysicalRect _crop;
     private int _surfaceWidth;
     private int _surfaceHeight;
     private int _frameBytes;
@@ -121,6 +120,9 @@ internal sealed class RecordingSession : IDisposable
     internal int OutputHeight => _plan.OutputHeight;
 
     internal int FramesPerSecond => _plan.FramesPerSecond;
+
+    /// <summary>当前实际裁剪的区域，坐标相对于捕获表面，保留选区原点。</summary>
+    internal PhysicalRect CropRegion => _crop;
 
     internal int EncodedFrames => _encodedFrames;
 
@@ -593,10 +595,9 @@ internal sealed class RecordingSession : IDisposable
     private void FillFrameBuffer(D3D11CropCopier copier, IntPtr texture, byte[] destination)
     {
         var destinationStride = _plan.OutputWidth * 4;
-        var cropBox = new PhysicalRect(0, 0, _cropWidth, _cropHeight);
         var fit = RecordingFrameScaler.ComputeFitRect(
-            _cropWidth,
-            _cropHeight,
+            _crop.Width,
+            _crop.Height,
             _plan.OutputWidth,
             _plan.OutputHeight);
         var coversCanvas = fit.Left == 0 &&
@@ -604,21 +605,22 @@ internal sealed class RecordingSession : IDisposable
                            fit.Width == _plan.OutputWidth &&
                            fit.Height == _plan.OutputHeight;
 
-        if (coversCanvas && fit.Width == _cropWidth && fit.Height == _cropHeight)
+        if (coversCanvas && fit.Width == _crop.Width && fit.Height == _crop.Height)
         {
-            copier.Copy(texture, cropBox, destination, destinationStride);
+            // _crop 自带选区在捕获表面内的偏移，直接按它裁剪才会录到选中的那块区域。
+            copier.Copy(texture, _crop, destination, destinationStride);
             return;
         }
 
         EnsureCropScratch();
-        copier.Copy(texture, cropBox, _cropScratch!, _cropStride);
+        copier.Copy(texture, _crop, _cropScratch!, _cropStride);
 
         if (coversCanvas)
         {
             RecordingFrameScaler.CopyOrScale(
                 _cropScratch!,
-                _cropWidth,
-                _cropHeight,
+                _crop.Width,
+                _crop.Height,
                 _cropStride,
                 destination,
                 _plan.OutputWidth,
@@ -637,8 +639,8 @@ internal sealed class RecordingSession : IDisposable
 
         RecordingFrameScaler.CopyOrScale(
             _cropScratch!,
-            _cropWidth,
-            _cropHeight,
+            _crop.Width,
+            _crop.Height,
             _cropStride,
             destination,
             fit.Width,
@@ -650,8 +652,8 @@ internal sealed class RecordingSession : IDisposable
 
     private void EnsureCropScratch()
     {
-        var stride = _cropWidth * 4;
-        var length = checked(stride * _cropHeight);
+        var stride = _crop.Width * 4;
+        var length = checked(stride * _crop.Height);
 
         if (_cropScratch is not null && _cropScratch.Length == length && _cropStride == stride)
         {
@@ -770,8 +772,7 @@ internal sealed class RecordingSession : IDisposable
             throw new InvalidOperationException("录制区域太小或已移出屏幕，请重新选择。");
         }
 
-        _cropWidth = even.Width;
-        _cropHeight = even.Height;
+        _crop = even;
         _cropScratch = null;
         _cropStride = 0;
     }

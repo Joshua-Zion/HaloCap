@@ -3283,7 +3283,7 @@ internal static class Program
             return;
         }
 
-        var crop = new PhysicalRect(0, 0, 640, 360);
+        var crop = new PhysicalRect(200, 150, 640, 360);
         var path = Path.Combine(Path.GetTempPath(), $"halocap-region-{Guid.NewGuid():N}.mp4");
         var plan = new RecordingPlan(640, 360, 30, 4_000_000, true);
 
@@ -3297,6 +3297,7 @@ internal static class Program
                 isWindow: false);
 
             session.StartAsync().GetAwaiter().GetResult();
+            Equal(new PhysicalRect(200, 150, 640, 360), session.CropRegion);
 
             Thread.Sleep(600);
             session.Pause();

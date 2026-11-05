@@ -14,6 +14,16 @@ struct Size {
     float height = 0.0f;
 };
 
+// 设备像素坐标：裁剪与脏区用，和上面浮点几何分开是因为取整方向不能含糊。
+struct IntRect {
+    int left = 0;
+    int top = 0;
+    int right = 0;
+    int bottom = 0;
+
+    bool IsEmpty() const { return right <= left || bottom <= top; }
+};
+
 struct Color {
     float r = 0.0f;
     float g = 0.0f;

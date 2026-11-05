@@ -12,4 +12,6 @@ add_compile_definitions(UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
 enable_testing()
 
 add_subdirectory(core)
+add_subdirectory(platform/win32)
+add_subdirectory(tools/frame_cost)
 add_subdirectory(tests)

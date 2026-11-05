@@ -4,7 +4,7 @@ add_library(halocap_core STATIC
 
 target_include_directories(halocap_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
-# 规则一：core/ 不许出现平台头文件。configure 阶段直接失败，不依赖 CI 是否存在。
+# §3.3 规则三（可机检）：core/ 不许出现平台头文件。configure 阶段直接失败，不依赖 CI 是否存在。
 set(_platform_include_prefixes
     windows. winnt winuser winbase windef wincon winreg
     d3d11 d3dcompiler dxgi d2d1 dwrite
@@ -34,5 +34,5 @@ endforeach()
 
 if(_violations)
     message(FATAL_ERROR
-        "core/ 引入了平台头文件，违反 2.0 计划的规则一（docs/2.0-native-plan.md §3.3）。请把这条依赖挪到 platform/ 的某个 seam 后面。${_violations}")
+        "core/ 引入了平台头文件，违反 2.0 计划的 §3.3 规则三。请把这条依赖挪到 platform/ 的某个 seam 后面。${_violations}")
 endif()

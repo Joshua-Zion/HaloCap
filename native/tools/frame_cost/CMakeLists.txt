@@ -1,0 +1,2 @@
+add_executable(frame_cost main.cpp)
+target_link_libraries(frame_cost PRIVATE halocap_platform_win32)

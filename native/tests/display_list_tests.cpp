@@ -2,20 +2,11 @@
 #include "geometry.h"
 
 #include <cstdio>
+#include <variant>
 
 namespace {
 
-using halocap::core::Blit;
-using halocap::core::Color;
-using halocap::core::FillRect;
-using halocap::core::FramePlan;
-using halocap::core::GlyphRun;
-using halocap::core::ImageRef;
-using halocap::core::Path;
-using halocap::core::Point;
-using halocap::core::Rect;
-using halocap::core::Size;
-using halocap::core::StrokeRect;
+using namespace halocap::core;
 
 int failures = 0;
 
@@ -65,29 +56,34 @@ void TestUnionAndIntersect() {
               "Intersect normalizes inverted input");
 }
 
+void TestIntRect() {
+    Check(IntRect{}.IsEmpty(), "default clip is empty");
+    Check(!IntRect{ 0, 0, 640, 360 }.IsEmpty(), "dirty rect is not empty");
+    Check(IntRect{ 10, 0, 10, 20 }.IsEmpty(), "zero-width clip is empty");
+}
+
 void TestItemBounds() {
     const Color black{};
-    CheckRect(halocap::core::BoundsOf(FillRect{ Rect{ 1.0f, 2.0f, 3.0f, 4.0f }, black }),
+    CheckRect(BoundsOf(FillRect{ Rect{ 1.0f, 2.0f, 3.0f, 4.0f }, black }),
               Rect{ 1.0f, 2.0f, 3.0f, 4.0f },
               "FillRect bounds");
 
-    CheckRect(halocap::core::BoundsOf(StrokeRect{ Rect{ 10.0f, 10.0f, 20.0f, 20.0f }, black, 4.0f }),
+    CheckRect(BoundsOf(StrokeRect{ Rect{ 10.0f, 10.0f, 20.0f, 20.0f }, black, 4.0f }),
               Rect{ 8.0f, 8.0f, 22.0f, 22.0f },
               "StrokeRect grows by half thickness");
 
     Blit blit{};
-    blit.image = ImageRef{ reinterpret_cast<const void*>(0x1000), 64, 64, 256 };
+    blit.image = 7;
     blit.source = Rect{ 0.0f, 0.0f, 64.0f, 64.0f };
     blit.destination = Rect{ 100.0f, 200.0f, 400.0f, 400.0f };
-    CheckRect(halocap::core::BoundsOf(blit), blit.destination, "Blit uses destination not source");
+    CheckRect(BoundsOf(blit), blit.destination, "Blit uses destination not source");
 
-    GlyphRun run{};
-    run.bounds = Rect{ 7.0f, 8.0f, 70.0f, 20.0f };
-    CheckRect(halocap::core::BoundsOf(run), run.bounds, "GlyphRun bounds come from the rasterizer");
-
-    Path path{ { Point{ 0.0f, 0.0f }, Point{ 10.0f, 4.0f }, Point{ -3.0f, 2.0f } }, black, 2.0f, false };
-    CheckRect(halocap::core::BoundsOf(path), Rect{ -4.0f, -1.0f, 11.0f, 5.0f }, "Path bounds span points");
-    Check(halocap::core::BoundsOf(Path{}).IsEmpty(), "Empty path has no bounds");
+    CheckRect(BoundsOf(Segment{ Point{ 0.0f, 0.0f }, Point{ 10.0f, 4.0f }, black, 2.0f }),
+              Rect{ -1.0f, -1.0f, 11.0f, 5.0f },
+              "Segment bounds span endpoints plus thickness");
+    CheckRect(BoundsOf(Segment{ Point{ 10.0f, 4.0f }, Point{ 0.0f, 0.0f }, black, 2.0f }),
+              Rect{ -1.0f, -1.0f, 11.0f, 5.0f },
+              "Segment direction does not change bounds");
 }
 
 void TestFramePlan() {
@@ -96,14 +92,13 @@ void TestFramePlan() {
     Check(plan.ContentBounds().IsEmpty(), "Empty plan has no content bounds");
 
     plan.Add(FillRect{ Rect{ 0.0f, 0.0f, 100.0f, 40.0f }, Color{} });
-    plan.Add(Blit{ ImageRef{}, Rect{}, Rect{ 20.0f, 50.0f, 60.0f, 90.0f }, 1.0f });
-    plan.Add(Path{ { Point{ 200.0f, 10.0f } }, Color{}, 1.0f, false });
+    plan.Add(Blit{ 3, Rect{}, Rect{ 20.0f, 50.0f, 60.0f, 90.0f }, 1.0f });
+    plan.Add(Segment{ Point{ 200.0f, 10.0f }, Point{ 200.0f, 10.0f }, Color{}, 1.0f });
     Check(plan.ItemCount() == 3, "Three items added");
     CheckRect(plan.ContentBounds(), Rect{ 0.0f, 0.0f, 200.5f, 90.0f }, "Plan bounds is the union");
 
-    const bool firstIsFill = std::holds_alternative<FillRect>(plan.Items()[0]);
-    const bool secondIsBlit = std::holds_alternative<Blit>(plan.Items()[1]);
-    Check(firstIsFill && secondIsBlit, "Vector order is layer order");
+    Check(std::holds_alternative<FillRect>(plan.Items()[0]), "Item 0 is FillRect");
+    Check(std::holds_alternative<Blit>(plan.Items()[1]), "Item 1 is Blit");
 
     plan.Clear();
     Check(plan.ItemCount() == 0 && plan.ContentBounds().IsEmpty(), "Clear resets the plan");
@@ -114,6 +109,7 @@ void TestFramePlan() {
 int main() {
     TestRectBasics();
     TestUnionAndIntersect();
+    TestIntRect();
     TestItemBounds();
     TestFramePlan();
 

@@ -53,7 +53,7 @@ internal static class AbiReference
         }
 
         var target = iid;
-        hr = Marshal.QueryInterface(unknown, ref target, out pointer);
+        hr = Marshal.QueryInterface(unknown, in target, out pointer);
 
         if (hr < 0 || pointer == IntPtr.Zero)
         {

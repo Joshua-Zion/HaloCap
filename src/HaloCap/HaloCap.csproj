@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
     <SupportedOSPlatformVersion>10.0.18362.0</SupportedOSPlatformVersion>
     <UseWPF>true</UseWPF>
     <UseWindowsForms>true</UseWindowsForms>
@@ -16,10 +16,12 @@
     <Product>HaloCap 光圈</Product>
     <AssemblyTitle>HaloCap 光圈</AssemblyTitle>
     <Description>在光标处呼出光圈菜单的 Windows 效率工具</Description>
-    <Version>1.7.0</Version>
-    <FileVersion>1.7.0</FileVersion>
-    <InformationalVersion>1.7.0</InformationalVersion>
+    <Version>1.7.1</Version>
+    <FileVersion>1.7.1</FileVersion>
+    <InformationalVersion>1.7.1</InformationalVersion>
     <NeutralLanguage>zh-CN</NeutralLanguage>
+    <!-- 高 DPI 由 app.manifest 声明（WPF 的 PerMonitorV2 靠它生效），不改成 WinForms 的 SetHighDpiMode。 -->
+    <NoWarn>$(NoWarn);WFO0003</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>

@@ -24,7 +24,7 @@
 ### 运行要求
 
 - Windows 10 1903 或更高版本 / Windows 11，x64。
-- 免安装运行时：发布包已内置 .NET 8 与 WPF 组件，不需要另外安装 .NET 或其他依赖。
+- 免安装运行时：发布包已内置 .NET 10 与 WPF 组件，不需要另外安装 .NET 或其他依赖。
 - 文字识别的原生引擎需要对应语言的 Windows 识别组件；模型引擎使用内置模型，不需要额外组件。Windows N / KN 版本使用录屏（含 AAC 音轨）前需安装 Media Feature Pack。
 
 ### 安装步骤
@@ -196,7 +196,7 @@ HaloCap 不发起网络请求。原生识别使用 `Windows.Media.Ocr`；模型�
 ### 环境
 
 - Windows，x64。
-- .NET 8 SDK，包含 Windows Desktop / WPF 支持。
+- .NET 10 SDK（`global.json` 已按 10.0 主版本对齐），包含 Windows Desktop / WPF 支持。
 - C# 12、WPF；模型识别依赖 RapidOcrNet、ONNX Runtime 与 SkiaSharp（NuGet），其余功能使用 Windows 自带能力。
 
 ### 构建与运行
@@ -222,7 +222,7 @@ dotnet run --project tests/HaloCap.CoordinateTests/HaloCap.CoordinateTests.cspro
 dotnet publish src/HaloCap/HaloCap.csproj -p:PublishProfile=Standalone -o artifacts/publish
 ```
 
-使用自包含单文件发布（配置见 `Properties/PublishProfiles/Standalone.pubxml`）：产物是单个 `HaloCap.exe`，内置 .NET 8 运行时与 WPF 原生库并启用压缩，运行机器无需安装任何运行时。将 exe 与 `README.txt`、`CHANGELOG.md` 打包为 ZIP 分发。不要对 WPF 使用不受支持的裁剪或 NativeAOT。
+使用自包含单文件发布（配置见 `Properties/PublishProfiles/Standalone.pubxml`）：产物是单个 `HaloCap.exe`，内置 .NET 10 运行时与 WPF 原生库并启用压缩，运行机器无需安装任何运行时。将 exe 与 `README.txt`、`CHANGELOG.md` 打包为 ZIP 分发。不要对 WPF 使用不受支持的裁剪或 NativeAOT。
 
 ### 项目结构
 

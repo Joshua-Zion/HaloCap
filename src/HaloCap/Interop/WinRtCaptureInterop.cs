@@ -263,7 +263,7 @@ internal static class WinRtCaptureInterop
         {
             var dxgiIid = DxgiDeviceIid;
             CheckHr(
-                Marshal.QueryInterface(device, ref dxgiIid, out var dxgiDevice),
+                Marshal.QueryInterface(device, in dxgiIid, out var dxgiDevice),
                 "获取 DXGI 设备");
 
             try

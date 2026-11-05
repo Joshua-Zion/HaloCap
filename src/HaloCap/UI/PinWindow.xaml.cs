@@ -117,6 +117,10 @@ public partial class PinWindow : Window
         {
             _hudTimer.Stop();
             OpenPins.Remove(this);
+
+            // 贴图的像素不参与托管堆压力统计：不主动断开引用，关掉贴图后
+            // 这张 4K 位图还是要等到下一次完整 GC 才还得掉。
+            PreviewImage.Source = null;
         };
 
         Root.SizeChanged += (_, _) => UpdateAnnotationScale();

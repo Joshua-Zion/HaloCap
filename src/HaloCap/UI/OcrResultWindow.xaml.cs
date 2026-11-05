@@ -86,6 +86,7 @@ public partial class OcrResultWindow : Window
             _closed = true;
             _statusTimer.Stop();
             OpenWindows.Remove(this);
+            ThumbnailImage.Source = null;
         };
 
         Loaded += OnLoaded;

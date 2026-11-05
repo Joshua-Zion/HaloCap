@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -21,6 +22,7 @@ internal sealed class OcrService : IDisposable
     private readonly object _engineLock = new();
     private readonly NativeOcrEngine _native = new();
     private ModelOcrEngine? _model;
+    private int _modelInUse;
     private bool _disposed;
 
     public async Task<OcrOutcome> RecognizeAsync(
@@ -40,8 +42,18 @@ internal sealed class OcrService : IDisposable
 
             if (engineKind == OcrEngineKind.Model)
             {
-                var model = GetModel();
-                result = await Task.Run(() => model.Recognize(source)).ConfigureAwait(false);
+                // 推理期间引用计数必须挂住，见 ClearEngineCache 的说明。
+                Interlocked.Increment(ref _modelInUse);
+
+                try
+                {
+                    var model = GetModel();
+                    result = await Task.Run(() => model.Recognize(source)).ConfigureAwait(false);
+                }
+                finally
+                {
+                    Interlocked.Decrement(ref _modelInUse);
+                }
             }
             else
             {
@@ -81,6 +93,14 @@ internal sealed class OcrService : IDisposable
     public void ClearEngineCache()
     {
         _native.Clear();
+
+        // 模型引擎的推理句柄是原生资源：正在识别时 Dispose 会让本次推理直接崩掉进程，
+        // 所以这一轮回收先放手它，等下一次空闲再来。
+        if (Interlocked.CompareExchange(ref _modelInUse, 0, 0) > 0)
+        {
+            return;
+        }
+
         ModelOcrEngine? stale;
 
         lock (_engineLock)

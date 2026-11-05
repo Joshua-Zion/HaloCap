@@ -47,6 +47,8 @@ public partial class App : Application
     private SettingsWindow? _settingsWindow;
     private AppSettings _settings = new();
     private DispatcherTimer? _memoryTrimTimer;
+    private DispatcherTimer? _idleTrimTimer;
+    private bool _memoryTrimPending;
     private DispatcherTimer? _inputHealthTimer;
     private long _inputHealthLastTick;
     private long _inputHookLastRefresh;
@@ -168,7 +170,43 @@ public partial class App : Application
                 System.Windows.Forms.ToolTipIcon.Warning);
         }
 
+        var floorProblem = WindowsCompatibility.DescribeFloorProblem(WindowsCompatibility.CurrentBuild);
+        if (floorProblem is not null)
+        {
+            Log.Error(floorProblem);
+            _tray?.ShowNotification("系统版本过低", floorProblem, Forms.ToolTipIcon.Warning);
+        }
+
         Log.Info("HaloCap 已启动。");
+        CapabilityReport.LogStartupBanner();
+        StartIdleTrimTimer();
+    }
+
+    /// <summary>
+    /// 空闲时补做一次回收：贴图、识别结果窗口和标注位图都不在托管堆压力上，
+    /// 光靠截图结束的触发点盖不住「开着贴图放着不动」这种最常见的占用场景。
+    /// 只处理还没落地的请求（_memoryTrimPending），否则每次识别都已经回收过，
+    /// 空闲定时器就会变成每分钟一次毫无收益的阻塞式完整 GC。
+    /// </summary>
+    private void StartIdleTrimTimer()
+    {
+        var timer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(60) };
+        timer.Tick += (_, _) =>
+        {
+            if (_isExiting)
+            {
+                timer.Stop();
+                return;
+            }
+
+            if (_memoryTrimPending && !IsBusy && _radial?.IsOpen != true)
+            {
+                ScheduleMemoryTrim();
+            }
+        };
+
+        _idleTrimTimer = timer;
+        timer.Start();
     }
 
     private void Defer(Action action)
@@ -464,7 +502,9 @@ public partial class App : Application
             _settings.Ocr.Clone(),
             ApplyOcrSettings,
             _settings.Recording.Clone(),
-            ApplyRecordingSettings);
+            ApplyRecordingSettings,
+            _settings.PinGlowEnabled,
+            ApplyPinGlow);
 
         _settingsWindow = window;
         window.Closed += (_, _) =>
@@ -777,6 +817,30 @@ public partial class App : Application
         }
     }
 
+    private string? ApplyPinGlow(bool enabled)
+    {
+        if (_settings.PinGlowEnabled == enabled)
+        {
+            return null;
+        }
+
+        var previous = _settings.PinGlowEnabled;
+        _settings.PinGlowEnabled = enabled;
+
+        try
+        {
+            // 只影响之后的新贴图，已贴出来的仍然可以用自己的右键菜单单独切换。
+            SettingsStore.Save(_settings);
+            return null;
+        }
+        catch (Exception ex)
+        {
+            _settings.PinGlowEnabled = previous;
+            Log.Error("保存贴图光晕设置失败", ex);
+            return "无法保存贴图光晕设置：" + ex.Message;
+        }
+    }
+
     private string? ApplyRecordingSettings(RecordingSettings settings)
     {
         settings.Normalize();
@@ -1014,6 +1078,7 @@ public partial class App : Application
             _settings.Ocr.PinOcrEnabled);
         pin.OutlineChanged += OnPinOutlineChanged;
         pin.OcrRequested += OnPinOcrRequested;
+        pin.Closed += (_, _) => ScheduleMemoryTrim();
         pin.ShowPin();
     }
 
@@ -1042,6 +1107,7 @@ public partial class App : Application
                 _ocr,
                 _settings.Ocr.Clone(),
                 source);
+            window.Closed += (_, _) => ScheduleMemoryTrim();
             window.Show();
         }
         catch (Exception ex)
@@ -1115,6 +1181,8 @@ public partial class App : Application
             return;
         }
 
+        _memoryTrimPending = true;
+
         _memoryTrimTimer?.Stop();
 
         var timer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(1200) };
@@ -1148,12 +1216,17 @@ public partial class App : Application
     private void TrimMemory()
     {
         _clipboardPin.ReleaseCache();
+        _memoryTrimPending = false;
 
-        var process = Process.GetCurrentProcess();
-        if (process.PrivateMemorySize64 < MemoryTrimThresholdBytes)
+        var beforeBytes = Process.GetCurrentProcess().PrivateMemorySize64;
+        if (beforeBytes < MemoryTrimThresholdBytes)
         {
             return;
         }
+
+        // 模型识别引擎常驻几十 MB 原生内存，只在确实偏高时才放手，
+        // 否则每次识别都要重新初始化一次。
+        _ocr.ClearEngineCache();
 
         // WPF 位图的像素不参与托管堆压力统计，取消多次截图后不会自动 GC；
         // 在空闲时做一次压缩回收，把冻结画面和旧的合成图真正还给系统。
@@ -1162,7 +1235,10 @@ public partial class App : Application
         GC.WaitForPendingFinalizers();
         GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced, blocking: true, compacting: true);
 
-        Log.Info($"已回收截图缓存，当前私有内存 {Math.Round(Process.GetCurrentProcess().PrivateMemorySize64 / 1024.0 / 1024.0)} MB");
+        var afterBytes = Process.GetCurrentProcess().PrivateMemorySize64;
+        Log.Info(
+            $"已回收缓存，私有内存 {Math.Round(beforeBytes / 1024.0 / 1024.0)} → " +
+            $"{Math.Round(afterBytes / 1024.0 / 1024.0)} MB");
     }
 
     private async void HandleCaptureCompleted(CaptureResult result)
@@ -1374,12 +1450,16 @@ public partial class App : Application
         {
             Log.Error("显示录屏完成通知失败", ex);
         }
+
+        // 录制的帧缓冲是几份 LOH 大小的字节数组，结束后立刻还给系统。
+        ScheduleMemoryTrim();
     }
 
     private void OnRecordingFailed(string message)
     {
         _tray?.ShowNotification("录屏未完成", message, Forms.ToolTipIcon.Warning);
         Log.Error("录屏失败：" + message);
+        ScheduleMemoryTrim();
     }
 
     private void OnRecordingAudioFailed(string message)
@@ -1402,6 +1482,10 @@ public partial class App : Application
     {
         _isExiting = true;
         _captureGeneration++;
+        _idleTrimTimer?.Stop();
+        _idleTrimTimer = null;
+        _memoryTrimTimer?.Stop();
+        _memoryTrimTimer = null;
 
         try
         {

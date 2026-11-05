@@ -8,7 +8,6 @@ using System.Threading.Tasks;
 using HaloCap.Diagnostics;
 using HaloCap.Interop;
 using HaloCap.Models;
-using Windows.Foundation.Metadata;
 using Windows.Graphics.Capture;
 using Windows.Graphics.DirectX;
 using Windows.Graphics.DirectX.Direct3D11;
@@ -405,6 +404,8 @@ internal sealed class RecordingSession : IDisposable
                 _plan.Bitrate,
                 _muxAudio ? _plan.Audio : null);
 
+            // 做音频改造时这行被覆盖掉了，日志和完成通知因此一直说「软件编码」。
+            UsesHardwareEncoder = writer.UsesHardwareEncoder;
             _audioEnabledByWriter = writer.SupportsAudio;
 
             if (_muxAudio && !writer.SupportsAudio)
@@ -776,19 +777,22 @@ internal sealed class RecordingSession : IDisposable
 
     private void ConfigureSession(GraphicsCaptureSession session)
     {
-        try
+        // IsCursorCaptureEnabled 是 2004（build 19041）才加入的属性；这里用系统版本判断，
+        // 既让编译器知道调用点受保护，也让「设置被忽略」这件事在日志里留下原因。
+        if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, WindowsCompatibility.CaptureToggleBuild))
         {
-            // Windows 10 2004 才加入此属性；更早版本保持系统默认（包含光标）。
-            if (ApiInformation.IsPropertyPresent(
-                    "Windows.Graphics.Capture.GraphicsCaptureSession",
-                    "IsCursorCaptureEnabled"))
+            try
             {
                 session.IsCursorCaptureEnabled = _plan.RecordCursor;
             }
+            catch (Exception ex)
+            {
+                Log.Error("设置光标采集失败，使用系统默认（包含光标）。", ex);
+            }
         }
-        catch (Exception ex)
+        else if (!_plan.RecordCursor)
         {
-            Log.Error("设置光标采集失败，使用系统默认。", ex);
+            Log.Info(WindowsCompatibility.DescribeCursorFallback(WindowsCompatibility.CurrentBuild));
         }
 
         if (_isWindow)

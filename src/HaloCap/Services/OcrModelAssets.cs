@@ -14,16 +14,25 @@ internal static class OcrModelAssets
     private const string RecognizerResource = "HaloCap.OcrModel.rec.onnx";
     private const string DictionaryResource = "HaloCap.OcrModel.dict.txt";
 
+    /// <summary>模型解压目录；设置页的「打开」也要用同一份路径，不能各算各的。</summary>
+    internal static string ModelsDirectory
+    {
+        get
+        {
+            var root = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+
+            if (string.IsNullOrWhiteSpace(root))
+            {
+                root = Path.GetTempPath();
+            }
+
+            return Path.Combine(root, "HaloCap", "models", Version);
+        }
+    }
+
     public static OcrModelPaths EnsureExtracted()
     {
-        var root = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-
-        if (string.IsNullOrWhiteSpace(root))
-        {
-            root = Path.GetTempPath();
-        }
-
-        var directory = Path.Combine(root, "HaloCap", "models", Version);
+        var directory = ModelsDirectory;
         Directory.CreateDirectory(directory);
 
         return new OcrModelPaths(

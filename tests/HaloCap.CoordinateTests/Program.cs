@@ -16,6 +16,7 @@ using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using HaloCap.Diagnostics;
 using HaloCap.Interop;
 using HaloCap.Models;
 using HaloCap.Services;
@@ -99,12 +100,17 @@ internal static class Program
             ("Recording audio settings default and round trip", RecordingAudioSettingsDefaultsAndRoundTrip),
             ("Audio format conversion resamples and meters", AudioFormatConversionResamplesAndMeters),
             ("Audio ring mixes two sources and stays bounded", AudioRingMixesTwoSourcesAndStaysBounded),
+            ("Diagnostics report describes the environment", DiagnosticsReportDescribesEnvironment),
+            ("Settings panes match the navigation items", SettingsPanesMatchNavigationItems),
+            ("Windows floor warns instead of failing silently", WindowsFloorWarnsInsteadOfFailingSilently),
+            ("Log retention keeps recent files", LogRetentionKeepsRecentFiles),
             ("System audio recording writes an AAC track", SystemAudioRecordingWritesAacTrack),
             ("Window recording follows the visible window", WindowRecordingFollowsVisibleWindow),
             ("GPU crop matches the screen pixels", GpuCropMatchesScreenPixels),
             ("OCR native engine recognizes a rendered text image", OcrNativeEngineRecognizesRenderedText),
             ("OCR model engine recognizes a rendered text image", OcrModelEngineRecognizesRenderedText),
             ("OCR model engine handles a dark background", OcrModelEngineHandlesDarkBackground),
+            ("OCR model engine survives idle trim during recognition", OcrModelEngineSurvivesTrimDuringRecognition),
             ("WPF chrome, clipboard actions and capture hover render correctly", ToolbarVectorIconsPreserveBoundsAndColors)
         };
 
@@ -3461,6 +3467,174 @@ internal static class Program
         Equal(1, clipped[1], 0.001);
     }
 
+    private static void SettingsPanesMatchNavigationItems()
+    {
+        RunSta(() =>
+        {
+            var window = new SettingsWindow(
+                HotkeyDefinition.Default,
+                DefaultActionHotkeys(),
+                false,
+                ScreenshotImageFormat.Png,
+                RadialMenuSize.Medium,
+                string.Empty,
+                true,
+                (_, _) => null,
+                _ => null,
+                _ => null,
+                _ => null,
+                _ => null,
+                _ => null,
+                pinGlowEnabled: false,
+                applyPinGlow: _ => null);
+
+            var panes = new[] { "HotkeyPane", "GeneralPane", "CapturePane", "OcrPane", "RecordingPane", "AboutPane" };
+            var navHost = (StackPanel)window.FindName("NavHost");
+            var items = navHost.Children.OfType<RadioButton>().ToList();
+
+            Equal(panes.Length, items.Count);
+
+            // 侧栏每一项都必须正好显示一个面板：漏掉一个就会「设置项看得见但点不到」。
+            foreach (var item in items)
+            {
+                item.IsChecked = true;
+
+                var visible = panes
+                    .Where(name => ((FrameworkElement)window.FindName(name)).Visibility == Visibility.Visible)
+                    .ToList();
+
+                Equal(1, visible.Count);
+            }
+
+            var glow = (ToggleButton)window.FindName("PinGlowToggle");
+            True(glow.IsChecked == false, "the pin glow toggle should reflect the value passed in");
+            Equal("settings.pinGlowEnabled", AutomationProperties.GetAutomationId(glow));
+
+            var about = (FrameworkElement)window.FindName("AboutPane");
+            True(
+                FindByAutomationId(about, "settings.copyDiagnostics") is not null,
+                "the about pane should offer a way to copy the environment summary");
+
+            True(
+                FindByAutomationId((FrameworkElement)window.FindName("CapturePane"), "settings.convertFilePathsToImages") is not null,
+                "the capture pane should keep the clipboard conversion toggle reachable");
+        });
+    }
+
+    private static FrameworkElement? FindByAutomationId(DependencyObject root, string automationId)
+    {
+        if (root is FrameworkElement element &&
+            AutomationProperties.GetAutomationId(element) == automationId)
+        {
+            return element;
+        }
+
+        foreach (var child in LogicalTreeHelper.GetChildren(root))
+        {
+            if (child is not DependencyObject dependency)
+            {
+                continue;
+            }
+
+            if (FindByAutomationId(dependency, automationId) is { } match)
+            {
+                return match;
+            }
+        }
+
+        return null;
+    }
+
+    private static void DiagnosticsReportDescribesEnvironment()
+    {
+        var text = CapabilityReport.Text;
+
+        True(text.Split('\n').Length >= 9, "the report should summarise the whole environment");
+
+        foreach (var label in new[]
+        {
+            "系统：", "显示器：", "屏幕捕获：", "视频编码器：", "音频编码器：", "文字识别：", "内存："
+        })
+        {
+            True(text.Contains(label, StringComparison.Ordinal), $"the report should include {label}");
+        }
+
+        // 编码器探测不能把异常抛出来，只能在文字里留痕；这里要求它至少给出数量或明确「无」。
+        var audioLine = text.Split('\n')
+            .FirstOrDefault(line => line.StartsWith("音频编码器：", StringComparison.Ordinal)) ?? string.Empty;
+        True(audioLine.Contains('：') && !audioLine.Contains("异常", StringComparison.Ordinal),
+            $"the audio encoder probe should finish cleanly: {audioLine}");
+
+        Console.WriteLine("      diagnostics:");
+        foreach (var line in text.Split('\n'))
+        {
+            Console.WriteLine("        " + line.TrimEnd());
+        }
+    }
+
+    private static void LogRetentionKeepsRecentFiles()
+    {
+        var now = new DateTime(2026, 11, 4, 12, 0, 0);
+        var entries = new List<(string Path, DateTime Written)>
+        {
+            ("/logs/app-20261020.log", now.AddDays(-15)),
+            ("/logs/app-20261021.log", now.AddDays(-14) - TimeSpan.FromSeconds(1)),
+            ("/logs/app-20261022.log", now.AddDays(-13)),
+            ("/logs/app-20261104.log", now)
+        };
+
+        var expired = Log.SelectExpired(entries, now, 14);
+        Equal(2, expired.Count);
+        True(expired[0].Contains("20261020", StringComparison.Ordinal),
+            "the oldest log should be pruned first");
+
+        Equal(0, Log.SelectExpired(Array.Empty<(string, DateTime)>(), now, 14).Count);
+
+        // 保留天数再小也不能把当天的日志清掉。
+        var tight = Log.SelectExpired(entries, now, 0);
+        Equal(3, tight.Count);
+        True(!tight.Any(path => path.Contains("20261104", StringComparison.Ordinal)),
+            "today's log must never be pruned");
+    }
+
+    private static void WindowsFloorWarnsInsteadOfFailingSilently()
+    {
+        Equal(18362, WindowsCompatibility.MinimumBuild);
+        Equal(19041, WindowsCompatibility.CaptureToggleBuild);
+
+        True(WindowsCompatibility.MeetsFloor(18362), "1903 is the declared floor");
+        True(!WindowsCompatibility.MeetsFloor(18361), "one build below the floor must be rejected");
+        True(WindowsCompatibility.DescribeFloorProblem(19045) is null,
+            "a supported build should not produce a warning");
+
+        var problem = WindowsCompatibility.DescribeFloorProblem(17763);
+        True(problem is not null, "an unsupported build has to be explained");
+        True(problem!.Contains("1903", StringComparison.Ordinal) &&
+             problem.Contains("17763", StringComparison.Ordinal),
+            $"the warning should name both the requirement and the current build: {problem}");
+        True(problem.Contains("录屏", StringComparison.Ordinal),
+            "the warning should say which feature is at risk");
+
+        var unknown = WindowsCompatibility.DescribeFloorProblem(0);
+        True(unknown is not null && unknown.Contains("无法确认", StringComparison.Ordinal),
+            "an unreadable version still needs a message, not a crash");
+
+        // 隐藏光标随 2004 加入；更早的系统里这项设置只能被忽略，界面必须说清楚。
+        True(WindowsCompatibility.SupportsCaptureToggle(19041), "the cursor toggle lands with 2004");
+        True(!WindowsCompatibility.SupportsCaptureToggle(19040), "1903 must not claim the cursor toggle");
+
+        var fallback = WindowsCompatibility.DescribeCursorFallback(18362);
+        True(fallback.Contains("18362", StringComparison.Ordinal) &&
+             fallback.Contains("光标", StringComparison.Ordinal),
+            $"the fallback note should explain the ignored setting: {fallback}");
+
+        var build = WindowsCompatibility.CurrentBuild;
+        True(build >= WindowsCompatibility.MinimumBuild,
+            $"this machine should meet the floor, got build {build}");
+        True(CapabilityReport.Text.Contains("build " + build, StringComparison.Ordinal),
+            "the environment report should state the same build the guards read");
+    }
+
     private static void SystemAudioRecordingWritesAacTrack()
     {
         var monitor = MonitorService.GetMonitors().FirstOrDefault();
@@ -3797,11 +3971,14 @@ internal static class Program
 
         try
         {
-            session.IsCursorCaptureEnabled = false;
+            if (OperatingSystem.IsWindowsVersionAtLeast(10, 0, 19041))
+            {
+                session.IsCursorCaptureEnabled = false;
+            }
         }
         catch
         {
-            // 老系统没有该属性，保持默认。
+            // 老系统或个别驱动没有该属性，保持默认。
         }
 
         session.StartCapture();
@@ -4188,6 +4365,54 @@ internal static class Program
                  outcome.Text.Contains("Halo", StringComparison.OrdinalIgnoreCase),
                 "dark background OCR should contain the rendered text, got: " +
                 outcome.Text.Replace(Environment.NewLine, " / "));
+        });
+    }
+
+    private static void OcrModelEngineSurvivesTrimDuringRecognition()
+    {
+        RunSta(() =>
+        {
+            var image = RenderOcrText("HaloCap 2026 你好世界");
+            using var service = new OcrService();
+            using var stop = new CancellationTokenSource();
+
+            // 空闲回收会在识别进行中被触发；正在推理时放手模型句柄会让整个进程崩掉。
+            var trimming = Task.Run(() =>
+            {
+                while (!stop.IsCancellationRequested)
+                {
+                    service.ClearEngineCache();
+                    Thread.Sleep(5);
+                }
+            });
+
+            var outcome = service.RecognizeAsync(
+                    image,
+                    new OcrSettings { Engine = OcrEngineKind.Model },
+                    OcrEngineKind.Model)
+                .GetAwaiter()
+                .GetResult();
+
+            stop.Cancel();
+            True(trimming.Wait(TimeSpan.FromSeconds(5)), "the trim loop should stop on request");
+
+            True(outcome.Status == OcrStatus.Success,
+                "model OCR must survive a trim issued mid-recognition, status=" +
+                outcome.Status + " message=" + outcome.Message);
+
+            // 反过来也要成立：真的空闲时回收必须能放手模型，否则这条省内存的路径是空转。
+            service.ClearEngineCache();
+
+            var again = service.RecognizeAsync(
+                    image,
+                    new OcrSettings { Engine = OcrEngineKind.Model },
+                    OcrEngineKind.Model)
+                .GetAwaiter()
+                .GetResult();
+
+            True(again.Status == OcrStatus.Success,
+                "model OCR must re-initialise after the cache was released, status=" +
+                again.Status + " message=" + again.Message);
         });
     }
 

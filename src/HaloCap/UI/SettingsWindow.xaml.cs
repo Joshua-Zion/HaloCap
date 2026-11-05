@@ -5,6 +5,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
+using HaloCap.Diagnostics;
 using HaloCap.Models;
 using HaloCap.Services;
 
@@ -27,6 +28,7 @@ public partial class SettingsWindow : Window
     private readonly Func<RadialMenuSize, string?> _applyMenuSize;
     private readonly Func<string, string?> _applyRecordingDirectory;
     private readonly Func<bool, string?> _applyConvertFilePathsToImages;
+    private readonly Func<bool, string?>? _applyPinGlow;
     private readonly Func<OcrSettings, string?>? _applyOcrSettings;
     private readonly OcrSettings _ocrSettings;
     private readonly Func<RecordingSettings, string?>? _applyRecordingSettings;
@@ -61,7 +63,9 @@ public partial class SettingsWindow : Window
         OcrSettings? ocrSettings = null,
         Func<OcrSettings, string?>? applyOcrSettings = null,
         RecordingSettings? recordingSettings = null,
-        Func<RecordingSettings, string?>? applyRecordingSettings = null)
+        Func<RecordingSettings, string?>? applyRecordingSettings = null,
+        bool pinGlowEnabled = true,
+        Func<bool, string?>? applyPinGlow = null)
     {
         InitializeComponent();
 
@@ -89,6 +93,7 @@ public partial class SettingsWindow : Window
         _applyMenuSize = applyMenuSize;
         _applyRecordingDirectory = applyRecordingDirectory;
         _applyConvertFilePathsToImages = applyConvertFilePathsToImages;
+        _applyPinGlow = applyPinGlow;
         _applyOcrSettings = applyOcrSettings;
         _ocrSettings = (ocrSettings ?? new OcrSettings()).Clone();
         _ocrSettings.Normalize();
@@ -106,6 +111,7 @@ public partial class SettingsWindow : Window
         AutoStartToggle.IsChecked = autoStartEnabled;
         UpdateAutoStartUi();
         ConvertFilePathsToImagesToggle.IsChecked = convertFilePathsToImages;
+        PinGlowToggle.IsChecked = pinGlowEnabled;
 
         RecordingDirectoryBox.Text = recordingDirectory ?? string.Empty;
         RecordingDirectoryHint.Text = "留空时保存到 " + AppPaths.DefaultRecordingDirectory;
@@ -169,6 +175,7 @@ public partial class SettingsWindow : Window
             CancelHotkeyCapture();
         }
 
+        HotkeyPane.Visibility = key == "hotkeys" ? Visibility.Visible : Visibility.Collapsed;
         GeneralPane.Visibility = key == "general" ? Visibility.Visible : Visibility.Collapsed;
         CapturePane.Visibility = key == "capture" ? Visibility.Visible : Visibility.Collapsed;
         OcrPane.Visibility = key == "ocr" ? Visibility.Visible : Visibility.Collapsed;
@@ -177,6 +184,70 @@ public partial class SettingsWindow : Window
         SaveBar.Visibility = key == "about" ? Visibility.Collapsed : Visibility.Visible;
         SaveButton.IsDefault = key != "about";
         ClearError();
+    }
+
+    /// <summary>从「关于」等位置跳到某个面板，省得让人自己去侧栏里找。</summary>
+    private void SelectPane(string uid)
+    {
+        foreach (var child in NavHost.Children)
+        {
+            if (child is RadioButton { Uid: { } key } item && key == uid)
+            {
+                item.IsChecked = true;
+                return;
+            }
+        }
+    }
+
+    private void GoToHotkeyPane_Click(object sender, RoutedEventArgs e) => SelectPane("hotkeys");
+
+    private void OpenDataFolder_Click(object sender, RoutedEventArgs e)
+    {
+        var kind = (sender as FrameworkElement)?.Tag as string;
+        var path = kind switch
+        {
+            "logs" => Log.LogDirectory,
+            "models" => OcrModelAssets.ModelsDirectory,
+            _ => Path.GetDirectoryName(SettingsStore.FilePath) ?? Log.AppDataDirectory
+        };
+
+        try
+        {
+            if (!Directory.Exists(path))
+            {
+                ShowError(kind == "models"
+                    ? "还没用过模型引擎，暂时还没有解压出模型文件。"
+                    : "这个目录还不存在。");
+                return;
+            }
+
+            System.Diagnostics.Process.Start(
+                new System.Diagnostics.ProcessStartInfo("explorer.exe", "\"" + path + "\"")
+                {
+                    UseShellExecute = true
+                });
+            ClearError();
+        }
+        catch (Exception ex)
+        {
+            Log.Error("打开本地数据目录失败", ex);
+            ShowError("无法打开目录：" + ex.Message);
+        }
+    }
+
+    private void CopyDiagnostics_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            Clipboard.SetText(CapabilityReport.Text);
+            ClearError();
+            FooterHint.Text = "环境摘要已复制，可直接粘贴给排查的人";
+        }
+        catch (Exception ex)
+        {
+            Log.Error("复制环境摘要失败", ex);
+            ShowError("复制失败：" + ex.Message);
+        }
     }
 
     private void HotkeyButton_Click(object sender, RoutedEventArgs e)
@@ -361,6 +432,10 @@ public partial class SettingsWindow : Window
         PinOcrEnabled = PinOcrToggle.IsChecked == true
     };
 
+    /// <summary>隐藏光标要 Windows 10 2004+；更早的系统只能一直带上光标，界面得把这件事说清楚。</summary>
+    private static bool SupportsCursorToggle =>
+        WindowsCompatibility.SupportsCaptureToggle(WindowsCompatibility.CurrentBuild);
+
     private void ApplyRecordingUi()
     {
         _suppressRecordingUi = true;
@@ -380,6 +455,14 @@ public partial class SettingsWindow : Window
         RecordCountdown3Radio.IsChecked = _recordingSettings.Countdown == RecordingCountdown.ThreeSeconds;
         RecordCountdown5Radio.IsChecked = _recordingSettings.Countdown == RecordingCountdown.FiveSeconds;
         RecordCursorToggle.IsChecked = _recordingSettings.RecordCursor;
+        RecordCursorToggle.IsEnabled = SupportsCursorToggle;
+
+        if (!SupportsCursorToggle)
+        {
+            RecordCursorDescText.Text = WindowsCompatibility.DescribeCursorFallback(
+                WindowsCompatibility.CurrentBuild);
+        }
+
         SystemAudioToggle.IsChecked = _recordingSettings.SystemAudio;
         MicrophoneToggle.IsChecked = _recordingSettings.Microphone;
         AudioBitrate128Radio.IsChecked = _recordingSettings.AudioBitrate == RecordingAudioBitrate.K128;
@@ -468,7 +551,9 @@ public partial class SettingsWindow : Window
             $" · 视频约 {megabits:0.#} Mbps · {audio} {_recordingSettings.AudioBitrateValue / 1000} kbps" +
             $" · {_recordingSettings.FramesPerSecond}fps" +
             $" · {(_recordingSettings.CountdownSeconds > 0 ? $"倒计时 {_recordingSettings.CountdownSeconds} 秒" : "不倒计时")}" +
-            $" · {(_recordingSettings.RecordCursor ? "含光标" : "不含光标")}";
+            $" · {(SupportsCursorToggle
+                ? (_recordingSettings.RecordCursor ? "含光标" : "不含光标")
+                : "含光标（系统版本不支持隐藏）")}";
     }
 
     private void RecordingDirectoryBox_TextChanged(object sender, TextChangedEventArgs e)
@@ -578,6 +663,17 @@ public partial class SettingsWindow : Window
             {
                 ShowError("其他设置已更新；" + convertFilePathsToImagesError + " 请修正后重试。");
                 return;
+            }
+
+            if (_applyPinGlow is not null)
+            {
+                var glowError = _applyPinGlow(PinGlowToggle.IsChecked == true);
+
+                if (!string.IsNullOrEmpty(glowError))
+                {
+                    ShowError("其他设置已更新；" + glowError + " 请修正后重试。");
+                    return;
+                }
             }
 
             if (_applyOcrSettings is not null)

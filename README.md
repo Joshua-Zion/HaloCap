@@ -1,3 +1,7 @@
+> **这是 2.0 原生重构的开发分支，不是可安装版本。** 1.x 的功能与发布（Releases、安装包、更新日志）都在 [`main`](https://github.com/Joshua-Zion/HaloCap/tree/main) 上，需要 HaloCap 请去那里下载。本分支的边界与合并约定见 [docs/2.0-native-plan.md §10](docs/2.0-native-plan.md)。
+>
+> 说明：这一整块引用仅存在于 `2.0` 分支，合回 `main` 前删除。
+
 # HaloCap · 光圈
 
 在光标处展开的 Windows 效率工具，把**截图、文字识别、录屏和贴图**收进一个光圈菜单。

@@ -174,6 +174,12 @@ internal static class Dxgi
         IntPtr obtainedFeatureLevel,
         out IntPtr context);
 
+    [DllImport("winmm.dll", EntryPoint = "timeBeginPeriod", ExactSpelling = true)]
+    public static extern int TimeBeginPeriod(uint milliseconds);
+
+    [DllImport("winmm.dll", EntryPoint = "timeEndPeriod", ExactSpelling = true)]
+    public static extern int TimeEndPeriod(uint milliseconds);
+
     [DllImport("ole32.dll", ExactSpelling = true)]
     public static extern void CoTaskMemFree(IntPtr pointer);
 }

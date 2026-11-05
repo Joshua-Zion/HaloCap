@@ -540,6 +540,7 @@ internal static class Program
             return;
         }
 
+        Dxgi.TimeBeginPeriod(1);
         var interval = Math.Max(1, 1000 / Math.Max(1, fps));
 
         try
@@ -576,6 +577,7 @@ internal static class Program
         }
         finally
         {
+            Dxgi.TimeEndPeriod(1);
             Win32.DestroyWindow(hWnd);
         }
     }

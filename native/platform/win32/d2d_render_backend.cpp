@@ -183,6 +183,28 @@ core::ImageHandle D2dRenderBackend::RegisterGpuImage(ID2D1Bitmap1* bitmap) {
     return static_cast<core::ImageHandle>(images_.size());
 }
 
+bool D2dRenderBackend::TextureFor(core::ImageHandle handle, ID3D11Texture2D** outTexture) {
+    if (handle <= 0 || handle > static_cast<core::ImageHandle>(images_.size()) ||
+        outTexture == nullptr) {
+        lastHr_ = E_INVALIDARG;
+        return false;
+    }
+
+    ID2D1Bitmap1* bitmap = images_[static_cast<size_t>(handle) - 1].Get();
+    if (bitmap == nullptr) {
+        lastHr_ = E_FAIL;
+        return false;
+    }
+
+    Microsoft::WRL::ComPtr<IDXGISurface> surface;
+    lastHr_ = bitmap->GetSurface(&surface);
+    if (FAILED(lastHr_)) {
+        return false;
+    }
+
+    return SUCCEEDED(surface->QueryInterface(IID_PPV_ARGS(outTexture)));
+}
+
 bool D2dRenderBackend::CountInkedPixels(int* count) {
     if (!staging_ || !target_ || !context_ || count == nullptr) {
         lastHr_ = E_FAIL;

@@ -2,6 +2,7 @@ add_library(halocap_core STATIC
     display_list.cpp
     frame_scheduler.cpp
     capture_policy.cpp
+    encoder_policy.cpp
 )
 
 target_include_directories(halocap_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
@@ -10,7 +11,7 @@ target_include_directories(halocap_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 set(_platform_include_prefixes
     windows. winnt winuser winbase windef wincon winreg
     d3d11 d3d12 d3dcompiler dxgi d2d1 dwrite dcomp
-    mfapi mfidl mfreadwrite mftransform mferror mfuuid strmif
+    mf mfapi mfidl mfreadwrite mftransform mferror mfuuid strmif evr
     audioclient mmdeviceapi audevcmd uiaudio audiomedatype xaudio2
     objbase combaseapi ole2 oleauto shellapi shlobj shobjidl psapi shlwapi imm.h
     winsock2 ws2tcpip

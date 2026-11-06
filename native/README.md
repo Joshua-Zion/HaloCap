@@ -2,7 +2,7 @@
 
 本目录属于 `2.0` 分支。设计依据见 [../docs/2.0-native-plan.md](../docs/2.0-native-plan.md)，分支约定见其 §10，工具链与构建前提见计划文档的「S1 的工具链」。
 
-当前状态：**S1 骨架可构建、四套测试可跑、§3.3 规则三已做成机检；显示列表能离屏逐字节画对、能经 DirectComposition 真窗口上屏、也能自己按 60 fps 排帧数丢帧；桌面复制的 seam 与脏矩形拷贝已落地并进 CTest**。还没有产品功能——编码、音频、热键与输入、托盘与设置都还没进来，对应的 seam 也不提前定形（避免先写一套再被实现推翻）。
+当前状态：**S1 骨架可构建、五套测试可跑、§3.3 规则三已做成机检；显示列表能离屏逐字节画对、能经 DirectComposition 真窗口上屏、也能自己按 60 fps 排帧数丢帧；桌面复制的 seam 与脏矩形拷贝已落地；H.264 编码这条管线跑通并且量过（GPU 侧 BGRA→NV12 + `IMFSinkWriter`）**。还没有产品功能——音频、热键与输入、托盘与设置都还没进来，对应的 seam 也不提前定形（避免先写一套再被实现推翻）。
 
 一处环境阻塞要写清：本机现在对**任何**程序都拒绝 `DuplicateOutput`（`E_ACCESSDENIED`；今天早些时候还能跑出吞吐数字的 spike 2 工具现在同样被拒），所以 `ICaptureSource` 的端到端脏矩形量级数字还没拿到。拷贝逻辑本身不依赖复制权，已经单独验过（`rect_copy_test`）。
 
@@ -18,17 +18,22 @@ native/
     surface_window.h    ISurfaceWindow seam：Create / SetBounds / SetVisible / SetClickThrough / Handle
     capture_source.h    ICaptureSource seam：Open / WaitForUpdate / LastErrorKind；
                         SummarizeDirtyRects 与 BackoffUs 是纯逻辑（面积要分「实搬量」和「包围盒」两个数）
+    encoder.h           IEncoder seam：OpenVideo / Submit(句柄+媒体时间) / Close / EncoderStats；
+                        RecordingClock（暂停冻结媒体时间）与 FrameGate（时间戳不递减 + 不超帧率）在同一处
     frame_scheduler.h   帧节奏与丢帧口径：BeginFrame / EndFrame / Stats，时钟由调用方注入微秒
   platform/win32/
     d2d_render_backend.h/.cpp      Direct2D 1.1（ID2D1Device + ID2D1DeviceContext）+ 合成链呈现
     d2d_font_rasterizer.h/.cpp     DirectWrite 排版 + 图集分页，格子=一个文本串
     win32_surface_window.h/.cpp    WS_POPUP + WS_EX_NOREDIRECTIONBITMAP，不激活、可透传
     dxgi_desktop_duplication.h/.cpp 桌面复制；CopyDirtyRegions 单独抽出以便脱离复制权做验证
+    nv12_converter.h/.cpp          D3D11 视频处理器做 BGRA→NV12，NV12 三帧环，bind flag 按实测候选试
+    mf_h264_encoder.h/.cpp         IMFSinkWriter + MF_SINK_WRITER_D3D_MANAGER + NV12 样本，从服务属性读编码器身份
   tools/frame_cost/     覆盖层帧成本测量（与 spike 3 同口径，离屏、不上屏）
   tools/surface_probe/  上屏链路验证：A/B 抓屏证「看得见」+ 60 fps 排帧数丢帧
   tools/capture_probe/  采集链路统计：应有/实取、仅鼠标唤醒、脏像素之比、每帧 CPU 与内存
+  tools/encoder_probe/  编码链路验证：颜色回读证转换对、五档组合量成本/字节/内存与编码器身份
   tools/rect_copy_test/ 脏矩形拷贝的功能验证（进 CTest，不碰屏幕也不需要复制权）
-  tests/      core 的单测（无第三方框架，四个可执行 + CTest）
+  tests/      core 的单测（无第三方框架，五个可执行 + CTest）
   build.cmd   vcvars → cmake configure → build → ctest
 ```
 
@@ -40,7 +45,7 @@ native/
 
 文本不新增图元类型：`IFontRasterizer::LayOut` 返回的 `TextCell` 只能以 `ToBlit()` 进入显示列表，所以 bounds、脏区裁剪与后端都不用为文本特判。折线（`Path`）**仍然故意不在列表里**——它要等几何缓存策略定下来，放进列表却画不出来比不放更糟。
 
-平台边界一共 8 个 seam（`ISurfaceWindow`、`IRenderBackend`、`IFontRasterizer`、`ICaptureSource`、`IEncoder`、`IAudioSource`、`IInputHost`、`IStore`+`ICapability`），职责与 macOS 对应物在 §3.2；目前已落地 `IRenderBackend`、`IFontRasterizer`、`ISurfaceWindow`、`ICaptureSource` 四个。
+平台边界一共 8 个 seam（`ISurfaceWindow`、`IRenderBackend`、`IFontRasterizer`、`ICaptureSource`、`IEncoder`、`IAudioSource`、`IInputHost`、`IStore`+`ICapability`），职责与 macOS 对应物在 §3.2；目前已落地 `IRenderBackend`、`IFontRasterizer`、`ISurfaceWindow`、`ICaptureSource`、`IEncoder` 五个。
 
 上屏这条路有个必须记在实现旁边的实测结论：**挂在 HWND 上的 flip 交换链不接受预乘 alpha**（9 个组合 × 4 块适配器 × 3 种扩展样式全 `DXGI_ERROR_INVALID_CALL`），透明只能走 **DirectComposition 的 composition 交换链**，且它要求 `DXGI_SCALING_STRETCH`、后缓冲当 D2D 目标时还要 `TARGET | CANNOT_DRAW`。所以窗口用 `WS_EX_NOREDIRECTIONBITMAP`（不是 `WS_EX_LAYERED`），呈现归后端。完整矩阵与三条 API 细节见计划文档 §5.1「S1 的上屏路径」。
 
@@ -88,4 +93,23 @@ native> build\tools\capture_probe\capture_probe.exe 0 5000 3
 
 `Open` 失败时它会先按 `core::BackoffUs` 退避重试（250 ms 起、×2、封顶 4 s），把 `busy / timeout / lost` 分开报——复制权被占用是常态分支，不是崩溃。这台机器目前每次都返回 `busy`：`DuplicateOutput` 对所有程序都被拒（连今天早些时候跑出过吞吐数字的 spike 2 工具也一样），所以端到端的脏矩形量级数字仍缺，工具本身已经把该打的统计都打好了。
 
-两个必须照做的实现前提（都是实测）：**`SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2)` 要在枚举输出之前调**，否则 `DXGI_OUTPUT_DESC.DesktopCoordinates` 给的是 DIP 而不是像素，本机 2560×1440 会读成 1707×960，常驻纹理尺寸与所有坐标一起错；**设备必须属于拥有该输出的适配器**，用错设备是 `E_INVALIDARG`，用对设备才走到 `E_ACCESSDENIED` 那一层——`Initialize` 因此只把同适配器的输出放进可复制列表，`OUTPUTS_SYSTEM` 与 `OUTPUTS_CAPTURABLE` 的差就是被这条约束挡掉的。
+两个必须照做的实现前提（都是实测）：**`SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2)` 要在枚举输出之前调**，否则 `DXGI_OUTPUT_DESC.DesktopCoordinates` 给的是 DIP 而不是像素，本机 2560×1440 会读成 `0,0..1707,960`，常驻纹理尺寸与所有坐标一起错；**设备必须属于拥有该输出的适配器**，用错设备是 `E_INVALIDARG`，用对设备才走到 `E_ACCESSDENIED` 那一层——`Initialize` 因此只把同适配器的输出放进可复制列表，`OUTPUTS_SYSTEM` 与 `OUTPUTS_CAPTURABLE` 的差就是被这条约束挡掉的。
+
+编码链路（全程离屏：自己造 BGRA 纹理，不上屏、不抢前台。参数：宽 / 高 / 帧率 / 帧数 / 只跑哪一档）：
+
+```
+native> build\tools\encoder_probe\encoder_probe.exe                                   # 720p120，五档全跑
+native> build\tools\encoder_probe\encoder_probe.exe 3840 2160 30 60 HW-PACED          # 4K，只跑产品那一档
+```
+
+第 5 个参数存在的原因本身就是结论之一：一个进程里连着跑多档，内存归因不干净（上一档的编码器资源由驱动延后释放，同一份代码两次跑出 160 MB 与 598 MB 都出现过）。要能写进文档的数字，都得单档单进程。探针做的四件事：把 NV12 回读出来对着色块判**色彩范围与矩阵**；按候选试 **NV12 输出的 bind flag** 并把每一组的两个 HRESULT 打出来；跑**奇数尺寸 / 空句柄**两个负例；再按硬件、软件、排帧、留节流几种组合量 `OpenVideo`、送帧成本、`Finalize`、字节数与内存。
+
+五条只能实测出来的前提（数字与推导都在计划文档 §5.1「S1 的编码 seam」）：
+
+1. NV12 当视频处理器的输出，纹理**必须带 `D3D11_BIND_RENDER_TARGET`**；只给 `SHADER_RESOURCE` 或 `DECODER` 时 `CreateVideoProcessorOutputView` 一律 `E_INVALIDARG`（Intel UHD 与 RTX 4060 一致）。实现取 `RT|SRV`，这样同一张纹理进编码器之外还能被采样。
+2. **默认色彩空间就已经是 16–235 + BT.709**（黑 Y=16、白 Y=235、红 Y=63 Cr=240），而显式写 `D3D11_VIDEO_PROCESSOR_COLOR_SPACE` 的 `Nominal_Range=1` 拿到的反而是 0–255 + BT.601——位段不按文档生效，产品路径一律不碰。
+3. **宽高必须都是偶数**（NV12 的 4:2:0 平面划分），所以选区取整是录制会话的责任，`OpenVideo` 只负责把这条拒在入口。
+4. **编码器身份要等协商完才问得到**：`GetServiceForStream(GUID_NULL, IID_IMFTransform)` 在 `SetInputMediaType` 之前返回 `MF_E_UNSUPPORTED_SERVICE`，之后返回 `S_OK` 并能读到 `MFT_ENUM_HARDWARE_VENDOR_ID_Attribute`（本机 `VEN_8086`）。所以 `EncoderStats` 分成「已请求」与「已观测」两位。
+5. **探针自己的内容生成必须走 GPU**（`CopySubresourceRegion`）。每帧 CPU 上传大纹理的两种写法都会把编码器的成本盖掉：`UpdateSubresource` 在 720p 240 次涨 ~450 MB，`DYNAMIC + Map(WRITE_DISCARD)` 在 4K 60 帧涨 ~2.4 GB——后者一度被误记成「不节流导致写入器攒帧 2.69 GB」，改法与纠错过程都记在计划文档里。
+
+编码这条管线的时钟与闸门在 core（`RecordingClock` 暂停冻结媒体时间、`FrameGate` 保证样本时间不递减且不超帧率、码率默认 `0.11 bpp × 帧率` 夹 `[1, 45] Mbps`），由 `encoder_policy_tests` 覆盖；音频（AAC 第二条流）还没进来，所以时间轴目前只有视频一条。

@@ -1,0 +1,2 @@
+add_executable(encoder_probe main.cpp)
+target_link_libraries(encoder_probe PRIVATE halocap_platform_win32 psapi)

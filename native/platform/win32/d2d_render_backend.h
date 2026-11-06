@@ -56,6 +56,10 @@ public:
     ID2D1Factory1* Factory() const { return factory_.Get(); }
     core::ImageHandle RegisterGpuImage(ID2D1Bitmap1* bitmap);
 
+    // 句柄背后的原生纹理。编码 seam 需要它：BGRA→NV12 的转换在 GPU 上做，
+    // 输入就是采集常驻纹理，而显示列表那一侧只允许带句柄。
+    bool TextureFor(core::ImageHandle handle, ID3D11Texture2D** outTexture);
+
     // 有句柄说明这条链带 waitable object，Present 的节流才不是「自己骗自己」。
     HANDLE FrameLatencyWaitable() const { return frameLatencyWaitable_; }
 

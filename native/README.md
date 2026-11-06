@@ -11,16 +11,17 @@ native/
     display_list.h      显示列表：FillRect / StrokeRect / Segment / Blit，向量顺序即图层顺序；
                         AppendIntersecting 按脏区裁图元（只压 clip 省不掉命令提交的成本）
     render_backend.h    IRenderBackend seam：Resize / RegisterImage / Render(plan, clip) / Flush /
-                        AttachWindow / DetachWindow / Present
+                        AttachWindow / DetachWindow / Present / WaitForFrameSlot
     font_rasterizer.h   IFontRasterizer seam：FontSpec（字体+字重+字号+颜色）/ TextCell / LayOut
     surface_window.h    ISurfaceWindow seam：Create / SetBounds / SetVisible / SetClickThrough / Handle
+    frame_scheduler.h   帧节奏与丢帧口径：BeginFrame / EndFrame / Stats，时钟由调用方注入微秒
   platform/win32/
     d2d_render_backend.h/.cpp      Direct2D 1.1（ID2D1Device + ID2D1DeviceContext）+ 合成链呈现
     d2d_font_rasterizer.h/.cpp     DirectWrite 排版 + 图集分页，格子=一个文本串
     win32_surface_window.h/.cpp    WS_POPUP + WS_EX_NOREDIRECTIONBITMAP，不激活、可透传
   tools/frame_cost/     覆盖层帧成本测量（与 spike 3 同口径，离屏、不上屏）
-  tools/surface_probe/  上屏链路验证与 Present 成本（窗口默认摆屏幕外）
-  tests/      core 的单测（无第三方框架，一个可执行 + CTest）
+  tools/surface_probe/  上屏链路验证：A/B 抓屏证「看得见」+ 60 fps 排帧数丢帧
+  tests/      core 的单测（无第三方框架，两个可执行 + CTest）
   build.cmd   vcvars → cmake configure → build → ctest
 ```
 
@@ -67,3 +68,7 @@ native> build\tools\surface_probe\surface_probe.exe 3840 2160 120 1    # 真上�
 `mode 1` 是唯一能证「屏幕上真看得见」的办法，判据两条：`SCREEN_TOP_IS_OURS`（用 `WindowFromPoint` 确认取样点上我们最上面）和 `SCREEN_CENTER_BGRA` 的 A/B——`before`/`after` 是桌面色、`during` 必须等于画进去的精确 BGRA，另加文本区近白像素计数。`WS_EX_NOREDIRECTIONBITMAP` 没有重定向位图，`PrintWindow` 拿不到内容，所以抓的是桌面合成结果（`BitBlt(SRCCOPY|CAPTUREBLT)`）。
 
 这里踩出两条产品侧也必须照做的要求：**显示时必须再压一次 `SetWindowPos(HWND_TOPMOST)`**——`ShowWindow` 不改 Z 序，第一次 A/B 就是因为被别的 topmost 窗口压住而判 FAIL；以及 **Present 不受 vsync 节流**，`Present(1)` 与 waitable object 都不阻塞（这条链是独立翻转），所以帧率要由 app 自己的调度器决定，「不丢帧」得按「已提交帧数 / 应有帧数」量，不能拿 Present 的耗时当节奏证据。
+
+节奏就在 `core::FrameScheduler`：`BeginFrame(now)` 到钟才接单、一次只领一帧、落后的槽记 `missed`（不靠连发补帧），`EndFrame(now, presented)` 区分超预算与 Present 失败；时钟是注入的微秒，所以完全可单测（`scheduler_tests`，25 项断言）。`SCHEDULE_*` 与 `VISIBLE_SCHEDULE*` 两组键就是这套统计的输出，判定为 `submitted/expected ≥ 0.98`。休眠前必须 `timeBeginPeriod(1)`，否则粒度不够（spike 2 的老坑）。
+
+两个内存事实：离屏目标纹理与 STAGING 是**懒建**的（`Resize` 只记尺寸、放掉旧资源，真要往自己身上画才分配），所以挂着窗口时私有内存是 60 MB 而不是 69–76 MB；`DetachWindow` 里会调 `IDXGIDevice3::Trim()`，但实测私有内存 61→61、一秒后仍 61——这 60 MB 不是我们的引用扣着的，结案要等真实 app 用环境摘要同一字段复验。

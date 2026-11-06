@@ -1,5 +1,6 @@
 add_library(halocap_core STATIC
     display_list.cpp
+    frame_scheduler.cpp
 )
 
 target_include_directories(halocap_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

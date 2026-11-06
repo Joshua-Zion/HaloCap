@@ -83,17 +83,34 @@ bool D2dRenderBackend::Resize(int widthPx, int heightPx) {
         return false;
     }
 
-    // 换尺寸要整条重建：目标位图引用的是那张纹理本身。
+    if (target_ && widthPx == width_ && heightPx == height_) {
+        return true;
+    }
+
+    // Resize 只改尺寸并放掉旧资源，不分配：真实覆盖层经常只做「挂到窗口」而不需要离屏目标，
+    // 提前分配就等于常驻一块 4K 目标（33 MB）+ 可能的 STAGING。
+    width_ = widthPx;
+    height_ = heightPx;
     targetBitmap_.Reset();
     targetSurface_.Reset();
     target_.Reset();
     staging_.Reset();
-    width_ = widthPx;
-    height_ = heightPx;
+    return true;
+}
+
+bool D2dRenderBackend::EnsureOffscreenTarget() {
+    if (targetBitmap_ && target_) {
+        return true;
+    }
+
+    if (!dc_ || width_ <= 0 || height_ <= 0) {
+        lastHr_ = E_FAIL;
+        return false;
+    }
 
     D3D11_TEXTURE2D_DESC desc{};
-    desc.Width = static_cast<UINT>(widthPx);
-    desc.Height = static_cast<UINT>(heightPx);
+    desc.Width = static_cast<UINT>(width_);
+    desc.Height = static_cast<UINT>(height_);
     desc.MipLevels = 1;
     desc.ArraySize = 1;
     desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
@@ -119,9 +136,7 @@ bool D2dRenderBackend::Resize(int widthPx, int heightPx) {
         return false;
     }
 
-    dc_->SetTarget(targetBitmap_.Get());
     dc_->SetAntialiasMode(D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
-
     return !readbackEnabled_ || EnableCpuReadback();
 }
 
@@ -216,8 +231,18 @@ ID2D1SolidColorBrush* D2dRenderBackend::BrushFor(const core::Color& color) {
 }
 
 void D2dRenderBackend::Render(const core::FramePlan& plan, core::IntRect clip) {
+    if (!dc_) {
+        lastHr_ = E_FAIL;
+        return;
+    }
+
+    // 离屏路径的目标纹理是懒建的：只有真的要往自己身上画时才分配。
+    if (!windowTarget_ && !EnsureOffscreenTarget()) {
+        return;
+    }
+
     ID2D1Bitmap1* target = windowTarget_ ? windowTarget_.Get() : targetBitmap_.Get();
-    if (!dc_ || target == nullptr) {
+    if (target == nullptr) {
         lastHr_ = E_FAIL;
         return;
     }
@@ -416,6 +441,13 @@ void D2dRenderBackend::DetachWindow() {
 
     if (dc_ && targetBitmap_) {
         dc_->SetTarget(targetBitmap_.Get());
+    }
+
+    // 放掉引用不等于 DXGI 把缓存的视频内存吐回来；Win8+ 要显式 Trim。
+    // 这条是「Detach 后私有内存一分没降」的直接对策，效果由 surface_probe 量。
+    Microsoft::WRL::ComPtr<IDXGIDevice3> trimmable;
+    if (SUCCEEDED(device_.As(&trimmable))) {
+        trimmable->Trim();
     }
 }
 

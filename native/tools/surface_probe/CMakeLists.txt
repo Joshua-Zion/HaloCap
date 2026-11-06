@@ -1,2 +1,2 @@
 add_executable(surface_probe main.cpp)
-target_link_libraries(surface_probe PRIVATE halocap_platform_win32 gdi32)
+target_link_libraries(surface_probe PRIVATE halocap_platform_win32 gdi32 winmm)

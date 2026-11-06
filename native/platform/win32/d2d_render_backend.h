@@ -62,6 +62,9 @@ public:
     void WaitForFrameSlot() override;
 
 private:
+    // 离屏目标与回读用的 STAGING 都是懒建的，见 Resize 的注释。
+    bool EnsureOffscreenTarget();
+
     ID2D1SolidColorBrush* BrushFor(const core::Color& color);
 
     void DrawBlit(const core::Blit& blit);

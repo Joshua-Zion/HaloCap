@@ -7,12 +7,15 @@
 // BitBlt）能证明「看得见」。窗口不吃鼠标也不抢焦点。
 #include "d2d_font_rasterizer.h"
 #include "d2d_render_backend.h"
+#include "frame_scheduler.h"
 #include "win32_surface_window.h"
 
 #include <windows.h>
 
+#include <mmsystem.h>
 #include <psapi.h>
 
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -28,24 +31,25 @@ namespace {
 
 constexpr std::string_view kProbeText = "ISurfaceWindow \xE4\xB8\x8A\xE5\xB1\x8F\xE9\xAA\x8C\xE8\xAF\x81";
 
+std::int64_t QpcNowUs() {
+    static const LARGE_INTEGER frequency = [] {
+        LARGE_INTEGER value{};
+        QueryPerformanceFrequency(&value);
+        return value;
+    }();
+    LARGE_INTEGER now{};
+    QueryPerformanceCounter(&now);
+    return static_cast<std::int64_t>(now.QuadPart) * 1000000 / frequency.QuadPart;
+}
+
 class Clock {
 public:
-    void Start() { QueryPerformanceCounter(&begin_); }
+    void Start() { beginUs_ = QpcNowUs(); }
 
-    double ElapsedMs() const {
-        LARGE_INTEGER now{};
-        QueryPerformanceCounter(&now);
-        static const LARGE_INTEGER frequency = [] {
-            LARGE_INTEGER value{};
-            QueryPerformanceFrequency(&value);
-            return value;
-        }();
-        return static_cast<double>(now.QuadPart - begin_.QuadPart) * 1000.0 /
-               static_cast<double>(frequency.QuadPart);
-    }
+    double ElapsedMs() const { return static_cast<double>(QpcNowUs() - beginUs_) / 1000.0; }
 
 private:
-    LARGE_INTEGER begin_{};
+    std::int64_t beginUs_ = 0;
 };
 
 double MemoryMb(bool privateBytes) {
@@ -171,6 +175,67 @@ double RunFrames(D2dRenderBackend& backend, const core::FramePlan& plan, int fra
     return clock.ElapsedMs() / frames;
 }
 
+// 自己给节奏：DXGI 不节流，所以「按目标帧率提交 + 数丢帧」这件事只能由应用层做。
+// 休眠前先 timeBeginPeriod(1)：spike 2 实测默认定时器粒度会把 30 次/秒压到 21 次/秒。
+core::FrameStats RunScheduled(D2dRenderBackend& backend, const core::FramePlan& plan, int targetFps,
+                              int durationMs, double& actualFps, core::IntRect clip) {
+    core::FrameScheduler scheduler;
+    const std::int64_t beginUs = QpcNowUs();
+    scheduler.Start(targetFps, beginUs);
+
+    const std::int64_t stopUs = beginUs + static_cast<std::int64_t>(durationMs) * 1000;
+    std::int64_t submitted = 0;
+
+    while (true) {
+        const std::int64_t nowUs = QpcNowUs();
+        if (nowUs >= stopUs) {
+            break;
+        }
+
+        if (!scheduler.BeginFrame(nowUs)) {
+            const std::int64_t waitUs = scheduler.NextDeadlineUs() - nowUs;
+            Sleep(waitUs > 1500 ? static_cast<DWORD>(waitUs / 1000) : 1);
+            continue;
+        }
+
+        backend.Render(plan, clip);
+        backend.Present();
+        const bool presented = backend.LastHr() == S_OK;
+        if (presented) {
+            ++submitted;
+        }
+        scheduler.EndFrame(QpcNowUs(), presented);
+        PumpMessages();
+    }
+
+    actualFps = static_cast<double>(submitted) * 1000000.0 / (QpcNowUs() - beginUs);
+    return scheduler.Stats();
+}
+
+core::FrameStats RunScheduled(D2dRenderBackend& backend, const core::FramePlan& plan, int targetFps,
+                              int durationMs, double& actualFps) {
+    return RunScheduled(backend, plan, targetFps, durationMs, actualFps, core::IntRect{});
+}
+
+void ReportScheduled(const char* prefix, const core::FrameStats& stats, double actualFps,
+                     bool& verdict) {
+    const double ratio = stats.expectedFrames > 0
+                             ? static_cast<double>(stats.startedFrames - stats.droppedPresents) /
+                                   static_cast<double>(stats.expectedFrames)
+                             : 1.0;
+    std::printf("%s_EXPECTED=%lld %s_SUBMITTED=%lld %s_MISSED=%lld %s_OVER_BUDGET=%lld "
+                "%s_DROPPED_PRESENTS=%lld %s_ACTUAL_FPS=%.2f %s_LONGEST_GAP_MS=%.2f %s_RATIO=%.4f "
+                "%s\n",
+                prefix, static_cast<long long>(stats.expectedFrames), prefix,
+                static_cast<long long>(stats.startedFrames - stats.droppedPresents), prefix,
+                static_cast<long long>(stats.missedFrames), prefix,
+                static_cast<long long>(stats.overBudgetFrames), prefix,
+                static_cast<long long>(stats.droppedPresents), prefix, actualFps, prefix,
+                static_cast<double>(stats.longestGapUs) / 1000.0, prefix, ratio,
+                ratio >= 0.98 ? "SCHEDULE_PASS" : "SCHEDULE_FAIL");
+    verdict = verdict && ratio >= 0.98;
+}
+
 // 方块内、但不与斜线/文本重叠的一点：斜线从 (200,200) 走到 (900,700)，取样必须避开它，
 // 否则抓到的是白线而不是方块本色。
 constexpr int kProbeSampleX = 300;
@@ -268,6 +333,10 @@ core::FramePlan BuildProbePlan(const core::TextCell& text) {
 }
 
 int main(int argc, char** argv) {
+    timeBeginPeriod(1);
+    // 休眠粒度只有 1 ms：60 fps 的间隔是 16.6 ms，够；但 Sleep(0) 不行，所以循环里保底 Sleep(1)。
+    std::printf("TIMER_GRANULARITY=1ms\n");
+
     if (SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) == 0) {
         std::printf("DPI_AWARE=FAILED lastError=%lu\n", static_cast<unsigned long>(GetLastError()));
     } else {
@@ -325,6 +394,9 @@ int main(int argc, char** argv) {
                 static_cast<unsigned long>(backend.LastHr()));
     std::printf("PACING=%s\n",
                 backend.FrameLatencyWaitable() == nullptr ? "none" : "waitable-object latency=1");
+    // 这就是产品形态的空闲基线：设备 + D2D/DWrite + 一页字体图集 + 窗口 + 两个后缓冲，
+    // 离屏目标与 STAGING 都不存在（懒建，没画过离屏就 never 分配）。
+    std::printf("PRIVATE_MEMORY_ATTACHED_MB=%.0f\n", MemoryMb(true));
 
     const core::FramePlan plan = BuildProbePlan(text);
     const int pacedFrames = frames < 120 ? frames : 120;
@@ -336,31 +408,52 @@ int main(int argc, char** argv) {
     std::printf("FRAME_SLOT_PACED_MS_PER_FRAME=%.3f\n", pacedMs);
     std::printf("PRESENT_HR=0x%08lX\n", static_cast<unsigned long>(backend.LastHr()));
     std::printf("WORKING_SET_MB=%.0f PRIVATE_MEMORY_MB=%.0f\n", MemoryMb(false), MemoryMb(true));
-    std::printf("SURFACE_BYTES_MB=%.0f (2 back buffers + offscreen target + staging)\n",
-                static_cast<double>(width * height * 4 * 4) / 1048576.0);
+    std::printf("SURFACE_BYTES_MB=%.0f (仅合成链两个后缓冲；离屏目标与 STAGING 已改成懒建)\n",
+                static_cast<double>(width * height * 4 * 2) / 1048576.0);
+
+    // 自己按 60 fps 排帧：这才是「不丢帧」的实际口径。
+    // 注意 actualFps 必须先落地再传给 ReportScheduled——把它和 RunScheduled 放在同一次调用的
+    // 实参里，C++ 不保证求值顺序，读到的是赋值前的 0。
+    double actualFps = 0.0;
+    bool scheduleOk = true;
+    const core::FrameStats offscreenStats = RunScheduled(backend, plan, 60, 2000, actualFps);
+    ReportScheduled("SCHEDULE", offscreenStats, actualFps, scheduleOk);
 
     bool screenOk = true;
+    bool visibleScheduleOk = true;
     if (place == 1) {
         // 只有真的可见时，帧槽节奏才是 §1.3 要的那个数；屏外/隐藏时 DWM 不节流。
         std::printf("VISIBLE_PRESENT_UNPACED_MS_PER_FRAME=%.3f\n",
                     RunFrames(backend, plan, frames, false));
         std::printf("VISIBLE_FRAME_SLOT_PACED_MS_PER_FRAME=%.3f\n",
                     RunFrames(backend, plan, pacedFrames, true));
+        const core::FrameStats visibleStats = RunScheduled(backend, plan, 60, 2000, actualFps);
+        ReportScheduled("VISIBLE_SCHEDULE", visibleStats, actualFps, visibleScheduleOk);
+
+        // 同一内容只重绘一块 600x600（4K 的 4.1%）：脏区路径的上屏成本必须有数，
+        // 否则 §1.3 的「≤2 ms」只是离屏结论。
+        const core::IntRect dirty{ 80, 80, 680, 680 };
+        const core::FrameStats dirtyStats =
+            RunScheduled(backend, plan, 60, 2000, actualFps, dirty);
+        ReportScheduled("VISIBLE_SCHEDULE_DIRTY", dirtyStats, actualFps, visibleScheduleOk);
 
         screenOk = VerifyOnScreen(backend, window, plan, width, height);
     }
 
-    // 拆掉再量一次，看合成链的资源有没有真的还回去。
+    // 拆掉再量一次，看合成链的资源有没有真的还回去（DetachWindow 里会调 IDXGIDevice3::Trim）。
     const double withChain = MemoryMb(true);
     backend.DetachWindow();
     window.SetVisible(false);
     PumpMessages();
-    std::printf("PRIVATE_MEMORY_DETACH_MB=%.0f (attach 后是 %.0f)\n", MemoryMb(true), withChain);
+    const double afterDetach = MemoryMb(true);
+    Sleep(1000);
+    PumpMessages();
+    std::printf("PRIVATE_MEMORY_DETACH_MB=%.0f (attach 时 %.0f，一秒后 %.0f)\n", afterDetach,
+                withChain, MemoryMb(true));
 
     const bool clean = backend.LastHr() == S_OK;
-    if (place != 1) {
-        std::printf("UNVERIFIED=屏幕上是否真的看得见（跑 mode 1 才会做 A/B 抓屏）\n");
-    }
-    std::printf("OUTCOME=%s\n", (clean && screenOk) ? "PRESENTED" : "FAILED");
-    return (clean && screenOk) ? 0 : 2;
+    const bool verdict = clean && scheduleOk && screenOk && visibleScheduleOk;
+    std::printf("OUTCOME=%s\n", verdict ? "PRESENTED" : "FAILED");
+    timeEndPeriod(1);
+    return verdict ? 0 : 2;
 }

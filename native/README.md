@@ -2,7 +2,7 @@
 
 本目录属于 `2.0` 分支。设计依据见 [../docs/2.0-native-plan.md](../docs/2.0-native-plan.md)，分支约定见其 §10，工具链与构建前提见计划文档的「S1 的工具链」。
 
-当前状态：**S1 骨架可构建、五套测试可跑、§3.3 规则三已做成机检；显示列表能离屏逐字节画对、能经 DirectComposition 真窗口上屏、也能自己按 60 fps 排帧数丢帧；桌面复制的 seam 与脏矩形拷贝已落地；H.264 编码这条管线跑通并且量过（GPU 侧 BGRA→NV12 + `IMFSinkWriter`）**。还没有产品功能——音频、热键与输入、托盘与设置都还没进来，对应的 seam 也不提前定形（避免先写一套再被实现推翻）。
+当前状态：**S1 骨架可构建、六套测试可跑、§3.3 规则三已做成机检；显示列表能离屏逐字节画对、能经 DirectComposition 真窗口上屏、也能自己按 60 fps 排帧数丢帧；桌面复制的 seam 与脏矩形拷贝已落地；H.264 编码这条管线跑通并且量过（GPU 侧 BGRA→NV12 + `IMFSinkWriter`）；WASAPI 的回环与麦克风两路也跑通并量过**。还没有产品功能——热键与输入、托盘与设置都还没进来，对应的 seam 也不提前定形（避免先写一套再被实现推翻）。
 
 一处环境阻塞要写清：本机现在对**任何**程序都拒绝 `DuplicateOutput`（`E_ACCESSDENIED`；今天早些时候还能跑出吞吐数字的 spike 2 工具现在同样被拒），所以 `ICaptureSource` 的端到端脏矩形量级数字还没拿到。拷贝逻辑本身不依赖复制权，已经单独验过（`rect_copy_test`）。
 
@@ -20,6 +20,8 @@ native/
                         SummarizeDirtyRects 与 BackoffUs 是纯逻辑（面积要分「实搬量」和「包围盒」两个数）
     encoder.h           IEncoder seam：OpenVideo / Submit(句柄+媒体时间) / Close / EncoderStats；
                         RecordingClock（暂停冻结媒体时间）与 FrameGate（时间戳不递减 + 不超帧率）在同一处
+    audio_source.h      IAudioSource seam：Open / WaitForPacket / ReleasePacket / Format；
+                        StereoRingBuffer（写满丢最旧）、MixInto、RemixToStereo、线性重采样、AAC 块补齐
     frame_scheduler.h   帧节奏与丢帧口径：BeginFrame / EndFrame / Stats，时钟由调用方注入微秒
   platform/win32/
     d2d_render_backend.h/.cpp      Direct2D 1.1（ID2D1Device + ID2D1DeviceContext）+ 合成链呈现
@@ -28,12 +30,14 @@ native/
     dxgi_desktop_duplication.h/.cpp 桌面复制；CopyDirtyRegions 单独抽出以便脱离复制权做验证
     nv12_converter.h/.cpp          D3D11 视频处理器做 BGRA→NV12，NV12 三帧环，bind flag 按实测候选试
     mf_h264_encoder.h/.cpp         IMFSinkWriter + MF_SINK_WRITER_D3D_MANAGER + NV12 样本，从服务属性读编码器身份
+    wasapi_audio_source.h/.cpp     共享模式事件驱动；回环加 AUDCLNT_STREAMFLAGS_LOOPBACK
   tools/frame_cost/     覆盖层帧成本测量（与 spike 3 同口径，离屏、不上屏）
   tools/surface_probe/  上屏链路验证：A/B 抓屏证「看得见」+ 60 fps 排帧数丢帧
   tools/capture_probe/  采集链路统计：应有/实取、仅鼠标唤醒、脏像素之比、每帧 CPU 与内存
   tools/encoder_probe/  编码链路验证：颜色回读证转换对、五档组合量成本/字节/内存与编码器身份
+  tools/audio_probe/    音频链路验证：端点形状、静音时出不出包、Initialize 时序矩阵、借还契约
   tools/rect_copy_test/ 脏矩形拷贝的功能验证（进 CTest，不碰屏幕也不需要复制权）
-  tests/      core 的单测（无第三方框架，五个可执行 + CTest）
+  tests/      core 的单测（无第三方框架，六个可执行 + CTest）
   build.cmd   vcvars → cmake configure → build → ctest
 ```
 
@@ -41,11 +45,11 @@ native/
 
 1. **core 只产显示列表**，渲染由后端一次提交。`display_list.h` + `render_backend.h` 是这条规则的载体：`Render(plan, clip)` 一次拿到整张列表，core 侧没有任何渲染 API；`Blit` 只带 `ImageHandle`，因为帧循环里不做纹理上传——裸缓冲只在 `RegisterImage` 这一步跨过边界，之后图元引用的都是它返回的句柄。
 2. **热路径只操作裸缓冲**：core 只看得到 `ImageRef{pixels, width, height, stride}`，映射/上传/解绑全在 `platform/`。
-3. **可机检**：`core/CMakeLists.txt` 在 configure 阶段扫 `core/**` 的 `#include`，命中平台头前缀（`windows.` `d2d1` `dxgi` `mf*` `winrt/` `wrl/` 等）就 `FATAL_ERROR`；`tests/CMakeLists.txt` 再加一道链接期兜底——`halocap_core` 一旦链上任何库（含系统导入库）同样 `FATAL_ERROR`，这条挡的是「头文件没引但真调了 Win32 函数」。两道都做过反向验证：塞一个 `#include <windows.h>` 进去、给 core 加一句 `target_link_libraries(... user32)`，configure 都会失败并指名道姓。仓库目前没有 CI，所以检查挂在 configure 上，任何人 configure 就跑。
+3. **可机检**：`core/CMakeLists.txt` 在 configure 阶段逐行扫 `core/**` 的 `#include`，三条判据：越出 core/ 的相对引入直接违规；引号形式且能在 `core/` 里找到同一个文件是自家头，放行；其余按平台头前缀判（`windows.` `d2d1` `dxgi` `mf` `audio` `winrt/` `wrl/` 等），命中就 `FATAL_ERROR`。判据早前是「整文件匹配前缀」，那样 `audio` 会把自家的 `#include "audio_source.h"` 一起抓掉，所以改成按行。`tests/CMakeLists.txt` 再加一道链接期兜底——`halocap_core` 一旦链上任何库（含系统导入库）同样 `FATAL_ERROR`，这条挡的是「头文件没引但真调了 Win32 函数」。三道用例都反向验过：塞 `#include <windows.h>`、塞 `#include "../platform/win32/…h"` 都会 configure 失败并指名道姓，塞 `#include "audio_source.h"` 必须放行。仓库目前没有 CI，所以检查挂在 configure 上，任何人 configure 就跑。
 
 文本不新增图元类型：`IFontRasterizer::LayOut` 返回的 `TextCell` 只能以 `ToBlit()` 进入显示列表，所以 bounds、脏区裁剪与后端都不用为文本特判。折线（`Path`）**仍然故意不在列表里**——它要等几何缓存策略定下来，放进列表却画不出来比不放更糟。
 
-平台边界一共 8 个 seam（`ISurfaceWindow`、`IRenderBackend`、`IFontRasterizer`、`ICaptureSource`、`IEncoder`、`IAudioSource`、`IInputHost`、`IStore`+`ICapability`），职责与 macOS 对应物在 §3.2；目前已落地 `IRenderBackend`、`IFontRasterizer`、`ISurfaceWindow`、`ICaptureSource`、`IEncoder` 五个。
+平台边界一共 8 个 seam（`ISurfaceWindow`、`IRenderBackend`、`IFontRasterizer`、`ICaptureSource`、`IEncoder`、`IAudioSource`、`IInputHost`、`IStore`+`ICapability`），职责与 macOS 对应物在 §3.2；目前已落地 `IRenderBackend`、`IFontRasterizer`、`ISurfaceWindow`、`ICaptureSource`、`IEncoder`、`IAudioSource` 六个。
 
 上屏这条路有个必须记在实现旁边的实测结论：**挂在 HWND 上的 flip 交换链不接受预乘 alpha**（9 个组合 × 4 块适配器 × 3 种扩展样式全 `DXGI_ERROR_INVALID_CALL`），透明只能走 **DirectComposition 的 composition 交换链**，且它要求 `DXGI_SCALING_STRETCH`、后缓冲当 D2D 目标时还要 `TARGET | CANNOT_DRAW`。所以窗口用 `WS_EX_NOREDIRECTIONBITMAP`（不是 `WS_EX_LAYERED`），呈现归后端。完整矩阵与三条 API 细节见计划文档 §5.1「S1 的上屏路径」。
 
@@ -113,3 +117,18 @@ native> build\tools\encoder_probe\encoder_probe.exe 3840 2160 30 60 HW-PACED    
 5. **探针自己的内容生成必须走 GPU**（`CopySubresourceRegion`）。每帧 CPU 上传大纹理的两种写法都会把编码器的成本盖掉：`UpdateSubresource` 在 720p 240 次涨 ~450 MB，`DYNAMIC + Map(WRITE_DISCARD)` 在 4K 60 帧涨 ~2.4 GB——后者一度被误记成「不节流导致写入器攒帧 2.69 GB」，改法与纠错过程都记在计划文档里。
 
 编码这条管线的时钟与闸门在 core（`RecordingClock` 暂停冻结媒体时间、`FrameGate` 保证样本时间不递减且不超帧率、码率默认 `0.11 bpp × 帧率` 夹 `[1, 45] Mbps`），由 `encoder_policy_tests` 覆盖；音频（AAC 第二条流）还没进来，所以时间轴目前只有视频一条。
+
+音频链路（不出声、不上屏；会打开默认麦克风几秒，只算峰值与 RMS，不落盘不上传。参数：观察时长毫秒）：
+
+```
+native> build\tools\audio_probe\audio_probe.exe          # 默认 3000 ms
+native> build\tools\audio_probe\audio_probe.exe 8000     # 拉长观察窗口
+```
+
+三件必须记在实现旁边的实测事实（数字与被推翻的猜测都在计划文档 §5.1「S1 的音频 seam」）：
+
+1. **桌面静音时回环根本不出包**：3 秒 0 个包、49 次 `timeout`、`GetNextPacketSize` 恒为 0、事件从不触发。所以录制侧的音频长度不能挂在「包到达」上，必须按墙钟补静音，否则静音段会让两条流整体错开。
+2. **`Initialize` 的两个时序参数在共享模式下不是二选一，是四选全都行**：缓冲填 0 拿 1056 帧（≈22 ms，最低延迟），填 100 ms 拿 4800 帧，periodicity 没有可见效果——`Open()` 因此钉在 `(0, 0)`。顺带三条签名坑：`IMMDevice::Activate` 不能再套 `IID_PPV_ARGS`（会多出 5 个参数）、采集侧 `ReleaseBuffer` 只有一个参数、`AUDCLNT_E_INVALID_FORMAT` 这个错误名不存在。
+3. **`GetBuffer` 的 QPC 位置是采集时刻，不是读取时刻**：与取包时的 QPC 差 17–21 ms（等于缓冲深度）。AAC 那条流接进写入器时要把它当固定延迟补偿，不然口型会偏。
+
+还有两条数学不变量是在真流上验的，不只是单测：`设备位置(末) − 设备位置(首) + 第一包帧数 == 收到的总帧数`，以及环形缓冲的 `pushed == 包帧数之和`（探针故意只消费一半，把 `dropped` 逼出来）。借还契约也在麦克风那一路实测过：拿了一包不还就想再等，返回 false 且 `kind=invalid`。

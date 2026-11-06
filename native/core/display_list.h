@@ -68,4 +68,9 @@ private:
 
 Rect BoundsOf(const Item& item);
 
+// 只重绘变化区时必须先在 core 侧丢掉脏区外的图元：只在设备上压一个 clip，
+// 命令提交与逐图元裁剪测试的成本一分都不省（§5.1 原生复测第 3 条）。
+// bounds 为空矩形表示整面重绘，原样全部追加。
+void AppendIntersecting(const FramePlan& source, Rect bounds, FramePlan& destination);
+
 }

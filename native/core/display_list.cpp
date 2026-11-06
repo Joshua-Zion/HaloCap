@@ -44,4 +44,14 @@ Rect BoundsOf(const Item& item) {
         item);
 }
 
+void AppendIntersecting(const FramePlan& source, Rect bounds, FramePlan& destination) {
+    const bool wholeTarget = bounds.IsEmpty();
+
+    for (const Item& item : source.Items()) {
+        if (wholeTarget || !bounds.Intersect(BoundsOf(item)).IsEmpty()) {
+            destination.Add(item);
+        }
+    }
+}
+
 }

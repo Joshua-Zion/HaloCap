@@ -8,7 +8,8 @@
 native/
   core/       纯 C++，只依赖标准库与自家头文件
     geometry.h          Point / Size / Rect / IntRect / Color 与矩形运算（并、交、归一化、包含）
-    display_list.h      显示列表：FillRect / StrokeRect / Segment / Blit，向量顺序即图层顺序
+    display_list.h      显示列表：FillRect / StrokeRect / Segment / Blit，向量顺序即图层顺序；
+                        AppendIntersecting 按脏区裁图元（只压 clip 省不掉命令提交的成本）
     render_backend.h    IRenderBackend seam：Resize / RegisterImage / Render(plan, clip) / Flush
   platform/win32/
     d2d_render_backend.h/.cpp   Direct2D 1.1（ID2D1Device + ID2D1DeviceContext）实现
@@ -44,4 +45,4 @@ native> build\tools\frame_cost\frame_cost.exe            # 跑 spike 3 的全部
 native> build\tools\frame_cost\frame_cost.exe 3840 2160 120 300   # 单个配置
 ```
 
-每个配置会先只放一次整面 blit、回读画面中心像素与源图样逐字节比对（`PROBE=EXACT`），再计时；输出的 `SUBMIT_*` 是整面重绘，`PARTIAL_*` 是只压 600×600 脏区 clip，`READBACK_*` 是每帧整帧回读那一档。实测结论与对口径的影响都写进了计划文档 §5.1「spike 3 的原生复测」。
+每个配置会先只放一次整面 blit、回读画面中心像素与源图样逐字节比对（`PROBE=EXACT`），再计时；输出的 `SUBMIT_*` 是整面重绘，`PARTIAL_*` 是只压 600×600 脏区 clip（图元照旧全提交），`PARTIAL_CULLED_*` 是先用 `core::AppendIntersecting` 按脏区裁图元再压同一个 clip，`READBACK_*` 是每帧整帧回读那一档。实测结论与对口径的影响都写进了计划文档 §5.1「spike 3 的原生复测」。

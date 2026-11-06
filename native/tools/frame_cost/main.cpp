@@ -221,17 +221,37 @@ bool RunConfig(D2dRenderBackend& backend, const Config& config) {
 
     // 只重绘变化区：整张列表照旧，脏区缩到放大镜那一块（4K 的 4.1%）。
     if (config.width >= 680 && config.height >= 680) {
-        const core::IntRect dirty{ 80, 80, 680, 680 };
+        const core::IntRect dirtyPx{ 80, 80, 680, 680 };
+        const core::Rect dirty{ 80.0f, 80.0f, 680.0f, 680.0f };
+
         clock.Start();
         for (int frame = 0; frame < config.frames; ++frame) {
             BuildPlan(plan, frozen, config.width, config.height, config.primitives, frame);
-            backend.Render(plan, dirty);
+            backend.Render(plan, dirtyPx);
         }
         backend.Flush();
         backend.SyncToCpu();
         const double partialMs = clock.ElapsedMs() / config.frames;
         std::printf("PARTIAL_CLIP=80,80,680,680 PARTIAL_MS_PER_FRAME_WARM=%.3f\n", partialMs);
         std::printf("PARTIAL_RATIO=%.3f\n", warmMs > 0.0 ? partialMs / warmMs : 0.0);
+
+        // 同一块脏区，但先在 core 里裁掉够不着的图元，再压 clip。
+        core::FramePlan visible;
+        int visibleItems = 0;
+        clock.Start();
+        for (int frame = 0; frame < config.frames; ++frame) {
+            BuildPlan(plan, frozen, config.width, config.height, config.primitives, frame);
+            visible.Clear();
+            core::AppendIntersecting(plan, dirty, visible);
+            visibleItems = static_cast<int>(visible.ItemCount());
+            backend.Render(visible, dirtyPx);
+        }
+        backend.Flush();
+        backend.SyncToCpu();
+        const double culledMs = clock.ElapsedMs() / config.frames;
+        std::printf("PARTIAL_CULLED_ITEMS=%d PARTIAL_CULLED_MS_PER_FRAME_WARM=%.3f\n",
+                    visibleItems, culledMs);
+        std::printf("PARTIAL_CULLED_RATIO=%.3f\n", warmMs > 0.0 ? culledMs / warmMs : 0.0);
     }
 
     std::printf("ENDDRAW_HR=0x%08lX\n", static_cast<unsigned long>(backend.LastHr()));

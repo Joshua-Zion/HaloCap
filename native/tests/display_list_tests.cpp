@@ -104,6 +104,42 @@ void TestFramePlan() {
     Check(plan.ItemCount() == 0 && plan.ContentBounds().IsEmpty(), "Clear resets the plan");
 }
 
+void TestAppendIntersecting() {
+    FramePlan source;
+    source.Add(FillRect{ Rect{ 0.0f, 0.0f, 10.0f, 10.0f }, Color{} });
+    source.Add(Segment{ Point{ 500.0f, 500.0f }, Point{ 510.0f, 510.0f }, Color{}, 1.0f });
+    source.Add(Blit{ 1, Rect{}, Rect{ 1000.0f, 1000.0f, 1010.0f, 1010.0f }, 1.0f });
+
+    FramePlan whole;
+    AppendIntersecting(source, Rect{}, whole);
+    Check(whole.ItemCount() == 3, "empty bounds means repaint all, nothing dropped");
+
+    FramePlan corner;
+    AppendIntersecting(source, Rect{ 0.0f, 0.0f, 50.0f, 50.0f }, corner);
+    Check(corner.ItemCount() == 1, "only the item touching the dirty rect survives");
+    Check(std::holds_alternative<FillRect>(corner.Items()[0]), "survivor is the first item");
+
+    FramePlan two;
+    AppendIntersecting(source, Rect{ 400.0f, 400.0f, 1100.0f, 1100.0f }, two);
+    Check(two.ItemCount() == 2, "two items overlap the larger dirty rect");
+    Check(std::holds_alternative<Segment>(two.Items()[0]), "order kept: segment first");
+    Check(std::holds_alternative<Blit>(two.Items()[1]), "order kept: blit second");
+
+    // 端点都在脏区外，但描边按 thickness 外扩后够得着——这类图元不能丢。
+    FramePlan stroke;
+    stroke.Add(Segment{ Point{ 95.0f, 95.0f }, Point{ 105.0f, 105.0f }, Color{}, 4.0f });
+    FramePlan kept;
+    AppendIntersecting(stroke, Rect{ 100.0f, 100.0f, 200.0f, 200.0f }, kept);
+    Check(kept.ItemCount() == 1, "stroke reach keeps a near-miss segment");
+
+    // 顺序按原列表，且 destination 已有的内容排在前面。
+    FramePlan preexisting;
+    preexisting.Add(FillRect{ Rect{ 7.0f, 7.0f, 8.0f, 8.0f }, Color{} });
+    AppendIntersecting(source, Rect{ 0.0f, 0.0f, 50.0f, 50.0f }, preexisting);
+    Check(preexisting.ItemCount() == 2, "appending preserves what was already there");
+    Check(std::get<FillRect>(preexisting.Items()[0]).rect.left == 7.0f, "the old item stays first");
+}
+
 }
 
 int main() {
@@ -112,6 +148,7 @@ int main() {
     TestIntRect();
     TestItemBounds();
     TestFramePlan();
+    TestAppendIntersecting();
 
     if (failures != 0) {
         std::printf("CORE_TESTS=FAILED %d\n", failures);

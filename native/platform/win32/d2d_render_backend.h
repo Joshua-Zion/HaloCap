@@ -37,6 +37,15 @@ public:
     // centerPixelRgba 非空时顺带回读画面中心的像素，用来验证「真画出来了」。
     bool SyncToCpu(unsigned char* centerPixelRgba = nullptr);
 
+    // 数一下目标上不透明的像素，验证文本这类「有东西才该有数」的输出。
+    bool CountInkedPixels(int* count);
+
+    // 平台内部共享：字体栅格器要往自己的图集纹理里画，画完由这里换成显示列表能引用的句柄。
+    ID2D1DeviceContext* Dc() const { return dc_.Get(); }
+    ID3D11Device* Device() const { return device_.Get(); }
+    ID2D1Factory1* Factory() const { return factory_.Get(); }
+    core::ImageHandle RegisterGpuImage(ID2D1Bitmap1* bitmap);
+
 private:
     ID2D1SolidColorBrush* BrushFor(const core::Color& color);
 

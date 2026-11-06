@@ -146,6 +146,51 @@ void D2dRenderBackend::ReleaseImage(core::ImageHandle handle) {
     }
 }
 
+core::ImageHandle D2dRenderBackend::RegisterGpuImage(ID2D1Bitmap1* bitmap) {
+    if (bitmap == nullptr) {
+        lastHr_ = E_INVALIDARG;
+        return 0;
+    }
+
+    Microsoft::WRL::ComPtr<ID2D1Bitmap1> kept;
+    lastHr_ = bitmap->QueryInterface(IID_PPV_ARGS(kept.GetAddressOf()));
+    if (FAILED(lastHr_)) {
+        return 0;
+    }
+
+    images_.push_back(std::move(kept));
+    return static_cast<core::ImageHandle>(images_.size());
+}
+
+bool D2dRenderBackend::CountInkedPixels(int* count) {
+    if (!staging_ || !target_ || !context_ || count == nullptr) {
+        lastHr_ = E_FAIL;
+        return false;
+    }
+
+    context_->CopyResource(staging_.Get(), target_.Get());
+    context_->Flush();
+
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    lastHr_ = context_->Map(staging_.Get(), 0, D3D11_MAP_READ, 0, &mapped);
+    if (FAILED(lastHr_)) {
+        return false;
+    }
+
+    const auto* bits = reinterpret_cast<const unsigned char*>(mapped.pData);
+    int inked = 0;
+    for (int y = 0; y < height_; ++y) {
+        const unsigned char* row = bits + static_cast<std::size_t>(mapped.RowPitch) * y;
+        for (int x = 0; x < width_; ++x) {
+            inked += row[static_cast<std::size_t>(x) * 4 + 3] != 0 ? 1 : 0;
+        }
+    }
+
+    context_->Unmap(staging_.Get(), 0);
+    *count = inked;
+    return true;
+}
+
 ID2D1SolidColorBrush* D2dRenderBackend::BrushFor(const core::Color& color) {
     for (auto& entry : brushes_) {
         if (entry.first == color) {
@@ -180,6 +225,10 @@ void D2dRenderBackend::Render(const core::FramePlan& plan, core::IntRect clip) {
                                     static_cast<float>(clip.right), static_cast<float>(clip.bottom) };
         dc_->PushAxisAlignedClip(&clipRect, D2D1_ANTIALIAS_MODE_ALIASED);
     }
+
+    // 只清要重绘的那块：透明覆盖层必须每帧从零开始画这一块，否则上一次的笔迹会留着；
+    // 而 clip 之外必须保留，不然部分重绘就没有意义了。
+    dc_->Clear(static_cast<const D2D1_COLOR_F*>(nullptr));
 
     for (const core::Item& item : plan.Items()) {
         std::visit(

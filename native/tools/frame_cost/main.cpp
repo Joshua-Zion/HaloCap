@@ -1,7 +1,9 @@
 // S1 的覆盖层帧成本测量：与 spike 3（spikes/OverlayFrameCost）同一套配置与口径，
 // 区别是这里走原生 D2D 设备上下文 + core 显示列表，spike 3 走托管手写 interop + D2D 1.0 离屏目标。
 // 文本那一行没有复现：字形 run 要等 IFontRasterizer，见 docs/2.0-native-plan.md 的说明。
+#include "d2d_font_rasterizer.h"
 #include "d2d_render_backend.h"
+#include "font_rasterizer.h"
 
 #include <windows.h>
 
@@ -10,9 +12,11 @@
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
+#include <string>
 
 // 不用 using namespace：winuser.h 里有同名的 FillRect 函数，会让名字二义。
 namespace core = halocap::core;
+using halocap::platform::win32::D2dFontRasterizer;
 using halocap::platform::win32::D2dRenderBackend;
 
 namespace {
@@ -88,6 +92,7 @@ core::Rect FullTarget(int width, int height) {
 
 void BuildPlan(core::FramePlan& plan,
                core::ImageHandle frozen,
+               const core::TextCell& text,
                int width,
                int height,
                int primitives,
@@ -103,6 +108,8 @@ void BuildPlan(core::FramePlan& plan,
                          core::Rect{ 400.0f, 400.0f, 600.0f, 600.0f },
                          core::Rect{ 80.0f, 80.0f, 680.0f, 680.0f },
                          1.0f });
+    // spike 3 每帧那一行文字，这里走图集 blit。
+    plan.Add(text.ToBlit());
 
     const int shift = frame % 64;
     const int spanX = width > 200 ? width - 200 : 1;
@@ -155,7 +162,10 @@ bool VerifyPixels(D2dRenderBackend& backend, core::ImageHandle frozen, const Con
     return exact;
 }
 
-bool RunConfig(D2dRenderBackend& backend, const Config& config) {
+// spike 3 每帧画的那一行文字，原文照抄（含中文）。
+constexpr std::string_view kSampleText = "HaloCap overlay spike \xE5\x85\x89\xE5\x9C\x88\xE8\xA6\x86\xE7\x9B\x96\xE5\xB1\x82\xE5\xB8\xA7\xE6\x97\xB6\xE9\x97\xB4";
+
+bool RunConfig(D2dRenderBackend& backend, D2dFontRasterizer& rasterizer, const Config& config) {
     std::printf("CONFIG %dx%d frames=%d primitives=%d\n",
                 config.width, config.height, config.frames, config.primitives);
 
@@ -180,6 +190,65 @@ bool RunConfig(D2dRenderBackend& backend, const Config& config) {
         return false;
     }
 
+    const core::FontSpec spec{ "Segoe UI", 400, 24.0f, core::Color{ 1.0f, 1.0f, 1.0f, 1.0f } };
+    const core::TextCell text = rasterizer.LayOut(kSampleText, spec, core::Point{ 200.0f, 200.0f });
+    if (text.atlas == 0) {
+        std::printf("TEXT_LAYOUT_HR=0x%08lX\n", static_cast<unsigned long>(rasterizer.LastHr()));
+        return false;
+    }
+
+    // 文本的功能验证：只画这一格应当留下墨迹，什么都不画必须是全透明。
+    {
+        core::FramePlan textOnly;
+        textOnly.Add(text.ToBlit());
+        backend.Render(textOnly, core::IntRect{});
+        backend.Flush();
+
+        int textInk = -1;
+        if (!backend.CountInkedPixels(&textInk)) {
+            std::printf("TEXT_COUNT_HR=0x%08lX\n", static_cast<unsigned long>(backend.LastHr()));
+            return false;
+        }
+
+        core::FramePlan empty;
+        backend.Render(empty, core::IntRect{});
+        int emptyInk = -1;
+        if (!backend.CountInkedPixels(&emptyInk)) {
+            return false;
+        }
+
+        const bool ok = textInk > 100 && emptyInk == 0;
+        std::printf("TEXT_CELL=%.1fx%.1f TEXT_INK_PIXELS=%d EMPTY_INK_PIXELS=%d TEXT_VERIFY=%s\n",
+                    text.destination.Width(), text.destination.Height(), textInk, emptyInk,
+                    ok ? "OK" : "FAIL");
+        if (!ok) {
+            return false;
+        }
+    }
+
+    // 排版与栅格的成本：新串要建 DWrite layout 并画进图集，命中缓存只是查表。
+    {
+        Clock textClock;
+        constexpr int kFreshTrials = 10;
+        textClock.Start();
+        for (int i = 0; i < kFreshTrials; ++i) {
+            core::FontSpec fresh = spec;
+            fresh.emSizePx = spec.emSizePx + static_cast<float>(i + 1);
+            rasterizer.LayOut(kSampleText, fresh, core::Point{ 0.0f, 0.0f });
+        }
+        const double freshUs = textClock.ElapsedMs() * 1000.0 / kFreshTrials;
+
+        constexpr int kCachedTrials = 2000;
+        textClock.Start();
+        for (int i = 0; i < kCachedTrials; ++i) {
+            rasterizer.LayOut(kSampleText, spec, core::Point{ 0.0f, 0.0f });
+        }
+        const double cachedUs = textClock.ElapsedMs() * 1000.0 / kCachedTrials;
+
+        std::printf("TEXT_FRESH_LAYOUT_US=%.1f TEXT_CACHED_LAYOUT_US=%.1f TEXT_ATLAS_PAGES=%d\n",
+                    freshUs, cachedUs, rasterizer.PageCount());
+    }
+
     core::FramePlan plan;
     Clock clock;
     const double workingSetBefore = WorkingSetMb();
@@ -187,7 +256,7 @@ bool RunConfig(D2dRenderBackend& backend, const Config& config) {
     // 冷一趟：和 spike 3 一样从目标刚建好开始计时。
     clock.Start();
     for (int frame = 0; frame < config.frames; ++frame) {
-        BuildPlan(plan, frozen, config.width, config.height, config.primitives, frame);
+        BuildPlan(plan, frozen, text, config.width, config.height, config.primitives, frame);
         backend.Render(plan, core::IntRect{});
     }
     backend.Flush();
@@ -197,7 +266,7 @@ bool RunConfig(D2dRenderBackend& backend, const Config& config) {
     // 热一趟：同样的活再来一遍，把首帧的建资源开销分出去。
     clock.Start();
     for (int frame = 0; frame < config.frames; ++frame) {
-        BuildPlan(plan, frozen, config.width, config.height, config.primitives, frame);
+        BuildPlan(plan, frozen, text, config.width, config.height, config.primitives, frame);
         backend.Render(plan, core::IntRect{});
     }
     backend.Flush();
@@ -208,13 +277,13 @@ bool RunConfig(D2dRenderBackend& backend, const Config& config) {
     const int readbackFrames = config.frames < 60 ? config.frames : 60;
     clock.Start();
     for (int frame = 0; frame < readbackFrames; ++frame) {
-        BuildPlan(plan, frozen, config.width, config.height, config.primitives, frame);
+        BuildPlan(plan, frozen, text, config.width, config.height, config.primitives, frame);
         backend.Render(plan, core::IntRect{});
         backend.SyncToCpu();
     }
     const double readbackMs = clock.ElapsedMs() / readbackFrames;
 
-    std::printf("ITEMS_PER_FRAME=%d\n", 2 + config.primitives * 2);
+    std::printf("ITEMS_PER_FRAME=%d\n", 3 + config.primitives * 2);
     std::printf("SUBMIT_MS_PER_FRAME_COLD=%.3f\n", coldMs);
     std::printf("SUBMIT_MS_PER_FRAME_WARM=%.3f\n", warmMs);
     std::printf("READBACK_MS_PER_FRAME=%.3f\n", readbackMs);
@@ -226,7 +295,7 @@ bool RunConfig(D2dRenderBackend& backend, const Config& config) {
 
         clock.Start();
         for (int frame = 0; frame < config.frames; ++frame) {
-            BuildPlan(plan, frozen, config.width, config.height, config.primitives, frame);
+            BuildPlan(plan, frozen, text, config.width, config.height, config.primitives, frame);
             backend.Render(plan, dirtyPx);
         }
         backend.Flush();
@@ -240,7 +309,7 @@ bool RunConfig(D2dRenderBackend& backend, const Config& config) {
         int visibleItems = 0;
         clock.Start();
         for (int frame = 0; frame < config.frames; ++frame) {
-            BuildPlan(plan, frozen, config.width, config.height, config.primitives, frame);
+            BuildPlan(plan, frozen, text, config.width, config.height, config.primitives, frame);
             visible.Clear();
             core::AppendIntersecting(plan, dirty, visible);
             visibleItems = static_cast<int>(visible.ItemCount());
@@ -272,16 +341,23 @@ int main(int argc, char** argv) {
 
     std::printf("BACKEND=D2D1.1-device-context\n");
 
+    D2dFontRasterizer rasterizer(backend);
+    if (!rasterizer.Initialize()) {
+        std::printf("RASTERIZER_INITIALIZE_HR=0x%08lX\n",
+                    static_cast<unsigned long>(rasterizer.LastHr()));
+        return 2;
+    }
+
     if (argc >= 5) {
         const Config single{ std::atoi(argv[1]), std::atoi(argv[2]), std::atoi(argv[3]), std::atoi(argv[4]) };
-        const bool ok = RunConfig(backend, single);
+        const bool ok = RunConfig(backend, rasterizer, single);
         std::printf("OUTCOME=%s\n", ok ? "MEASURED" : "FAILED");
         return ok ? 0 : 2;
     }
 
     bool allOk = true;
     for (const Config& config : kMatrix) {
-        allOk = RunConfig(backend, config) && allOk;
+        allOk = RunConfig(backend, rasterizer, config) && allOk;
     }
 
     std::printf("OUTCOME=%s\n", allOk ? "MEASURED" : "FAILED");

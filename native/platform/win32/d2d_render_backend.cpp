@@ -308,6 +308,8 @@ bool D2dRenderBackend::AttachWindow(core::NativeHandle handle, int widthPx, int 
 
     windowTarget_.Reset();
     swapChain_.Reset();
+    swapChainLatency_.Reset();
+    frameLatencyWaitable_ = nullptr;
     compositionVisual_.Reset();
     compositionTarget_.Reset();
 
@@ -342,12 +344,27 @@ bool D2dRenderBackend::AttachWindow(core::NativeHandle handle, int widthPx, int 
     desc.Scaling = DXGI_SCALING_STRETCH;
     desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
     desc.AlphaMode = DXGI_ALPHA_MODE_PREMULTIPLIED;
-    desc.Flags = 0;
+    // flip 模型的 Present(1) 不会等 vblank（实测可见状态下仍是 ~4 ms），
+    // 真正的节奏只能靠 waitable object。
+    desc.Flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
 
     lastHr_ = dxgiFactory_->CreateSwapChainForComposition(device_.Get(), &desc, nullptr, &swapChain_);
     if (FAILED(lastHr_)) {
         return false;
     }
+
+    swapChainLatency_.Reset();
+    lastHr_ = swapChain_.As(&swapChainLatency_);
+    if (FAILED(lastHr_)) {
+        return false;
+    }
+
+    lastHr_ = swapChainLatency_->SetMaximumFrameLatency(1);
+    if (FAILED(lastHr_)) {
+        return false;
+    }
+
+    frameLatencyWaitable_ = swapChainLatency_->GetFrameLatencyWaitableObject();
 
     Microsoft::WRL::ComPtr<IDXGISurface> backBuffer;
     lastHr_ = swapChain_->GetBuffer(0, IID_PPV_ARGS(backBuffer.GetAddressOf()));
@@ -392,7 +409,9 @@ void D2dRenderBackend::DetachWindow() {
     compositionVisual_.Reset();
     compositionTarget_.Reset();
     windowTarget_.Reset();
+    swapChainLatency_.Reset();
     swapChain_.Reset();
+    frameLatencyWaitable_ = nullptr;  // 句柄归交换链所有，不关。
     window_ = nullptr;
 
     if (dc_ && targetBitmap_) {
@@ -400,13 +419,24 @@ void D2dRenderBackend::DetachWindow() {
     }
 }
 
-void D2dRenderBackend::Present(bool waitForVSync) {
+void D2dRenderBackend::Present() {
     if (!swapChain_) {
         lastHr_ = E_FAIL;
         return;
     }
 
-    lastHr_ = swapChain_->Present(waitForVSync ? 1 : 0, 0);
+    lastHr_ = swapChain_->Present(0, 0);
+}
+
+void D2dRenderBackend::WaitForFrameSlot() {
+    if (frameLatencyWaitable_ == nullptr) {
+        return;
+    }
+
+    const DWORD result = WaitForSingleObject(frameLatencyWaitable_, 1000);
+    if (result == WAIT_TIMEOUT) {
+        lastHr_ = HRESULT_FROM_WIN32(ERROR_TIMEOUT);
+    }
 }
 
 bool D2dRenderBackend::EnableCpuReadback() {

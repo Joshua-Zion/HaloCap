@@ -26,14 +26,18 @@ public:
     // 把排队的绘制真正推给 GPU，测量与「一帧结束」都用它。
     virtual void Flush() = 0;
 
-    // 上屏路径：把绘制目标从离屏纹理换成该窗口的交换链（预乘 alpha、flip 模型）。
+    // 上屏路径：把绘制目标从离屏纹理换成 DirectComposition 的合成链（预乘 alpha）。
     // Attach 之后 Render 画的就是屏幕上那块；Detach 回到离屏纹理。
     virtual bool AttachWindow(NativeHandle handle, int widthPx, int heightPx) = 0;
 
     virtual void DetachWindow() = 0;
 
-    // 只有上屏路径需要；waitForVSync=true 时把节奏交给合成器。
-    virtual void Present(bool waitForVSync) = 0;
+    // 把这一帧交给合成器。节奏不在这里做——见 WaitForFrameSlot。
+    virtual void Present() = 0;
+
+    // 画之前等一个帧槽——在 Present 之后等是量不到 vblank 的。
+    // 没有 waitable object（比如离屏）时立刻返回，调用方不需要分支。
+    virtual void WaitForFrameSlot() = 0;
 };
 
 }

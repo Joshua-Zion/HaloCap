@@ -62,4 +62,8 @@ native> build\tools\surface_probe\surface_probe.exe                    # 1920x10
 native> build\tools\surface_probe\surface_probe.exe 3840 2160 120 1    # 真上一次屏（会占桌面）
 ```
 
-命令行第 4 个参数：`0`=屏外可见、`1`=屏上可见、`2`=屏上但不显示。输出 `ATTACH_HR`（整条 DirectComposition 链）、`PRESENT_ASYNC_MS_PER_FRAME` / `PRESENT_SYNC_MS_PER_FRAME`、私有内存与 detach 后的变化，并明确打一行 `UNVERIFIED=`——`WS_EX_NOREDIRECTIONBITMAP` 没有重定向位图，`PrintWindow` 这类 CPU 手段拿不到内容，「屏幕上真看得见」只能靠一次真实上屏截图，这是该路径目前唯一未证的环节。
+命令行第 4 个参数：`0`=屏外可见、`1`=屏上可见并做 A/B 抓屏、`2`=屏上但不显示。输出 `PACING`、`PRESENT_UNPACED_MS_PER_FRAME` / `FRAME_SLOT_PACED_MS_PER_FRAME`（加 `VISIBLE_` 前缀是真实可见时的同两项）、私有内存与 detach 后的变化。
+
+`mode 1` 是唯一能证「屏幕上真看得见」的办法，判据两条：`SCREEN_TOP_IS_OURS`（用 `WindowFromPoint` 确认取样点上我们最上面）和 `SCREEN_CENTER_BGRA` 的 A/B——`before`/`after` 是桌面色、`during` 必须等于画进去的精确 BGRA，另加文本区近白像素计数。`WS_EX_NOREDIRECTIONBITMAP` 没有重定向位图，`PrintWindow` 拿不到内容，所以抓的是桌面合成结果（`BitBlt(SRCCOPY|CAPTUREBLT)`）。
+
+这里踩出两条产品侧也必须照做的要求：**显示时必须再压一次 `SetWindowPos(HWND_TOPMOST)`**——`ShowWindow` 不改 Z 序，第一次 A/B 就是因为被别的 topmost 窗口压住而判 FAIL；以及 **Present 不受 vsync 节流**，`Present(1)` 与 waitable object 都不阻塞（这条链是独立翻转），所以帧率要由 app 自己的调度器决定，「不丢帧」得按「已提交帧数 / 应有帧数」量，不能拿 Present 的耗时当节奏证据。

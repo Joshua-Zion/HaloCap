@@ -9,6 +9,7 @@
 #include <dcomp.h>
 #include <dxgi.h>
 #include <dxgi1_2.h>
+#include <dxgi1_3.h>
 #include <wrl/client.h>
 
 #include <vector>
@@ -37,7 +38,7 @@ public:
 
     void DetachWindow() override;
 
-    void Present(bool waitForVSync) override;
+    void Present() override;
 
     // 下面两个只服务测量与导出：目标位图要能被 CPU 读过一次，GPU 队列才算真收干。
     bool EnableCpuReadback();
@@ -53,6 +54,12 @@ public:
     ID3D11Device* Device() const { return device_.Get(); }
     ID2D1Factory1* Factory() const { return factory_.Get(); }
     core::ImageHandle RegisterGpuImage(ID2D1Bitmap1* bitmap);
+
+    // 有句柄说明这条链带 waitable object，Present 的节流才不是「自己骗自己」。
+    HANDLE FrameLatencyWaitable() const { return frameLatencyWaitable_; }
+
+    // 正确的节奏是「画之前等一个帧槽」；在 Present 之后等是量不到 vblank 的。
+    void WaitForFrameSlot() override;
 
 private:
     ID2D1SolidColorBrush* BrushFor(const core::Color& color);
@@ -72,6 +79,8 @@ private:
 
     Microsoft::WRL::ComPtr<IDXGIFactory2> dxgiFactory_;
     Microsoft::WRL::ComPtr<IDXGISwapChain1> swapChain_;
+    Microsoft::WRL::ComPtr<IDXGISwapChain2> swapChainLatency_;
+    HANDLE frameLatencyWaitable_ = nullptr;
     Microsoft::WRL::ComPtr<ID2D1Bitmap1> windowTarget_;
     core::NativeHandle window_ = nullptr;
 

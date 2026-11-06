@@ -1,0 +1,2 @@
+add_executable(input_probe main.cpp)
+target_link_libraries(input_probe PRIVATE halocap_platform_win32 psapi)

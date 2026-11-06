@@ -18,6 +18,10 @@ add_executable(audio_policy_tests audio_policy_tests.cpp)
 target_link_libraries(audio_policy_tests PRIVATE halocap_core)
 add_test(NAME audio_policy_tests COMMAND audio_policy_tests)
 
+add_executable(input_policy_tests input_policy_tests.cpp)
+target_link_libraries(input_policy_tests PRIVATE halocap_core)
+add_test(NAME input_policy_tests COMMAND input_policy_tests)
+
 # §3.3 规则三的链接期兜底：core 不许链接任何库（含系统导入库）。
 # include 扫描只挡住头文件，真正调用了 Win32 函数会在这里挂掉。
 foreach(_prop LINK_LIBRARIES INTERFACE_LINK_LIBRARIES)

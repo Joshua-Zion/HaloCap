@@ -3,6 +3,7 @@ add_library(halocap_core STATIC
     frame_scheduler.cpp
     capture_policy.cpp
     audio_policy.cpp
+    input_policy.cpp
     encoder_policy.cpp
 )
 

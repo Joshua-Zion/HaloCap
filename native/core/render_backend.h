@@ -2,6 +2,7 @@
 
 #include "display_list.h"
 #include "geometry.h"
+#include "surface_window.h"
 
 namespace halocap::core {
 
@@ -24,6 +25,15 @@ public:
 
     // 把排队的绘制真正推给 GPU，测量与「一帧结束」都用它。
     virtual void Flush() = 0;
+
+    // 上屏路径：把绘制目标从离屏纹理换成该窗口的交换链（预乘 alpha、flip 模型）。
+    // Attach 之后 Render 画的就是屏幕上那块；Detach 回到离屏纹理。
+    virtual bool AttachWindow(NativeHandle handle, int widthPx, int heightPx) = 0;
+
+    virtual void DetachWindow() = 0;
+
+    // 只有上屏路径需要；waitForVSync=true 时把节奏交给合成器。
+    virtual void Present(bool waitForVSync) = 0;
 };
 
 }

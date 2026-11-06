@@ -6,7 +6,9 @@
 
 #include <d3d11.h>
 #include <d2d1_1.h>
+#include <dcomp.h>
 #include <dxgi.h>
+#include <dxgi1_2.h>
 #include <wrl/client.h>
 
 #include <vector>
@@ -30,6 +32,12 @@ public:
     void Render(const core::FramePlan& plan, core::IntRect clip) override;
 
     void Flush() override;
+
+    bool AttachWindow(core::NativeHandle handle, int widthPx, int heightPx) override;
+
+    void DetachWindow() override;
+
+    void Present(bool waitForVSync) override;
 
     // 下面两个只服务测量与导出：目标位图要能被 CPU 读过一次，GPU 队列才算真收干。
     bool EnableCpuReadback();
@@ -61,6 +69,16 @@ private:
     Microsoft::WRL::ComPtr<ID3D11Texture2D> target_;
     Microsoft::WRL::ComPtr<IDXGISurface> targetSurface_;
     Microsoft::WRL::ComPtr<ID2D1Bitmap1> targetBitmap_;
+
+    Microsoft::WRL::ComPtr<IDXGIFactory2> dxgiFactory_;
+    Microsoft::WRL::ComPtr<IDXGISwapChain1> swapChain_;
+    Microsoft::WRL::ComPtr<ID2D1Bitmap1> windowTarget_;
+    core::NativeHandle window_ = nullptr;
+
+    // 上屏用的是 DirectComposition 那套：实测 HWND 上的 flip 交换链不接受 premultiplied alpha。
+    Microsoft::WRL::ComPtr<IDCompositionDevice> composition_;
+    Microsoft::WRL::ComPtr<IDCompositionTarget> compositionTarget_;
+    Microsoft::WRL::ComPtr<IDCompositionVisual> compositionVisual_;
 
     Microsoft::WRL::ComPtr<ID3D11Texture2D> staging_;
     bool readbackEnabled_ = false;

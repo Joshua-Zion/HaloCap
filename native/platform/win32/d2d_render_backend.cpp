@@ -56,6 +56,12 @@ bool D2dRenderBackend::Initialize() {
         return false;
     }
 
+    // 交换链由 DXGI factory 建，与 D3D 设备同源。
+    lastHr_ = CreateDXGIFactory1(IID_PPV_ARGS(dxgiFactory_.GetAddressOf()));
+    if (FAILED(lastHr_)) {
+        return false;
+    }
+
     lastHr_ = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED,
                                 IID_PPV_ARGS(factory_.GetAddressOf()));
     if (FAILED(lastHr_)) {
@@ -210,13 +216,14 @@ ID2D1SolidColorBrush* D2dRenderBackend::BrushFor(const core::Color& color) {
 }
 
 void D2dRenderBackend::Render(const core::FramePlan& plan, core::IntRect clip) {
-    if (!dc_ || !targetBitmap_) {
+    ID2D1Bitmap1* target = windowTarget_ ? windowTarget_.Get() : targetBitmap_.Get();
+    if (!dc_ || target == nullptr) {
         lastHr_ = E_FAIL;
         return;
     }
 
     // 目标纹理也会被 D3D 侧用到（复制、编码），所以每帧重新绑定再画。
-    dc_->SetTarget(targetBitmap_.Get());
+    dc_->SetTarget(target);
     dc_->BeginDraw();
 
     const bool clipped = !clip.IsEmpty();
@@ -284,6 +291,122 @@ void D2dRenderBackend::Flush() {
     if (context_) {
         context_->Flush();
     }
+}
+
+bool D2dRenderBackend::AttachWindow(core::NativeHandle handle, int widthPx, int heightPx) {
+    if (!dxgiFactory_ || !device_ || !dc_ || handle == nullptr || widthPx <= 0 || heightPx <= 0) {
+        lastHr_ = E_INVALIDARG;
+        return false;
+    }
+
+    // 尺寸变了就先把离屏目标与回读用的 STAGING 一起重建，两套目标共用同一套尺寸口径。
+    if (widthPx != width_ || heightPx != height_) {
+        if (!Resize(widthPx, heightPx)) {
+            return false;
+        }
+    }
+
+    windowTarget_.Reset();
+    swapChain_.Reset();
+    compositionVisual_.Reset();
+    compositionTarget_.Reset();
+
+    auto* hwnd = static_cast<HWND>(handle);
+
+    if (!composition_) {
+        lastHr_ = DCompositionCreateDevice(dxgiDevice_.Get(), __uuidof(IDCompositionDevice),
+                                           reinterpret_cast<void**>(composition_.GetAddressOf()));
+        if (FAILED(lastHr_)) {
+            return false;
+        }
+    }
+
+    lastHr_ = composition_->CreateTargetForHwnd(hwnd, TRUE, &compositionTarget_);
+    if (FAILED(lastHr_)) {
+        return false;
+    }
+
+    lastHr_ = composition_->CreateVisual(&compositionVisual_);
+    if (FAILED(lastHr_)) {
+        return false;
+    }
+
+    DXGI_SWAP_CHAIN_DESC1 desc{};
+    desc.Width = static_cast<UINT>(widthPx);
+    desc.Height = static_cast<UINT>(heightPx);
+    desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    desc.SampleDesc.Count = 1;
+    desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+    desc.BufferCount = 2;
+    // 实测：composition 链只接受 STRETCH；alpha 必须是预乘且只能走 composition。
+    desc.Scaling = DXGI_SCALING_STRETCH;
+    desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
+    desc.AlphaMode = DXGI_ALPHA_MODE_PREMULTIPLIED;
+    desc.Flags = 0;
+
+    lastHr_ = dxgiFactory_->CreateSwapChainForComposition(device_.Get(), &desc, nullptr, &swapChain_);
+    if (FAILED(lastHr_)) {
+        return false;
+    }
+
+    Microsoft::WRL::ComPtr<IDXGISurface> backBuffer;
+    lastHr_ = swapChain_->GetBuffer(0, IID_PPV_ARGS(backBuffer.GetAddressOf()));
+    if (FAILED(lastHr_)) {
+        return false;
+    }
+
+    // 交换链后缓冲当 D2D 目标时必须带 CANNOT_DRAW，否则 CreateBitmapFromDxgiSurface 直接 E_INVALIDARG。
+    const D2D1_BITMAP_PROPERTIES1 targetProps =
+        PixelProps(static_cast<D2D1_BITMAP_OPTIONS>(D2D1_BITMAP_OPTIONS_TARGET |
+                                                    D2D1_BITMAP_OPTIONS_CANNOT_DRAW));
+    lastHr_ = dc_->CreateBitmapFromDxgiSurface(backBuffer.Get(), &targetProps, &windowTarget_);
+    if (FAILED(lastHr_)) {
+        return false;
+    }
+
+    lastHr_ = compositionVisual_->SetContent(swapChain_.Get());
+    if (FAILED(lastHr_)) {
+        return false;
+    }
+
+    lastHr_ = compositionTarget_->SetRoot(compositionVisual_.Get());
+    if (FAILED(lastHr_)) {
+        return false;
+    }
+
+    lastHr_ = composition_->Commit();
+    if (FAILED(lastHr_)) {
+        return false;
+    }
+
+    window_ = handle;
+    return true;
+}
+
+void D2dRenderBackend::DetachWindow() {
+    if (compositionTarget_ && composition_) {
+        compositionTarget_->SetRoot(nullptr);
+        composition_->Commit();
+    }
+
+    compositionVisual_.Reset();
+    compositionTarget_.Reset();
+    windowTarget_.Reset();
+    swapChain_.Reset();
+    window_ = nullptr;
+
+    if (dc_ && targetBitmap_) {
+        dc_->SetTarget(targetBitmap_.Get());
+    }
+}
+
+void D2dRenderBackend::Present(bool waitForVSync) {
+    if (!swapChain_) {
+        lastHr_ = E_FAIL;
+        return;
+    }
+
+    lastHr_ = swapChain_->Present(waitForVSync ? 1 : 0, 0);
 }
 
 bool D2dRenderBackend::EnableCpuReadback() {

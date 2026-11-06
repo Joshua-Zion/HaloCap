@@ -7,10 +7,10 @@ target_include_directories(halocap_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 # §3.3 规则三（可机检）：core/ 不许出现平台头文件。configure 阶段直接失败，不依赖 CI 是否存在。
 set(_platform_include_prefixes
     windows. winnt winuser winbase windef wincon winreg
-    d3d11 d3dcompiler dxgi d2d1 dwrite
+    d3d11 d3d12 d3dcompiler dxgi d2d1 dwrite dcomp
     mfapi mfidl mfreadwrite mftransform mferror mfuuid strmif
-    audioclient mmdeviceapi audevcmd
-    objbase combaseapi ole2 oleauto shellapi shlobj shobjidl psapi
+    audioclient mmdeviceapi audevcmd uiaudio audiomedatype xaudio2
+    objbase combaseapi ole2 oleauto shellapi shlobj shobjidl psapi shlwapi imm.h
     winsock2 ws2tcpip
     winrt/ wrl/
 )

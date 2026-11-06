@@ -5,6 +5,7 @@ add_library(halocap_core STATIC
     audio_policy.cpp
     input_policy.cpp
     encoder_policy.cpp
+    settings_policy.cpp
 )
 
 target_include_directories(halocap_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

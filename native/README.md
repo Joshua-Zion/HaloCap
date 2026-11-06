@@ -24,6 +24,8 @@ native/
                         StereoRingBuffer（写满丢最旧）、MixInto、RemixToStereo、线性重采样、AAC 块补齐
     input_host.h        IInputHost seam：RegisterHotkey / SetInterception / PollHotkey / SuspendIme；
                         KeySymbol 76 个符号、设置文本双向换算、MatchesHotkey 与 DecideSwallow
+    settings.h          IStore 的 core 半边（seam 接口还没定形）：扁平设置树 + JSON 子集、
+                        与 1.x 逐项对齐的 schema 与默认值、两字段热键的迁移、逐键修复报告
     frame_scheduler.h   帧节奏与丢帧口径：BeginFrame / EndFrame / Stats，时钟由调用方注入微秒
   platform/win32/
     d2d_render_backend.h/.cpp      Direct2D 1.1（ID2D1Device + ID2D1DeviceContext）+ 合成链呈现
@@ -53,7 +55,7 @@ native/
 
 文本不新增图元类型：`IFontRasterizer::LayOut` 返回的 `TextCell` 只能以 `ToBlit()` 进入显示列表，所以 bounds、脏区裁剪与后端都不用为文本特判。折线（`Path`）**仍然故意不在列表里**——它要等几何缓存策略定下来，放进列表却画不出来比不放更糟。
 
-平台边界一共 8 个 seam（`ISurfaceWindow`、`IRenderBackend`、`IFontRasterizer`、`ICaptureSource`、`IEncoder`、`IAudioSource`、`IInputHost`、`IStore`+`ICapability`），职责与 macOS 对应物在 §3.2；目前已落地 `IRenderBackend`、`IFontRasterizer`、`ISurfaceWindow`、`ICaptureSource`、`IEncoder`、`IAudioSource`、`IInputHost` 七个。
+平台边界一共 8 个 seam（`ISurfaceWindow`、`IRenderBackend`、`IFontRasterizer`、`ICaptureSource`、`IEncoder`、`IAudioSource`、`IInputHost`、`IStore`+`ICapability`），职责与 macOS 对应物在 §3.2；目前已落地 `IRenderBackend`、`IFontRasterizer`、`ISurfaceWindow`、`ICaptureSource`、`IEncoder`、`IAudioSource`、`IInputHost` 七个。第八个进行中：`core/settings.h` 已经把设置树、JSON 子集与 1.x 的 schema 落盘并编进 `halocap_core`，但**还没有一套测试**，`IStore` 的接口也故意还没定形——等 `win32_store` 与探针跑通再写，免得先定一套再被实现推翻。
 
 上屏这条路有个必须记在实现旁边的实测结论：**挂在 HWND 上的 flip 交换链不接受预乘 alpha**（9 个组合 × 4 块适配器 × 3 种扩展样式全 `DXGI_ERROR_INVALID_CALL`），透明只能走 **DirectComposition 的 composition 交换链**，且它要求 `DXGI_SCALING_STRETCH`、后缓冲当 D2D 目标时还要 `TARGET | CANNOT_DRAW`。所以窗口用 `WS_EX_NOREDIRECTIONBITMAP`（不是 `WS_EX_LAYERED`），呈现归后端。完整矩阵与三条 API 细节见计划文档 §5.1「S1 的上屏路径」。
 

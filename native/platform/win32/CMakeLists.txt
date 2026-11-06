@@ -2,6 +2,7 @@ add_library(halocap_platform_win32 STATIC
     d2d_render_backend.cpp
     d2d_font_rasterizer.cpp
     win32_surface_window.cpp
+    dxgi_desktop_duplication.cpp
 )
 
 target_include_directories(halocap_platform_win32 PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

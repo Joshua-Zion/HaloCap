@@ -2,7 +2,9 @@
 
 本目录属于 `2.0` 分支。设计依据见 [../docs/2.0-native-plan.md](../docs/2.0-native-plan.md)，分支约定见其 §10，工具链与构建前提见计划文档的「S1 的工具链」。
 
-当前状态：**S1 骨架可构建、core 单测可跑、§3.3 规则三已做成机检；显示列表已能离屏逐字节画对，也已能经 DirectComposition 真窗口 Present 上屏链**。还没有产品功能——采集与编码、热键与输入、托盘与设置都还没进来，对应的 seam 也不提前定形（避免先写一套再被实现推翻）。
+当前状态：**S1 骨架可构建、四套测试可跑、§3.3 规则三已做成机检；显示列表能离屏逐字节画对、能经 DirectComposition 真窗口上屏、也能自己按 60 fps 排帧数丢帧；桌面复制的 seam 与脏矩形拷贝已落地并进 CTest**。还没有产品功能——编码、音频、热键与输入、托盘与设置都还没进来，对应的 seam 也不提前定形（避免先写一套再被实现推翻）。
+
+一处环境阻塞要写清：本机现在对**任何**程序都拒绝 `DuplicateOutput`（`E_ACCESSDENIED`；今天早些时候还能跑出吞吐数字的 spike 2 工具现在同样被拒），所以 `ICaptureSource` 的端到端脏矩形量级数字还没拿到。拷贝逻辑本身不依赖复制权，已经单独验过（`rect_copy_test`）。
 
 ```
 native/
@@ -14,14 +16,19 @@ native/
                         AttachWindow / DetachWindow / Present / WaitForFrameSlot
     font_rasterizer.h   IFontRasterizer seam：FontSpec（字体+字重+字号+颜色）/ TextCell / LayOut
     surface_window.h    ISurfaceWindow seam：Create / SetBounds / SetVisible / SetClickThrough / Handle
+    capture_source.h    ICaptureSource seam：Open / WaitForUpdate / LastErrorKind；
+                        SummarizeDirtyRects 与 BackoffUs 是纯逻辑（面积要分「实搬量」和「包围盒」两个数）
     frame_scheduler.h   帧节奏与丢帧口径：BeginFrame / EndFrame / Stats，时钟由调用方注入微秒
   platform/win32/
     d2d_render_backend.h/.cpp      Direct2D 1.1（ID2D1Device + ID2D1DeviceContext）+ 合成链呈现
     d2d_font_rasterizer.h/.cpp     DirectWrite 排版 + 图集分页，格子=一个文本串
     win32_surface_window.h/.cpp    WS_POPUP + WS_EX_NOREDIRECTIONBITMAP，不激活、可透传
+    dxgi_desktop_duplication.h/.cpp 桌面复制；CopyDirtyRegions 单独抽出以便脱离复制权做验证
   tools/frame_cost/     覆盖层帧成本测量（与 spike 3 同口径，离屏、不上屏）
   tools/surface_probe/  上屏链路验证：A/B 抓屏证「看得见」+ 60 fps 排帧数丢帧
-  tests/      core 的单测（无第三方框架，两个可执行 + CTest）
+  tools/capture_probe/  采集链路统计：应有/实取、仅鼠标唤醒、脏像素之比、每帧 CPU 与内存
+  tools/rect_copy_test/ 脏矩形拷贝的功能验证（进 CTest，不碰屏幕也不需要复制权）
+  tests/      core 的单测（无第三方框架，四个可执行 + CTest）
   build.cmd   vcvars → cmake configure → build → ctest
 ```
 
@@ -33,7 +40,7 @@ native/
 
 文本不新增图元类型：`IFontRasterizer::LayOut` 返回的 `TextCell` 只能以 `ToBlit()` 进入显示列表，所以 bounds、脏区裁剪与后端都不用为文本特判。折线（`Path`）**仍然故意不在列表里**——它要等几何缓存策略定下来，放进列表却画不出来比不放更糟。
 
-平台边界一共 8 个 seam（`ISurfaceWindow`、`IRenderBackend`、`IFontRasterizer`、`ICaptureSource`、`IEncoder`、`IAudioSource`、`IInputHost`、`IStore`+`ICapability`），职责与 macOS 对应物在 §3.2；目前已落地 `IRenderBackend`、`IFontRasterizer`、`ISurfaceWindow` 三个。
+平台边界一共 8 个 seam（`ISurfaceWindow`、`IRenderBackend`、`IFontRasterizer`、`ICaptureSource`、`IEncoder`、`IAudioSource`、`IInputHost`、`IStore`+`ICapability`），职责与 macOS 对应物在 §3.2；目前已落地 `IRenderBackend`、`IFontRasterizer`、`ISurfaceWindow`、`ICaptureSource` 四个。
 
 上屏这条路有个必须记在实现旁边的实测结论：**挂在 HWND 上的 flip 交换链不接受预乘 alpha**（9 个组合 × 4 块适配器 × 3 种扩展样式全 `DXGI_ERROR_INVALID_CALL`），透明只能走 **DirectComposition 的 composition 交换链**，且它要求 `DXGI_SCALING_STRETCH`、后缓冲当 D2D 目标时还要 `TARGET | CANNOT_DRAW`。所以窗口用 `WS_EX_NOREDIRECTIONBITMAP`（不是 `WS_EX_LAYERED`），呈现归后端。完整矩阵与三条 API 细节见计划文档 §5.1「S1 的上屏路径」。
 
@@ -72,3 +79,13 @@ native> build\tools\surface_probe\surface_probe.exe 3840 2160 120 1    # 真上�
 节奏就在 `core::FrameScheduler`：`BeginFrame(now)` 到钟才接单、一次只领一帧、落后的槽记 `missed`（不靠连发补帧），`EndFrame(now, presented)` 区分超预算与 Present 失败；时钟是注入的微秒，所以完全可单测（`scheduler_tests`，25 项断言）。`SCHEDULE_*` 与 `VISIBLE_SCHEDULE*` 两组键就是这套统计的输出，判定为 `submitted/expected ≥ 0.98`。休眠前必须 `timeBeginPeriod(1)`，否则粒度不够（spike 2 的老坑）。
 
 两个内存事实：离屏目标纹理与 STAGING 是**懒建**的（`Resize` 只记尺寸、放掉旧资源，真要往自己身上画才分配），所以挂着窗口时私有内存是 60 MB 而不是 69–76 MB；`DetachWindow` 里会调 `IDXGIDevice3::Trim()`，但实测私有内存 61→61、一秒后仍 61——这 60 MB 不是我们的引用扣着的，结案要等真实 app 用环境摘要同一字段复验。
+
+采集链路（会在屏幕上搬一个小黑方块来制造真实变化，默认 5 秒；参数：输出序号 / 时长毫秒 / 几帧搬一次 / busy 重试次数）：
+
+```
+native> build\tools\capture_probe\capture_probe.exe 0 5000 3
+```
+
+`Open` 失败时它会先按 `core::BackoffUs` 退避重试（250 ms 起、×2、封顶 4 s），把 `busy / timeout / lost` 分开报——复制权被占用是常态分支，不是崩溃。这台机器目前每次都返回 `busy`：`DuplicateOutput` 对所有程序都被拒（连今天早些时候跑出过吞吐数字的 spike 2 工具也一样），所以端到端的脏矩形量级数字仍缺，工具本身已经把该打的统计都打好了。
+
+两个必须照做的实现前提（都是实测）：**`SetProcessDpiAwarenessContext(PER_MONITOR_AWARE_V2)` 要在枚举输出之前调**，否则 `DXGI_OUTPUT_DESC.DesktopCoordinates` 给的是 DIP 而不是像素，本机 2560×1440 会读成 1707×960，常驻纹理尺寸与所有坐标一起错；**设备必须属于拥有该输出的适配器**，用错设备是 `E_INVALIDARG`，用对设备才走到 `E_ACCESSDENIED` 那一层——`Initialize` 因此只把同适配器的输出放进可复制列表，`OUTPUTS_SYSTEM` 与 `OUTPUTS_CAPTURABLE` 的差就是被这条约束挡掉的。

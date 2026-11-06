@@ -52,6 +52,7 @@ public:
     // 平台内部共享：字体栅格器要往自己的图集纹理里画，画完由这里换成显示列表能引用的句柄。
     ID2D1DeviceContext* Dc() const { return dc_.Get(); }
     ID3D11Device* Device() const { return device_.Get(); }
+    ID3D11DeviceContext* D3dContext() const { return context_.Get(); }
     ID2D1Factory1* Factory() const { return factory_.Get(); }
     core::ImageHandle RegisterGpuImage(ID2D1Bitmap1* bitmap);
 

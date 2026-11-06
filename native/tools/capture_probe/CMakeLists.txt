@@ -1,0 +1,2 @@
+add_executable(capture_probe main.cpp)
+target_link_libraries(capture_probe PRIVATE halocap_platform_win32 gdi32 advapi32)

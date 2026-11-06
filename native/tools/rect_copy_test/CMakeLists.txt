@@ -1,0 +1,3 @@
+add_executable(rect_copy_test main.cpp)
+target_link_libraries(rect_copy_test PRIVATE halocap_platform_win32)
+add_test(NAME rect_copy_test COMMAND rect_copy_test)

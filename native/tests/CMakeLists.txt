@@ -6,6 +6,10 @@ add_executable(scheduler_tests frame_scheduler_tests.cpp)
 target_link_libraries(scheduler_tests PRIVATE halocap_core)
 add_test(NAME scheduler_tests COMMAND scheduler_tests)
 
+add_executable(capture_policy_tests capture_policy_tests.cpp)
+target_link_libraries(capture_policy_tests PRIVATE halocap_core)
+add_test(NAME capture_policy_tests COMMAND capture_policy_tests)
+
 # §3.3 规则三的链接期兜底：core 不许链接任何库（含系统导入库）。
 # include 扫描只挡住头文件，真正调用了 Win32 函数会在这里挂掉。
 foreach(_prop LINK_LIBRARIES INTERFACE_LINK_LIBRARIES)

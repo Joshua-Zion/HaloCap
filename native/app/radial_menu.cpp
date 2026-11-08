@@ -676,6 +676,30 @@ void RadialMenu::StartHide(int pendingAction) {
     SetTimer(static_cast<HWND>(window_), 1, 16, nullptr);
 }
 
+void RadialMenu::ClickAt(POINT screenPoint) {
+    if (closing_) {
+        return;
+    }
+    const float dx = static_cast<float>(screenPoint.x - centerScreen_.x);
+    const float dy = static_cast<float>(screenPoint.y - centerScreen_.y);
+    const float distance = std::sqrt(dx * dx + dy * dy);
+    const float designToPx = contentScale_ * pixelScale_;
+    if (distance < kDeadZone * designToPx) {
+        StartDrag(screenPoint);
+        return;
+    }
+    if (distance <= kDiskRadius * designToPx) {
+        float angle = std::atan2(dx, -dy) * 180.0f / 3.14159265f;
+        if (angle < 0.0f) {
+            angle += 360.0f;
+        }
+        const int index = static_cast<int>(std::floor((angle + 45.0f) / 90.0f)) % 4;
+        Select(index);
+        return;
+    }
+    StartHide(-1);
+}
+
 void RadialMenu::StartDrag(POINT screenPoint) {
     dragging_ = true;
     dragOffset_ = POINT{ centerScreen_.x - screenPoint.x, centerScreen_.y - screenPoint.y };
@@ -708,25 +732,9 @@ LRESULT CALLBACK RadialMenu::MouseHook(int code, WPARAM wParam, LPARAM lParam) {
         }
         // 移动必须放行，否则系统光标会被钩子冻住。
         return CallNextHookEx(nullptr, code, wParam, lParam);
-    case WM_LBUTTONDOWN: {
-        const float dx = static_cast<float>(mouse->pt.x - g_active->centerScreen_.x);
-        const float dy = static_cast<float>(mouse->pt.y - g_active->centerScreen_.y);
-        const float distance = std::sqrt(dx * dx + dy * dy);
-        const float designToPx = g_active->contentScale_ * g_active->pixelScale_;
-        if (distance < kDeadZone * designToPx) {
-            g_active->StartDrag(mouse->pt);
-        } else if (distance <= kDiskRadius * designToPx) {
-            float angle = std::atan2(dx, -dy) * 180.0f / 3.14159265f;
-            if (angle < 0.0f) {
-                angle += 360.0f;
-            }
-            const int index = static_cast<int>(std::floor((angle + 45.0f) / 90.0f)) % 4;
-            g_active->Select(index);
-        } else {
-            g_active->StartHide(-1);
-        }
+    case WM_LBUTTONDOWN:
+        g_active->ClickAt(mouse->pt);
         return 1;
-    }
     case WM_LBUTTONUP:
         g_active->dragging_ = false;
         return 1;
@@ -786,6 +794,15 @@ LRESULT RadialMenu::Handle(HWND window, UINT message, WPARAM wParam, LPARAM lPar
         UpdateHover(cursor);
         return 0;
     }
+    case WM_LBUTTONDOWN: {
+        POINT cursor{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        ClientToScreen(window, &cursor);
+        ClickAt(cursor);
+        return 0;
+    }
+    case WM_LBUTTONUP:
+        dragging_ = false;
+        return 0;
     case WM_TIMER:
         if (wParam == 1) {
             Tick();

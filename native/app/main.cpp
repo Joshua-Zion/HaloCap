@@ -128,6 +128,7 @@ struct Options {
     // 非空 = 无人值守的圆盘自检：打开圆盘 → 抓图 → 退出。
     std::wstring radialSelftestPath;
     std::wstring windowPickerSelftestPath;
+    std::wstring radialClickSelftestPath;
     int settingsSelftestPage = -1;
 
     // 交付：--version 打印版本；--check-update 读一份清单并比较版本。
@@ -349,6 +350,8 @@ Options ParseOptions(int argc, char** argv) {
             options.settingsClickSelftestPath = Utf8ToWide(argv[++i]);
         } else if (argument == "--settings-page" && i + 1 < argc) {
             options.settingsSelftestPage = std::atoi(argv[++i]);
+        } else if (argument == "--radial-click-selftest" && i + 1 < argc) {
+            options.radialClickSelftestPath = Utf8ToWide(argv[++i]);
         } else if (argument == "--window-picker-selftest" && i + 1 < argc) {
             options.windowPickerSelftestPath = Utf8ToWide(argv[++i]);
         } else if (argument == "--version") {
@@ -1465,6 +1468,12 @@ int Run(const Options& options) {
             });
         if (opened) {
             Sleep(200);
+            RECT windowRect{};
+            GetWindowRect(testWindow->Handle(), &windowRect);
+            const LRESULT dragHit = SendMessageW(
+                testWindow->Handle(), WM_NCHITTEST, 0,
+                MAKELPARAM(windowRect.left + 300, windowRect.top + 30));
+            const bool draggable = dragHit == HTCAPTION;
             const auto click = [&](int x, int y) {
                 const LPARAM point = MAKELPARAM(x, y);
                 SendMessageW(testWindow->Handle(), WM_LBUTTONDOWN, MK_LBUTTON, point);
@@ -1487,11 +1496,12 @@ int Run(const Options& options) {
 
             AddFlag(report, "APP_SETTINGS_CLICK_WINDOW", true);
             AddFlag(report, "APP_SETTINGS_CLICK_PROOF", proof);
+            AddFlag(report, "APP_SETTINGS_DRAGGABLE", draggable);
             AddFlag(report, "APP_SETTINGS_CLICK_SAVED", saved);
             AddFlag(report, "APP_SETTINGS_CLICK_TOGGLED", captured.autoStart != settings.autoStart);
             AddInt(report, "APP_SETTINGS_CLICK_RENDER_MS",
                    static_cast<long long>(std::lround(clickMs)));
-            settingsClickOk = proof && saved && captured.autoStart != settings.autoStart;
+            settingsClickOk = proof && saved && captured.autoStart != settings.autoStart && draggable;
             testWindow.reset();
         }
         log.Info(settingsClickOk ? "settings click selftest: ok"
@@ -1568,6 +1578,42 @@ int Run(const Options& options) {
 
         pinSelftestOk = wrote && pinned && proof;
         log.Info(pinSelftestOk ? "pin selftest: ok" : "pin selftest: failed");
+        running = false;
+    }
+
+    bool radialClickOk = true;
+    if (!options.radialClickSelftestPath.empty()) {
+        radialClickOk = false;
+        SetCursorPos(960, 540);
+        halocap::app::RadialMenu menu;
+        core::AppAction picked = core::AppAction::Screenshot;
+        const bool opened = menu.Open(
+            [&](core::AppAction action) { picked = action; }, core::MenuSize::Medium);
+        if (opened) {
+            const ULONGLONG start = GetTickCount64();
+            while (GetTickCount64() - start < 300) {
+                MSG message{};
+                while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+                    TranslateMessage(&message);
+                    DispatchMessageW(&message);
+                }
+                Sleep(10);
+            }
+            const HWND handle = static_cast<HWND>(menu.HandleForTest());
+            SendMessageW(handle, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(320, 210));
+            Sleep(100);
+            halocap::platform::win32::DesktopImage desktop;
+            const bool proof =
+                halocap::platform::win32::GrabPrimaryDesktop(desktop) &&
+                halocap::platform::win32::SaveBgraPng(options.radialClickSelftestPath,
+                                                      desktop.bgra.data(), desktop.width,
+                                                      desktop.height, desktop.width * 4);
+            AddFlag(report, "APP_RADIAL_CLICK_PROOF", proof);
+            AddFlag(report, "APP_RADIAL_CLICK", picked == core::AppAction::Ocr);
+            radialClickOk = proof && picked == core::AppAction::Ocr;
+        }
+        menu.Close();
+        log.Info(radialClickOk ? "radial click selftest: ok" : "radial click selftest: failed");
         running = false;
     }
 
@@ -1863,6 +1909,7 @@ int Run(const Options& options) {
     AddFlag(report, "APP_PIN_SELFTEST", pinSelftestOk);
     AddFlag(report, "APP_RADIAL_SELFTEST", radialSelftestOk);
     AddFlag(report, "APP_WINDOW_PICKER_SELFTEST", windowPickerSelftestOk);
+    AddFlag(report, "APP_RADIAL_CLICK_SELFTEST", radialClickOk);
     ok = ok && screenshotSelftestOk && ocrSelftestOk && settingsSelftestOk && pinSelftestOk &&
          radialSelftestOk && windowPickerSelftestOk;
 

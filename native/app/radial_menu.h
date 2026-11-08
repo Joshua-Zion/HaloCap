@@ -49,6 +49,7 @@ private:
     void UpdateHover(POINT screenPoint);
     void Select(int index);
     void StartHide(int pendingAction);
+    void ClickAt(POINT screenPoint);
     void StartDrag(POINT screenPoint);
     void DragTo(POINT screenPoint);
 

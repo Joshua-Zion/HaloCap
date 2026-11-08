@@ -366,7 +366,6 @@ bool SettingsWindow::EnsureClass() {
     static const bool registered = [] {
         WNDCLASSEXW description{};
         description.cbSize = sizeof(description);
-        description.style = CS_DROPSHADOW;
         description.lpfnWndProc = &SettingsWindow::WndProc;
         description.hInstance = GetModuleHandleW(nullptr);
         description.hCursor = LoadCursorW(nullptr, IDC_ARROW);
@@ -770,7 +769,7 @@ void SettingsWindow::BuildBackgroundCache() {
     Fonts* fonts = GetFonts();
 
     // 真软阴影：形状 → 降采样 → 两次盒式模糊 → 拉伸合成（缓存里只做一次）。
-    DrawSoftShadow(g, frame, kRadius, 0.35f, 20.0f, 6.0f, false);    FillRoundRect(g, frame, kRadius, Color(255, 255, 255, 255));
+    DrawSoftShadow(g, frame, kRadius, 0.45f, 20.0f, 6.0f, false);    FillRoundRect(g, frame, kRadius, Color(255, 255, 255, 255));
     FillRoundRect(g, frame, kRadius, content);
     StrokeRoundRect(g, frame, kRadius, Color(38, 0, 0, 0));
 

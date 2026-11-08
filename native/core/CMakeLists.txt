@@ -9,6 +9,7 @@ add_library(halocap_core STATIC
     store_policy.cpp
     capability_policy.cpp
     tray_menu.cpp
+    recording_session.cpp
 )
 
 target_include_directories(halocap_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

@@ -1,0 +1,2 @@
+add_executable(record_probe main.cpp)
+target_link_libraries(record_probe PRIVATE halocap_platform_win32)

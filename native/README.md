@@ -2,7 +2,7 @@
 
 本目录属于 `2.0` 分支。设计依据见 [../docs/2.0-native-plan.md](../docs/2.0-native-plan.md)，分支约定见其 §10，工具链与构建前提见计划文档的「S1 的工具链」。
 
-当前状态：**S1 完成**——八个 seam 全部落地，十一套测试全绿；[`app/`](app/main.cpp) 把设置、日志、托盘、热键与覆盖层组装成 `HaloCap.exe`，`--selftest` 量到空闲 2.3 MB、覆盖层预热后约 62 MB（S1 的退出条件「空闲 ≤ 80 MB」，1080p / 1440p / 4K 分别约 62 / 62.4 / 62.1 MB）。还没有产品功能：托盘命令与热键现在只记日志，截图 / 录屏 / OCR / 贴图从 S2 起接。三件环境项仍缺一次普通机器补跑：托盘图标、日志与设置写入被这个会话的 Low 完整性令牌挡住（见文末），复制权也仍被别的进程占着。
+当前状态：**S1 完成，S2 开工**——八个 seam 全部落地，十二套测试全绿（含录制会话的 103 项断言）；[`app/`](app/main.cpp) 把设置、日志、托盘、热键与覆盖层组装成 `HaloCap.exe`（`--selftest`：空闲 2.3 MB、覆盖层预热后约 62 MB）；[`tools/record_probe`](tools/record_probe/main.cpp) 已把桌面复制 → 常驻纹理 → NV12 → `IMFSinkWriter` → MP4 整条链跑通（5.3 秒 126 帧、编码器拒收 0、硬件编码）。还没接的：音频（AAC 第二条流）、WGC 窗口录制、闸门的 30 fps 取样与静态桌面保活帧。
 
 一处环境阻塞要写清：本机现在对**任何**程序都拒绝 `DuplicateOutput`（`E_ACCESSDENIED`；今天早些时候还能跑出吞吐数字的 spike 2 工具现在同样被拒），所以 `ICaptureSource` 的端到端脏矩形量级数字还没拿到。拷贝逻辑本身不依赖复制权，已经单独验过（`rect_copy_test`）。
 
@@ -32,6 +32,7 @@ native/
                         磁盘下限、空闲回收线、特性开关；平台只汇报事实
     tray_menu.h         托盘与圆盘共用：AppAction 四项、菜单项/可用性/勾选规则、
                         提示文字与 63 个 UTF-16 码元的截断
+    recording_session.h 录制编排：采集帧 → 时钟 → 帧闸门 → 编码提交；暂停/停止与统计口径
     frame_scheduler.h   帧节奏与丢帧口径：BeginFrame / EndFrame / Stats，时钟由调用方注入微秒
   platform/win32/
     d2d_render_backend.h/.cpp      Direct2D 1.1（ID2D1Device + ID2D1DeviceContext）+ 合成链呈现
@@ -53,8 +54,9 @@ native/
   tools/input_probe/    输入链路验证：热键投递、两个钩子链量拦截是否真生效、IME 断开恢复、错误分类
   tools/store_probe/    设置链路验证：真实路径、原子替换、日志分份、只读导入 1.x 设置、能力读数
   tools/tray_probe/     托盘验证：HMENU 与 core 模型逐项比对、点击/命令两条消息路径、图标与气泡
+  tools/record_probe/   S2 端到端：真复制 + 真编码 + RecordingSession，量帧数/拒收/字节/内存
   tools/rect_copy_test/ 脏矩形拷贝的功能验证（进 CTest，不碰屏幕也不需要复制权）
-  tests/      core 的单测（无第三方框架，十一个可执行 + CTest）
+  tests/      core 的单测（无第三方框架，十二个可执行 + CTest）
   app/        组装根：DPI → 能力 → 设置 → 日志 → 托盘 → 热键 → 覆盖层 → 消息循环，
               `--selftest` 量空闲内存并给出退出码
   build.cmd   vcvars → cmake configure → build → ctest
@@ -222,3 +224,29 @@ native> build\app\HaloCap.exe --selftest --no-tray --no-input --no-overlay   归
 1. **两条口径都过 80 MB**：idle 2.3 MB、覆盖层预热后 62.5 MB。S1 的退出条件成立。
 2. **私有内存不随覆盖层尺寸变化**：1080p→4K 只差 0.4 MB——后缓冲在这块账上不计（本机是 GPU/驱动侧分配）。换成工作集或显存口径要另算，那是 S3 覆盖层的成本，不在 S1 的 idle 判据里；`surface_probe` 在同一次会话里仍给出 60 fps 的 120/120、比值 1.0000。
 3. **idle 的 2.3 MB 是下界**：本会话托盘图标、日志写入与设置保存都被 Low 完整性令牌挡住，真实机器上这几项只会再加几 MB。
+
+## S2 的录制链路（record_probe）
+
+```
+native> build\tools\record_probe\record_probe.exe                5 秒、输出 0、./record-probe.mp4
+native> build\tools\record_probe\record_probe.exe 10 0 D:\tmp\a.mp4
+```
+
+它跑的是产品要用的三块真 seam：`Win32DesktopDuplication` → `RecordingSession` → `MfH264Encoder`（BGRA→NV12 → `IMFSinkWriter`）。自己不重写采集或编码逻辑，所以数字能代表管线。为了让静态桌面也有内容帧，它会搬一个 240×160 的黑方块（与 `capture_probe` 同一条办法）。
+
+本机实测（5.3 秒，1080p30，硬件编码）：
+
+| 项 | 值 |
+| --- | --- |
+| 采集唤醒 / 有内容 | 530 / 501 |
+| 送编码器 / 闸门跳过 / 编码器拒收 | 126 / 375 / 0 |
+| 比值（对 5.3 秒 × 30 fps） | 0.79（23.7 fps） |
+| 输出 | 139 KB，媒体时长 5.32 s |
+| 私有内存 | 116 MB |
+
+两条必须记在实现旁边的结论（推导见计划文档 §5.1「S2 的录制会话」）：
+
+1. **闸门在采集节奏远快于目标帧率时给不出 30 fps**：采集约每 10 ms 一帧，而闸门要求距上次接受 ≥ 33.3 ms，实际接受间隔被抬到 40 ms。下一轮改成「按目标网格取最近一帧」；这不是编码器丢帧（拒收 0）。
+2. **静态桌面会录出 0 个样本**：编码器一帧没收时 `Finalize` 失败，所以产品侧要有保活帧（例如每 1 s 至少送一帧），否则静止画面是坏文件。
+
+`RECORD_PROBE=OK` 的判据是：会话活着、`Stop` 成功、`framesSubmitted > 0`、文件字节 > 0。复制权被别的程序占用（`busy`）时按 `core::BackoffUs` 重试 4 次，仍失败则打印 `RECORD_PROBE=BLOCKED` 并以 0 退出——那是环境事实，不是失败。

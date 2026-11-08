@@ -38,6 +38,10 @@ add_executable(tray_menu_tests tray_menu_tests.cpp)
 target_link_libraries(tray_menu_tests PRIVATE halocap_core)
 add_test(NAME tray_menu_tests COMMAND tray_menu_tests)
 
+add_executable(recording_session_tests recording_session_tests.cpp)
+target_link_libraries(recording_session_tests PRIVATE halocap_core)
+add_test(NAME recording_session_tests COMMAND recording_session_tests)
+
 # §3.3 规则三的链接期兜底：core 不许链接任何库（含系统导入库）。
 # include 扫描只挡住头文件，真正调用了 Win32 函数会在这里挂掉。
 foreach(_prop LINK_LIBRARIES INTERFACE_LINK_LIBRARIES)

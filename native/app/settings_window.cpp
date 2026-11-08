@@ -20,6 +20,7 @@
 
 #include "update.h"
 #include "version.h"
+#include "soft_shadow.h"
 #include "win32_update_fetch.h"
 #include "win32_autostart.h"
 
@@ -30,9 +31,9 @@ namespace {
 using namespace Gdiplus;
 
 constexpr wchar_t kClassName[] = L"HaloCapSettings";
-constexpr float kWindowW = 820.0f;
-constexpr float kWindowH = 620.0f;
-constexpr float kMargin = 18.0f;
+constexpr float kWindowW = 856.0f;   // 820 卡片 + 18 DIP 透明边给阴影
+constexpr float kWindowH = 656.0f;
+constexpr float kMargin = 36.0f;    // 卡片 inset：18 视觉边距 + 18 阴影余量
 constexpr float kTitleBar = 50.0f;
 constexpr float kSidebar = 218.0f;
 constexpr float kFooter = 60.0f;
@@ -768,32 +769,8 @@ void SettingsWindow::BuildBackgroundCache() {
     const RectF frame(kMargin, kMargin, kWindowW - 2 * kMargin, kWindowH - 2 * kMargin);
     Fonts* fonts = GetFonts();
 
-    // 阴影按 1/3 分辨率烘焙再拉伸：14 层全窗填充会把单次重绘拖到 ~250 ms。
-    const float shadowScale = 1.0f / 3.0f;
-    const int shadowWidth = std::max(1, static_cast<int>(std::lround(widthPx_ * shadowScale)));
-    const int shadowHeight = std::max(1, static_cast<int>(std::lround(heightPx_ * shadowScale)));
-    {
-        Gdiplus::Bitmap shadow(shadowWidth, shadowHeight, PixelFormat32bppPARGB);
-        Gdiplus::Graphics sg(&shadow);
-        sg.SetSmoothingMode(SmoothingModeNone);
-        sg.SetPixelOffsetMode(PixelOffsetModeHalf);
-        sg.Clear(Color(0, 0, 0, 0));
-        Matrix shadowTransform(shadowScale * scale_, 0.0f, 0.0f, shadowScale * scale_, 0.0f, 0.0f);
-        sg.SetTransform(&shadowTransform);
-        for (int i = 0; i < 14; ++i) {
-            const float t = static_cast<float>(i) / 13.0f;
-            const float expand = 1.0f + i * 0.9f;
-            const int alpha = static_cast<int>(30.0f * (1.0f - t) * (1.0f - t));
-            FillRoundRect(sg,
-                          RectF(frame.X - expand, frame.Y - expand + 4.0f,
-                                frame.Width + expand * 2.0f, frame.Height + expand * 2.0f),
-                          kRadius + expand, Color(static_cast<BYTE>(alpha), 0, 0, 0));
-        }
-        g.SetInterpolationMode(InterpolationModeHighQualityBicubic);
-        g.DrawImage(&shadow, RectF(0.0f, 0.0f, kWindowW, kWindowH));
-    }
-
-    FillRoundRect(g, frame, kRadius, Color(255, 255, 255, 255));
+    // 真软阴影：形状 → 降采样 → 两次盒式模糊 → 拉伸合成（缓存里只做一次）。
+    DrawSoftShadow(g, frame, kRadius, 0.8f, 14.0f, 6.0f, false);    FillRoundRect(g, frame, kRadius, Color(255, 255, 255, 255));
     FillRoundRect(g, frame, kRadius, content);
     StrokeRoundRect(g, frame, kRadius, Color(38, 0, 0, 0));
 

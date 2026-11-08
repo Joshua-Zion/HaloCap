@@ -11,6 +11,8 @@
 #include <cstring>
 #include <string>
 
+#include "soft_shadow.h"
+
 namespace halocap::app {
 
 namespace {
@@ -199,6 +201,7 @@ bool RadialMenu::EnsureClass() {
         description.cbSize = sizeof(description);
         description.lpfnWndProc = &RadialMenu::WndProc;
         description.hInstance = GetModuleHandleW(nullptr);
+        description.hCursor = LoadCursorW(nullptr, IDC_ARROW);
         description.lpszClassName = kClassName;
         return RegisterClassExW(&description) != 0 ||
                GetLastError() == ERROR_CLASS_ALREADY_EXISTS;
@@ -283,6 +286,7 @@ bool RadialMenu::Open(SelectHandler onSelect, core::MenuSize size) {
 
     Render();
     ShowWindow(static_cast<HWND>(window_), SW_SHOWNOACTIVATE);
+    SetCursor(LoadCursorW(nullptr, IDC_ARROW));
     SetTimer(static_cast<HWND>(window_), 1, 16, nullptr);
 
     g_active = this;
@@ -351,16 +355,9 @@ void RadialMenu::BuildFrame(int index) {
     DrawDesign(graphics, index - 1);
     cache_->frames[index] = std::move(frame);
 }
-void RadialMenu::DrawDesign(Gdiplus::Graphics& graphics, int hoverIndex) {    // 外盘投影：用一圈递减 alpha 的椭圆近似 DropShadow（30 blur / 2 depth / 0.22）。
-    for (int i = 0; i < 15; ++i) {
-        const float t = static_cast<float>(i) / 14.0f;
-        const float radius = kDiskRadius + 1.0f + i * 1.35f;
-        const int alpha = static_cast<int>(26.0f * (1.0f - t) * (1.0f - t));
-        SolidBrush shadow(Color(static_cast<BYTE>(alpha), 0, 0, 0));
-        graphics.FillEllipse(&shadow, 190.0f - radius, 192.0f - radius, radius * 2.0f,
-                             radius * 2.0f);
-    }
-
+void RadialMenu::DrawDesign(Gdiplus::Graphics& graphics, int hoverIndex) {    // 外盘投影：真软阴影（降采样 + 盒式模糊），避免一圈圈同心环。
+    DrawSoftShadow(graphics, RectF(20.0f, 22.0f, 340.0f, 340.0f), 170.0f, 0.85f, 7.0f, 4.0f,
+                   true);
     // 白色径向盘：#FFFFFF → #F8F9FB(0.62) → #EFF1F5。
     GraphicsPath disk;
     disk.AddEllipse(190.0f - kDiskRadius, 190.0f - kDiskRadius, kDiskRadius * 2.0f,
@@ -456,15 +453,8 @@ void RadialMenu::DrawDesign(Gdiplus::Graphics& graphics, int hoverIndex) {    //
     }
 
     // 中心盘：104 白色圆 + 柔和投影。
-    for (int i = 0; i < 9; ++i) {
-        const float t = static_cast<float>(i) / 8.0f;
-        const float radius = 52.0f + i * 1.4f;
-        const int alpha = static_cast<int>(16.0f * (1.0f - t) * (1.0f - t));
-        SolidBrush shadow(Color(static_cast<BYTE>(alpha), 0, 0, 0));
-        graphics.FillEllipse(&shadow, 190.0f - radius, 192.0f - radius, radius * 2.0f,
-                             radius * 2.0f);
-    }
-    SolidBrush centerWhite(Color(255, 255, 255, 255));
+    DrawSoftShadow(graphics, RectF(138.0f, 140.0f, 104.0f, 104.0f), 52.0f, 0.25f, 5.0f, 2.0f,
+                   true);    SolidBrush centerWhite(Color(255, 255, 255, 255));
     graphics.FillEllipse(&centerWhite, 190.0f - 52.0f, 190.0f - 52.0f, 104.0f, 104.0f);
     Pen centerBorder(Color(20, 0, 0, 0), 1.0f);
     graphics.DrawEllipse(&centerBorder, 190.0f - 52.0f, 190.0f - 52.0f, 104.0f, 104.0f);
@@ -725,6 +715,7 @@ LRESULT CALLBACK RadialMenu::MouseHook(int code, WPARAM wParam, LPARAM lParam) {
     const auto* mouse = reinterpret_cast<const MSLLHOOKSTRUCT*>(lParam);
     switch (wParam) {
     case WM_MOUSEMOVE:
+        SetCursor(LoadCursorW(nullptr, IDC_ARROW));
         if (g_active->dragging_) {
             g_active->DragTo(mouse->pt);
         } else {
@@ -789,11 +780,17 @@ LRESULT CALLBACK RadialMenu::WndProc(HWND window, UINT message, WPARAM wParam, L
 LRESULT RadialMenu::Handle(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
     case WM_MOUSEMOVE: {
+        SetCursor(LoadCursorW(nullptr, IDC_ARROW));
         POINT cursor{};
         GetCursorPos(&cursor);
         UpdateHover(cursor);
         return 0;
     }
+    case WM_MOUSEACTIVATE:
+        return MA_NOACTIVATE;
+    case WM_SETCURSOR:
+        SetCursor(LoadCursorW(nullptr, IDC_ARROW));
+        return TRUE;
     case WM_LBUTTONDOWN: {
         POINT cursor{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
         ClientToScreen(window, &cursor);

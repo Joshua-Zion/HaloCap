@@ -1472,16 +1472,16 @@ int Run(const Options& options) {
             GetWindowRect(testWindow->Handle(), &windowRect);
             const LRESULT dragHit = SendMessageW(
                 testWindow->Handle(), WM_NCHITTEST, 0,
-                MAKELPARAM(windowRect.left + 300, windowRect.top + 30));
+                MAKELPARAM(windowRect.left + 300, windowRect.top + 60));
             const bool draggable = dragHit == HTCAPTION;
             const auto click = [&](int x, int y) {
                 const LPARAM point = MAKELPARAM(x, y);
                 SendMessageW(testWindow->Handle(), WM_LBUTTONDOWN, MK_LBUTTON, point);
                 SendMessageW(testWindow->Handle(), WM_LBUTTONUP, 0, point);
             };
-            click(734, 211);   // 通用页「开机自启」开关（组标签下方第一行）
+            click(752, 229);   // 通用页「开机自启」开关（组标签下方第一行）
             const std::int64_t clickStart = QpcNowUs();
-            click(100, 135);   // 切到「快捷键」页
+            click(118, 153);   // 切到「快捷键」页
             const double clickMs = static_cast<double>(QpcNowUs() - clickStart) / 1000.0;
             Sleep(120);
 
@@ -1491,7 +1491,7 @@ int Run(const Options& options) {
                 halocap::platform::win32::SaveBgraPng(options.settingsClickSelftestPath,
                                                       desktop.bgra.data(), desktop.width,
                                                       desktop.height, desktop.width * 4);
-            click(730, 572);   // 保存
+            click(748, 590);   // 保存
             Sleep(120);
 
             AddFlag(report, "APP_SETTINGS_CLICK_WINDOW", true);
@@ -1683,9 +1683,16 @@ int Run(const Options& options) {
             radialMenu->Close();
         }
 
+        CURSORINFO cursorInfo{};
+        cursorInfo.cbSize = sizeof(cursorInfo);
+        const bool cursorNormal =
+            GetCursorInfo(&cursorInfo) &&
+            cursorInfo.hCursor != LoadCursorW(nullptr, IDC_WAIT) &&
+            cursorInfo.hCursor != LoadCursorW(nullptr, IDC_APPSTARTING);
+        AddFlag(report, "APP_RADIAL_CURSOR_NORMAL", cursorNormal);
         AddFlag(report, "APP_RADIAL_WINDOW", opened);
         AddFlag(report, "APP_RADIAL_PROOF", proof);
-        radialSelftestOk = opened && proof;
+        radialSelftestOk = opened && proof && cursorNormal;
         log.Info(radialSelftestOk ? "radial selftest: ok" : "radial selftest: failed");
         running = false;
     }

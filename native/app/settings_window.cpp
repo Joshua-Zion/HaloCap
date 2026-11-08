@@ -785,13 +785,12 @@ void SettingsWindow::BuildBackgroundCache() {
     GraphicsPath sidebarPath;
     sidebarPath.AddLine(frame.X, frame.Y + kTitleBar, frame.X + kSidebar, frame.Y + kTitleBar);
     sidebarPath.AddLine(frame.X + kSidebar, frame.Y + kTitleBar, frame.X + kSidebar,
-                        frame.Y + frame.Height - kRadius);
-    sidebarPath.AddArc(frame.X + frame.Width - kRadius * 2, frame.Y + frame.Height - kRadius * 2,
-                       kRadius * 2, kRadius * 2, 90.0f, 90.0f);
-    sidebarPath.AddLine(frame.X + kRadius, frame.Y + frame.Height, frame.X,
-                        frame.Y + frame.Height - kRadius);
+                        frame.Y + frame.Height);
+    sidebarPath.AddLine(frame.X + kSidebar, frame.Y + frame.Height, frame.X + kRadius,
+                        frame.Y + frame.Height);
+    // 左下角必须是窗口的左下圆角；之前这里误用了 frame.X + frame.Width 的右角弧。
     sidebarPath.AddArc(frame.X, frame.Y + frame.Height - kRadius * 2, kRadius * 2, kRadius * 2,
-                       180.0f, 90.0f);
+                       90.0f, 90.0f);
     sidebarPath.CloseFigure();
     g.SetClip(RectF(frame.X, frame.Y, kSidebar, frame.Height));
     g.FillPath(&bandBrush, &sidebarPath);

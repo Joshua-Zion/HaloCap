@@ -1,4 +1,4 @@
-﻿// S4 的 OCR 验证：用 GDI 画一张已知文字的图，跑 PP-OCR，断言识别结果里包含每一行。
+// S4 的 OCR 验证：用 GDI 画一张已知文字的图，跑 PP-OCR，断言识别结果里包含每一行。
 //
 // 为什么不拿现成截图当基准：合成图有确定的 ground truth，能给出「准确率」而不是
 // 「看起来像」。三行覆盖英文/数字/中文，中文字形来自系统字体，和真实截图同一路径。
@@ -6,6 +6,7 @@
 #include "ocr.h"
 #include "ocr_engine.h"
 #include "ort_ocr_engine.h"
+#include "winrt_ocr_engine.h"
 
 #include <windows.h>
 
@@ -24,6 +25,7 @@
 namespace core = halocap::core;
 namespace ocr = halocap::core::ocr;
 using halocap::platform::win32::OrtOcrEngine;
+using halocap::platform::win32::WinrtOcrEngine;
 
 namespace {
 
@@ -189,12 +191,15 @@ int main(int argc, char** argv) {
 
     std::string modelDirectory;
     std::string pngPath = "ocr-input.png";
+    std::string engineName = "pp";
     for (int i = 1; i < argc; ++i) {
         const std::string_view argument = argv[i];
         if (argument == "--models" && i + 1 < argc) {
             modelDirectory = argv[++i];
         } else if (argument == "--png" && i + 1 < argc) {
             pngPath = argv[++i];
+        } else if (argument == "--engine" && i + 1 < argc) {
+            engineName = argv[++i];
         }
     }
 
@@ -208,13 +213,15 @@ int main(int argc, char** argv) {
     std::printf("OCR_INPUT=%dx%d\n", bitmap.width, bitmap.height);
     std::printf("OCR_INPUT_PNG=%s\n", SaveInputPng(bitmap, pngPath) ? pngPath.c_str() : "FAILED");
 
-    modelDirectory = ResolveModelDirectory(modelDirectory);
-    if (modelDirectory.empty()) {
-        std::printf("OCR_MODELS=NOT_FOUND\n");
-        std::printf("OCR_PROBE=BLOCKED\n");
-        return 0;
+    if (engineName != "winrt") {
+        modelDirectory = ResolveModelDirectory(modelDirectory);
+        if (modelDirectory.empty()) {
+            std::printf("OCR_MODELS=NOT_FOUND\n");
+            std::printf("OCR_PROBE=BLOCKED\n");
+            return 0;
+        }
+        std::printf("OCR_MODELS=%s\n", modelDirectory.c_str());
     }
-    std::printf("OCR_MODELS=%s\n", modelDirectory.c_str());
 
     const double beforeMb = PrivateMemoryMb();
 
@@ -222,7 +229,13 @@ int main(int argc, char** argv) {
     config.modelDirectory = modelDirectory;
     config.threads = 2;
 
-    auto engine = std::make_unique<OrtOcrEngine>();
+    std::unique_ptr<core::IOcrEngine> engine;
+    if (engineName == "winrt") {
+        engine = std::make_unique<WinrtOcrEngine>();
+    } else {
+        engine = std::make_unique<OrtOcrEngine>();
+    }
+    std::printf("OCR_ENGINE=%s\n", engine->Name());
     std::string error;
     const std::int64_t initStart = QpcNowUs();
     const bool initialized = engine->Initialize(config, &error);

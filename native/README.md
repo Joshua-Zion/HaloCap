@@ -2,7 +2,7 @@
 
 本目录属于 `2.0` 分支。设计依据见 [../docs/2.0-native-plan.md](../docs/2.0-native-plan.md)，分支约定见其 §10，工具链与构建前提见计划文档的「S1 的工具链」。
 
-当前状态：**S1 / S2 / S3 完成，S4 的 OCR 主链路完成（六页设置与诊断未做）**——十六套测试全绿；`HaloCap.exe` 有设置、日志、托盘、热键、覆盖层、录制、截图与 OCR（托盘「录屏」/`Ctrl+Alt+R`、托盘「截图」/`Ctrl+Alt+A`、托盘「OCR」/`Ctrl+Alt+O`，以及 `--record-seconds` / `--screenshot-selftest` / `--ocr-selftest` 三个自检）；截图九种标注、工具栏、贴图与光晕、PNG/JPEG/剪贴板都在（选区打开 78.2 ms、私有内存 107.6 MB）；OCR 用 ORT + 1.x 的 PP-OCRv6 tiny，合成图 3/3 行命中、识别约 82 ms。S4 剩余：设置六页、诊断页、原生第二引擎、OCR 后的内存回落。
+当前状态：**S1 / S2 / S3 / S4 完成**（S4 的热键捕获、结果窗口高亮与同进程内存回落是收尾项）——十六套测试全绿；`HaloCap.exe` 有设置、日志、托盘、热键、覆盖层、录制、截图与 OCR（托盘「录屏」/`Ctrl+Alt+R`、托盘「截图」/`Ctrl+Alt+A`、托盘「OCR」/`Ctrl+Alt+O`、托盘「设置」；`--record-seconds` / `--screenshot-selftest` / `--ocr-selftest` / `--settings-selftest` 四个自检）。截图：九种标注、工具栏、贴图光晕、PNG/JPEG/剪贴板（选区打开 78.2 ms、私有内存 107.6 MB）。OCR：PP-OCRv6 tiny + 系统 `Windows.Media.Ocr` 双引擎，推理在 worker 子进程里（主进程不加载 ORT），合成图 PP-OCR 3/3 行、识别 82 ms；六页设置与诊断页已可用。
 
 一处环境阻塞要写清：本机现在对**任何**程序都拒绝 `DuplicateOutput`（`E_ACCESSDENIED`；今天早些时候还能跑出吞吐数字的 spike 2 工具现在同样被拒），所以 `ICaptureSource` 的端到端脏矩形量级数字还没拿到。拷贝逻辑本身不依赖复制权，已经单独验过（`rect_copy_test`）。
 
@@ -55,6 +55,7 @@ native/
     image_export.h/.cpp                导出：WIC 写 PNG/JPEG、CF_DIB 写剪贴板（调用方需 CoInitializeEx）
     desktop_grab.h/.cpp                截图抓屏：GDI BitBlt 主显示器（本机桌面复制回读全黑，见 §5.1）
     ort_ocr_engine.h/.cpp              ONNX Runtime 的 PP-OCR 引擎：det + cls + rec，模型来自 1.x assets
+    winrt_ocr_engine.h/.cpp            系统 Windows.Media.Ocr 引擎（第二引擎，无需模型）
   tools/frame_cost/     覆盖层帧成本测量（与 spike 3 同口径，离屏、不上屏）
   tools/surface_probe/  上屏链路验证：A/B 抓屏证「看得见」+ 60 fps 排帧数丢帧
   tools/capture_probe/  采集链路统计：应有/实取、仅鼠标唤醒、脏像素之比、每帧 CPU 与内存
@@ -75,6 +76,8 @@ native/
     screenshot_overlay.h/.cpp   截图会话：全屏覆盖层、选区/把手、工具栏、鼠标键盘编辑、文字 EDIT、导出
     pin_window.h/.cpp           贴图：WS_EX_LAYERED + UpdateLayeredWindow，白边 + 光晕，拖动/双击关闭
     ocr_result_window.h/.cpp    OCR 结果：左侧原图 + 红框，右侧按行文本 + 搜索 + 复制全部
+    ocr_worker.h/.cpp           OCR worker：raw + 结果文本协议，子进程跑推理
+    settings_window.h/.cpp      六页设置 + 环境摘要（截图/录制/OCR/快捷键/外观/关于）
   build.cmd   vcvars → cmake configure → build → ctest
 ```
 
@@ -349,8 +352,10 @@ native> build\app\HaloCap.exe --ocr-selftest ocr-selftest.png
 | 准确率 | **3/3 行命中** |
 | 内存 | init 后 36.5 MB、识别后 70 MB、释放后 13.9 MB |
 
-app 自检（桌面 900×520 区域）：覆盖层打开 84.4 ms、引擎 init 89.7 ms、识别 260.8 ms，结果窗口给出 32 行；`APP_OCR_ENGINE_RELEASED=1`。**内存注意**：模型会话释放后，同进程私有提交仍停在 ~108 MB——那是覆盖层 D3D/D2D 设备的基线（109.4 MB），不是模型常驻；新进程空闲仍是 2.5 MB。若要求「OCR 后也回到 80 MB」，下一步是把 OCR 放进 worker 进程（见 §9 第 21 条）。
+第二引擎是系统 `Windows.Media.Ocr`（`ocr_probe --engine winrt`：init 10.5 ms、识别 44.6 ms）；`ocr.engine` 设置 Native / Model 切换，默认 Native。**推理现在跑在一次性 worker 子进程里**（`HaloCap.exe --ocr-worker in out engine`），主进程不加载 ORT：app 自检（桌面 900×520 区域）经 worker 识别约 175 ms、结果窗口 32 行、`APP_OCR_WORKER=1`，识别后主进程回到 ~97 MB。**内存注意**：这 97 MB 是覆盖层 D3D/D2D 设备的基线（覆盖层打开时 109.6 MB），不是模型常驻；新进程空闲仍是 2.5 MB。「OCR 后同进程回落到 80 MB」仍未达成，见 §9 第 21 条。
+
+`--settings-selftest` 打开六页设置并抓图：左侧「截图 / 录制 / OCR / 快捷键 / 外观 / 关于·诊断」，保存走 `core::SaveSettingsTo`，`liveSettings` 立即生效（截图格式、OCR 引擎、录制参数）。关于页就是环境摘要：系统 build、WGC、私有内存、模型目录、设置与日志路径。
 
 一个踩到的坑：rec 的导出已经做了 softmax，再算一次会把置信度算成 1/6906（0.000），所有行被过滤；`DecodeCtc` 现在先看行和，像概率就取最大值、否则才算 softmax。
 
-没做的：六页设置、诊断页、`Windows.Media.Ocr` 第二引擎、结果窗口的命中高亮。
+收尾项：设置页的热键捕获（目前五把只读展示）、结果窗口的命中高亮/按行跳转、同进程 OCR 后的内存回落。

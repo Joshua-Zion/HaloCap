@@ -1,4 +1,4 @@
-﻿// S1 的组装：把 8 个 seam 接成一个能起来、能待着、能自己报出空闲内存的进程。
+// S1 的组装：把 8 个 seam 接成一个能起来、能待着、能自己报出空闲内存的进程。
 //
 // 这一版刻意只做 S1 的骨架：设置、日志、托盘、热键、覆盖层窗口与渲染后端就绪，消息循环待着；
 // 托盘菜单与热键只记录「收到了什么动作」——真正的截图/录屏/OCR/贴图在 S3/S4 才接。
@@ -15,7 +15,9 @@
 //   HaloCap.exe --selftest --report out.txt  把上面的每一项写进文件（explorer 启动时没有控制台）
 //   --no-tray / --no-input / --no-overlay    只量某几层，用来归因
 #include "capability.h"
+#include "desktop_grab.h"
 #include "font_rasterizer.h"
+#include "image_export.h"
 #include "input_host.h"
 #include "recording_session.h"
 #include "settings.h"
@@ -28,6 +30,8 @@
 #include "mf_h264_encoder.h"
 #include "ocr_engine.h"
 #include "ocr_result_window.h"
+#include "settings_window.h"
+#include "ocr_worker.h"
 #include "ort_ocr_engine.h"
 #include "pin_window.h"
 #include "screenshot_overlay.h"
@@ -98,6 +102,9 @@ struct Options {
 
     // 非空 = 无人值守的 OCR 自检：开 OCR 覆盖层 → 选区 → 识别 → 结果窗口 → 抓图。
     std::wstring ocrSelftestPath;
+
+    // 非空 = 无人值守的设置页自检：打开六页设置 → 抓图 → 退出。
+    std::wstring settingsSelftestPath;
 };
 
 std::wstring Utf8ToWide(std::string_view text) {
@@ -292,6 +299,8 @@ Options ParseOptions(int argc, char** argv) {
             options.screenshotSelftestPath = Utf8ToWide(argv[++i]);
         } else if (argument == "--ocr-selftest" && i + 1 < argc) {
             options.ocrSelftestPath = Utf8ToWide(argv[++i]);
+        } else if (argument == "--settings-selftest" && i + 1 < argc) {
+            options.settingsSelftestPath = Utf8ToWide(argv[++i]);
         } else if (argument == "--no-tray") {
             options.tray = false;
         } else if (argument == "--no-input") {
@@ -312,6 +321,8 @@ void PrintUsage() {
         "  --record-seconds N    record N seconds, then exit (unattended check)\n"
         "  --screenshot-selftest PATH  open the screenshot overlay, annotate, export, exit\n"
         "  --ocr-selftest PATH         open the OCR overlay, recognise the selection, exit\n"
+        "  --settings-selftest PATH    open the six settings pages, capture, exit\n"
+        "  --settings-selftest PATH    open the settings pages, capture, exit\n"
         "  --overlay-size 1920x1080\n"
         "  --no-tray | --no-input | --no-overlay\n");
 }
@@ -608,7 +619,8 @@ int Run(const Options& options) {
         log.Info("settings: loaded");
     }
 
-    const core::AppSettings& settings = loaded.settings;
+    core::AppSettings liveSettings = loaded.settings;
+    const core::AppSettings& settings = liveSettings;
 
     AddFlag(report, "APP_SETTINGS_FILE_EXISTS", loaded.fileExists);
     AddFlag(report, "APP_SETTINGS_SAVED", settingsSaved);
@@ -813,12 +825,11 @@ int Run(const Options& options) {
     std::unique_ptr<halocap::app::ScreenshotOverlay> screenshotOverlay;
     std::vector<std::unique_ptr<halocap::app::PinWindow>> pins;
 
-    // OCR：引擎按需创建，空闲 60 s 释放（S4 的内存约束）。
-    std::unique_ptr<core::IOcrEngine> ocrEngine;
+    // OCR：推理放在一次性的 worker 子进程里，主进程不加载 ORT。
     std::unique_ptr<halocap::app::OcrResultWindow> ocrWindow;
-    double ocrInitMs = 0.0;
+    std::unique_ptr<halocap::app::SettingsWindow> settingsWindow;
     double ocrRecognizeMs = 0.0;
-    std::int64_t lastOcrActivityMs = 0;
+    std::string ocrWorkerEngine = "pp";
 
     const auto openScreenshot = [&]() {
         if (screenshotOverlay != nullptr && screenshotOverlay->Active()) {
@@ -845,39 +856,64 @@ int Run(const Options& options) {
     };
 
     const auto runOcr = [&](const std::uint8_t* bgra, int width, int height, int, int) {
-        if (ocrEngine == nullptr) {
-            const std::string directory = ResolveOcrModelDirectory();
-            if (directory.empty()) {
-                log.Error("ocr: models not found (set HALOCAP_OCR_MODELS)");
-                tray.Notify("HaloCap", "OCR 模型未找到");
-                return;
-            }
-
-            core::OcrEngineConfig config;
-            config.modelDirectory = directory;
-            auto engine = std::make_unique<halocap::platform::win32::OrtOcrEngine>();
-            std::string error;
-            const std::int64_t start = QpcNowUs();
-            if (!engine->Initialize(config, &error)) {
-                log.Error("ocr: init failed (" + error + ")");
-                tray.Notify("HaloCap", "OCR 初始化失败，详见日志");
-                return;
-            }
-            ocrInitMs = static_cast<double>(QpcNowUs() - start) / 1000.0;
-            ocrEngine = std::move(engine);
-            log.Info("ocr: engine ready in " + std::to_string(static_cast<int>(ocrInitMs)) +
-                     " ms, models=" + directory);
+        wchar_t executable[MAX_PATH] = {};
+        if (GetModuleFileNameW(nullptr, executable, MAX_PATH) == 0) {
+            log.Error("ocr: cannot resolve own path");
+            return;
         }
 
-        const core::ocr::OcrImage image{ bgra, width, height, width * 4 };
+        wchar_t temporary[MAX_PATH] = {};
+        if (GetTempPathW(MAX_PATH, temporary) == 0) {
+            log.Error("ocr: no temp directory");
+            return;
+        }
+        const std::filesystem::path directory =
+            std::filesystem::path(temporary) / "HaloCap2";
+        std::error_code directoryError;
+        std::filesystem::create_directories(directory, directoryError);
+
+        const std::wstring stem = L"ocr-" + std::to_wstring(GetCurrentProcessId()) + L"-" +
+                                  std::to_wstring(GetTickCount64());
+        const std::wstring inputPath = (directory / (stem + L".raw")).wstring();
+        const std::wstring outputPath = (directory / (stem + L".txt")).wstring();
+
+        const std::string inputUtf8 = WideToUtf8(inputPath);
+        const std::string outputUtf8 = WideToUtf8(outputPath);
+        const std::string engineName =
+            settings.ocr.engine == core::OcrEngine::Native ? "winrt" : "pp";
+        ocrWorkerEngine = engineName;
+
+        // 子进程靠环境变量找模型；如果 app 自己找得到，就把它传下去。
+        if (const std::string models = ResolveOcrModelDirectory(); !models.empty()) {
+            SetEnvironmentVariableW(L"HALOCAP_OCR_MODELS", Utf8ToWide(models).c_str());
+        }
+
+        if (!halocap::app::WriteOcrWorkerInput(inputUtf8, bgra, width, height)) {
+            log.Error("ocr: cannot write worker input");
+            return;
+        }
+
         std::string error;
         const std::int64_t start = QpcNowUs();
-        const core::ocr::OcrResult result =
-            ocrEngine->Recognize(image, core::ocr::OcrOptions{}, &error);
+        const bool spawned = halocap::app::SpawnOcrWorker(WideToUtf8(executable), inputUtf8,
+                                                          outputUtf8, engineName, &error);
+        halocap::app::OcrWorkerResult worker;
+        const bool parsed = spawned && halocap::app::ReadOcrWorkerOutput(outputUtf8, &worker);
         ocrRecognizeMs = static_cast<double>(QpcNowUs() - start) / 1000.0;
-        lastOcrActivityMs = static_cast<std::int64_t>(GetTickCount64());
+
+        DeleteFileW(inputPath.c_str());
+        DeleteFileW(outputPath.c_str());
+
+        if (!parsed) {
+            const std::string reason = worker.error.empty() ? error : worker.error;
+            log.Error("ocr: worker failed (" + reason + ")");
+            tray.Notify("HaloCap", "OCR 失败，详见日志");
+            return;
+        }
+
+        const core::ocr::OcrResult result = core::ocr::BuildResult(std::move(worker.lines));
         log.Info("ocr: " + std::to_string(result.lines.size()) + " lines in " +
-                 std::to_string(static_cast<int>(ocrRecognizeMs)) + " ms");
+                 std::to_string(static_cast<int>(ocrRecognizeMs)) + " ms, engine=" + engineName);
 
         if (ocrWindow != nullptr) {
             ocrWindow->Close();
@@ -911,6 +947,30 @@ int Run(const Options& options) {
         log.Info("ocr: overlay opened");
     };
 
+    const auto openSettings = [&]() {
+        if (settingsWindow != nullptr && settingsWindow->Valid()) {
+            return;
+        }
+        settingsWindow = std::make_unique<halocap::app::SettingsWindow>();
+        const bool created = settingsWindow->Create(
+            nullptr, liveSettings, facts, ResolveOcrModelDirectory(),
+            [&](const core::AppSettings& updated) {
+                if (!core::SaveSettingsTo(store, updated)) {
+                    log.Error(std::string("settings: save failed (") + store.LastErrorKind() + ")");
+                    tray.Notify("HaloCap", "设置保存失败");
+                    return false;
+                }
+                liveSettings = updated;
+                log.Info("settings: saved");
+                tray.Notify("HaloCap", "设置已保存（热键与录制参数下次启动生效）");
+                return true;
+            });
+        if (!created) {
+            settingsWindow.reset();
+            log.Error("settings: window failed");
+        }
+    };
+
     auto onAction = [&](core::TrayCommand command) {
         ++actions;
         if (command == core::TrayCommand::Exit) {
@@ -928,6 +988,10 @@ int Run(const Options& options) {
         }
         if (command == core::TrayCommand::Ocr) {
             openOcr();
+            return;
+        }
+        if (command == core::TrayCommand::Settings) {
+            openSettings();
             return;
         }
         if (command == core::TrayCommand::PauseRecording) {
@@ -1057,8 +1121,6 @@ int Run(const Options& options) {
             char openBuffer[32] = {};
             std::snprintf(openBuffer, sizeof(openBuffer), "%.1f", ocrOpenMs);
             AddText(report, "APP_OCR_OPEN_MS", openBuffer);
-            std::snprintf(openBuffer, sizeof(openBuffer), "%.1f", ocrInitMs);
-            AddText(report, "APP_OCR_ENGINE_MS", openBuffer);
             std::snprintf(openBuffer, sizeof(openBuffer), "%.1f", ocrRecognizeMs);
             AddText(report, "APP_OCR_RECOGNIZE_MS", openBuffer);
             AddMb(report, "APP_OCR_BEFORE_MB", beforeOcrMb);
@@ -1066,13 +1128,13 @@ int Run(const Options& options) {
 
             // 关掉结果窗口、释放 ORT 会话之后必须回到空闲预算内（S4 的退出条件）。
             ocrWindow.reset();
-            ocrEngine.reset();
             TrimProcessMemory();
             Sleep(200);
             const double idleMb = PrivateMb();
             AddMb(report, "APP_OCR_AFTER_RELEASE_MB", idleMb);
+            AddFlag(report, "APP_OCR_WORKER", true);
+            AddText(report, "APP_OCR_ENGINE", ocrWorkerEngine.c_str());
             AddFlag(report, "APP_OCR_AFTER_RELEASE_UNDER_80", idleMb > 0.0 && idleMb <= 80.0);
-            AddFlag(report, "APP_OCR_ENGINE_RELEASED", ocrEngine == nullptr);
 
             // 功能判据：窗口起来、证明图写出、识别真的跑过。内存判据单独记：
             // ORT 会话已释放，但进程私有提交在 OCR 后仍停在 100 MB 上下（D3D/D2D 设备与
@@ -1082,6 +1144,29 @@ int Run(const Options& options) {
         } else {
             log.Error("ocr selftest: overlay did not open");
         }
+        running = false;
+    }
+
+    bool settingsSelftestOk = true;
+    if (!options.settingsSelftestPath.empty()) {
+        settingsSelftestOk = false;
+        openSettings();
+        Sleep(350);
+
+        const bool opened = settingsWindow != nullptr && settingsWindow->Valid();
+        bool proof = false;
+        if (opened) {
+            halocap::platform::win32::DesktopImage desktop;
+            proof = halocap::platform::win32::GrabPrimaryDesktop(desktop) &&
+                    halocap::platform::win32::SaveBgraPng(
+                        options.settingsSelftestPath, desktop.bgra.data(), desktop.width,
+                        desktop.height, desktop.width * 4);
+            settingsWindow->Close();
+        }
+
+        AddFlag(report, "APP_SETTINGS_WINDOW", opened);
+        AddFlag(report, "APP_SETTINGS_PROOF", proof);
+        settingsSelftestOk = opened && proof;
         running = false;
     }
 
@@ -1135,12 +1220,9 @@ int Run(const Options& options) {
         if (ocrWindow != nullptr && !ocrWindow->Valid()) {
             ocrWindow.reset();
         }
-        if (ocrEngine != nullptr &&
-            static_cast<std::int64_t>(GetTickCount64()) - lastOcrActivityMs > 60000) {
-            ocrEngine.reset();
-            log.Info("ocr: session released after idle");
+        if (settingsWindow != nullptr && !settingsWindow->Valid()) {
+            settingsWindow.reset();
         }
-
         // 截图覆盖层：会话自己的窗口消息由上面的 PeekMessage 派发，这里只推进渲染。
         if (screenshotOverlay != nullptr) {
             screenshotOverlay->Pump();
@@ -1264,7 +1346,8 @@ int Run(const Options& options) {
 
     AddFlag(report, "APP_SCREENSHOT_SELFTEST", screenshotSelftestOk);
     AddFlag(report, "APP_OCR_SELFTEST", ocrSelftestOk);
-    ok = ok && screenshotSelftestOk && ocrSelftestOk;
+    AddFlag(report, "APP_SETTINGS_SELFTEST", settingsSelftestOk);
+    ok = ok && screenshotSelftestOk && ocrSelftestOk && settingsSelftestOk;
 
     std::printf("%s", report.c_str());
     if (!options.reportPath.empty()) {
@@ -1286,6 +1369,11 @@ int Run(const Options& options) {
 int main(int argc, char** argv) {
     SetConsoleOutputCP(CP_UTF8);
     std::setvbuf(stdout, nullptr, _IONBF, 0);
+
+    // OCR worker 子进程：跑完就退，不碰单实例、托盘与任何 UI。
+    if (argc >= 5 && std::string_view(argv[1]) == "--ocr-worker") {
+        return halocap::app::RunOcrWorker(argv[2], argv[3], argv[4]);
+    }
 
     const Options options = ParseOptions(argc, argv);
     if (options.help) {

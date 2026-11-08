@@ -35,6 +35,7 @@
 #include "ort_ocr_engine.h"
 #include "pin_window.h"
 #include "radial_menu.h"
+#include "recording_hud.h"
 #include "screenshot_overlay.h"
 #include "settings_window.h"
 #include "update.h"
@@ -541,6 +542,10 @@ public:
 
     bool Resume(std::int64_t wallUs) { return session_ != nullptr && session_->Resume(wallUs); }
 
+    std::int64_t MediaTimeMs() const {
+        return session_ != nullptr ? session_->Stats().mediaTimeUs / 1000 : 0;
+    }
+
     bool Paused() const { return session_ != nullptr && session_->Paused(); }
 
     bool Stop(core::RecordingStats& stats) {
@@ -778,6 +783,7 @@ int Run(const Options& options) {
     // ---- 录制入口：托盘「录屏」与录制热键共用这一个开关 ----
     RecordingRunner recording;
     bool recordingActive = false;
+    std::unique_ptr<halocap::app::RecordingHud> recordingHud;
     bool recordStarted = false;
     bool recordStopped = false;
     core::RecordingStats recordStats;
@@ -792,6 +798,14 @@ int Run(const Options& options) {
 
     auto toggleRecording = [&]() {
         if (!recordingActive) {
+            if (settings.recording.countdown != core::RecordingCountdown::Off) {
+                halocap::app::RecordingCountdown countdown;
+                if (!countdown.Show(settings.recording.CountdownSeconds())) {
+                    log.Info("recording: cancelled during countdown");
+                    tray.Notify("HaloCap", "已取消录制");
+                    return;
+                }
+            }
             if (!overlayReady) {
                 // 录制要复用覆盖层那台 D3D 设备（采集/编码必须同一个设备）。
                 overlayReady = overlay.Initialize(log, overlayWidth, overlayHeight);
@@ -801,6 +815,10 @@ int Run(const Options& options) {
             if (started) {
                 recordingActive = true;
                 refreshTray();
+                recordingHud = std::make_unique<halocap::app::RecordingHud>();
+                if (!recordingHud->Create()) {
+                    recordingHud.reset();
+                }
                 log.Info("recording: started -> " + recording.OutputPath());
                 tray.Notify("HaloCap", "开始录制");
             } else {
@@ -814,6 +832,7 @@ int Run(const Options& options) {
         core::RecordingStats stats;
         const bool stopped = recording.Stop(stats);
         recordingActive = false;
+        recordingHud.reset();
         refreshTray();
         log.Info(stopped ? "recording: stopped" : "recording: stop failed");
         if (stopped) {
@@ -848,6 +867,10 @@ int Run(const Options& options) {
         if (recordStarted) {
             recordingActive = true;
             refreshTray();
+            recordingHud = std::make_unique<halocap::app::RecordingHud>();
+            if (!recordingHud->Create()) {
+                recordingHud.reset();
+            }
             recordDeadlineMs =
                 static_cast<std::int64_t>(GetTickCount64()) + options.recordSeconds * 1000;
             log.Info("recording: started (--record-seconds) -> " + recording.OutputPath());
@@ -1471,6 +1494,20 @@ int Run(const Options& options) {
 
         // 录制泵：与消息循环同一个线程、同一个 30 ms 节奏。采集侧丢设备时这里会返回
         // false，录制作废并给出提示，而不是让 app 卡住。
+        if (recordingHud != nullptr) {
+            recordingHud->Update(recording.MediaTimeMs(), recording.Paused());
+            switch (recordingHud->PollAction()) {
+            case halocap::app::RecordingHud::Action::Pause:
+                togglePause();
+                break;
+            case halocap::app::RecordingHud::Action::Stop:
+                toggleRecording();
+                break;
+            default:
+                break;
+            }
+        }
+
         if (recordingActive) {
             if (!recording.Pump(QpcNowUs())) {
                 log.Error(std::string("recording: ended by capture (") +

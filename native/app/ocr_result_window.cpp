@@ -98,6 +98,9 @@ bool OcrResultWindow::Create(void* owner, const std::uint8_t* bgra, int width, i
     copyButton_ = CreateWindowExW(0, L"BUTTON", L"复制全部",
                                   WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 10, 10, window_,
                                   reinterpret_cast<HMENU>(4), GetModuleHandleW(nullptr), nullptr);
+    viewButton_ = CreateWindowExW(0, L"BUTTON", L"只看文本",
+                                  WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 10, 10, window_,
+                                  reinterpret_cast<HMENU>(7), GetModuleHandleW(nullptr), nullptr);
     previousButton_ = CreateWindowExW(0, L"BUTTON", L"上一处",
                                       WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 10, 10,
                                       window_, reinterpret_cast<HMENU>(5),
@@ -109,7 +112,7 @@ bool OcrResultWindow::Create(void* owner, const std::uint8_t* bgra, int width, i
                             WS_CHILD | WS_VISIBLE | SS_LEFT, 0, 0, 10, 10, window_, nullptr,
                             GetModuleHandleW(nullptr), nullptr);
 
-    for (HWND control : { text_, search_, findButton_, copyButton_, previousButton_, nextButton_, hint_ }) {
+    for (HWND control : { text_, search_, findButton_, copyButton_, previousButton_, nextButton_, viewButton_, hint_ }) {
         SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
     }
 
@@ -219,6 +222,11 @@ LRESULT OcrResultWindow::Handle(HWND window, UINT message, WPARAM wParam, LPARAM
             StepMatch(-1);
         } else if (LOWORD(wParam) == 6) {
             StepMatch(1);
+        } else if (LOWORD(wParam) == 7) {
+            showImage_ = !showImage_;
+            SetWindowTextW(viewButton_, showImage_ ? L"只看文本" : L"显示图片");
+            Layout();
+            InvalidateRect(window_, nullptr, FALSE);
         }
         return 0;
 
@@ -256,15 +264,16 @@ void OcrResultWindow::Layout() {
         return;
     }
 
-    const int previewWidth = width * 58 / 100;
-    preview_ = RECT{ kPreviewMargin, kPreviewMargin, previewWidth - kPreviewMargin,
-                     height - kPreviewMargin };
-
-    const int right = previewWidth;
+    const int previewWidth = showImage_ ? width * 58 / 100 : 0;
+    preview_ = showImage_ ? RECT{ kPreviewMargin, kPreviewMargin, previewWidth - kPreviewMargin,
+                                 height - kPreviewMargin }
+                          : RECT{};
+    const int right = showImage_ ? previewWidth : kPreviewMargin;
     const int rightWidth = width - right - kPreviewMargin;
     const int top = kPreviewMargin;
 
     SetWindowPos(hint_, nullptr, right, top, rightWidth, 24, SWP_NOZORDER);
+    SetWindowPos(viewButton_, nullptr, right + rightWidth - 92, top + 30, 92, 28, SWP_NOZORDER);
     SetWindowPos(copyButton_, nullptr, right, top + 30, 92, 28, SWP_NOZORDER);
     SetWindowPos(findButton_, nullptr, right + 98, top + 30, 60, 28, SWP_NOZORDER);
     SetWindowPos(previousButton_, nullptr, right + 162, top + 30, 64, 28, SWP_NOZORDER);

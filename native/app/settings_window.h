@@ -42,6 +42,10 @@ private:
 
     static bool EnsureClass();
     static LRESULT CALLBACK WndProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam);
+    static LRESULT CALLBACK HotkeyHook(int code, WPARAM wParam, LPARAM lParam);
+    void StartHotkeyCapture(int index);
+    void FinishHotkeyCapture(const core::HotkeySpec& spec);
+    void RefreshHotkeyLabels();
     LRESULT Handle(HWND window, UINT message, WPARAM wParam, LPARAM lParam);
 
     HWND AddCombo(Page page, int x, int y, int width, const std::vector<std::wstring>& items,
@@ -93,6 +97,9 @@ private:
     HWND ocrPin_ = nullptr;
     HWND menuSize_ = nullptr;
     HWND pinGlow_ = nullptr;
+    HWND hotkeyValues_[5] = {};
+    HWND hotkeyButtons_[5] = {};
+    int captureIndex_ = -1;
 };
 
 }

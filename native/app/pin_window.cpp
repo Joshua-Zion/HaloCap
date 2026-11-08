@@ -1,8 +1,19 @@
 ﻿#include "pin_window.h"
 
+#include "image_export.h"
+
+#include <windows.h>
+
+#include <windowsx.h>
+#include <objbase.h>
+#include <gdiplus.h>
+#include <shlobj.h>
+
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <vector>
 
 namespace halocap::app {
@@ -11,7 +22,38 @@ namespace {
 
 constexpr wchar_t kClassName[] = L"HaloCapPinWindow";
 constexpr int kBorderPx = 1;
-constexpr int kGlowPx = 10;
+constexpr int kGlowPx = 12;
+constexpr int kRadius = 12;
+
+bool EnsureGdiplus() {
+    static ULONG_PTR token = 0;
+    if (token == 0) {
+        Gdiplus::GdiplusStartupInput input;
+        if (Gdiplus::GdiplusStartup(&token, &input, nullptr) != Gdiplus::Ok) {
+            return false;
+        }
+    }
+    return true;
+}
+
+std::wstring TimestampName() {
+    SYSTEMTIME now{};
+    GetLocalTime(&now);
+    wchar_t buffer[64] = {};
+    std::swprintf(buffer, 64, L"HaloCap_%04d-%02d-%02d_%02d-%02d-%02d",
+                  static_cast<int>(now.wYear), static_cast<int>(now.wMonth),
+                  static_cast<int>(now.wDay), static_cast<int>(now.wHour),
+                  static_cast<int>(now.wMinute), static_cast<int>(now.wSecond));
+    return buffer;
+}
+
+std::wstring SaveDirectory() {
+    wchar_t pictures[MAX_PATH] = {};
+    if (SHGetFolderPathW(nullptr, CSIDL_MYPICTURES, nullptr, SHGFP_TYPE_CURRENT, pictures) != S_OK) {
+        return {};
+    }
+    return std::wstring(pictures) + L"\\HaloCap";
+}
 
 }  // namespace
 
@@ -23,7 +65,7 @@ bool PinWindow::EnsureClass() {
     static const bool registered = [] {
         WNDCLASSEXW description{};
         description.cbSize = sizeof(description);
-        description.style = CS_DBLCLKS;   // 双击关闭要用
+        description.style = CS_DBLCLKS;
         description.lpfnWndProc = &PinWindow::WndProc;
         description.hInstance = GetModuleHandleW(nullptr);
         description.lpszClassName = kClassName;
@@ -37,22 +79,42 @@ bool PinWindow::Create(const std::uint8_t* bgra, int width, int height, int scre
     if (bgra == nullptr || width <= 0 || height <= 0 || !EnsureClass()) {
         return false;
     }
+    EnsureGdiplus();
+
+    content_.assign(bgra, bgra + static_cast<std::size_t>(width) * height * 4);
+    contentWidth_ = width;
+    contentHeight_ = height;
 
     const int outerWidth = width + 2 * (kBorderPx + kGlowPx);
     const int outerHeight = height + 2 * (kBorderPx + kGlowPx);
 
-    // 分层窗口的位图是预乘 alpha 的 BGRA：内容不透明、白边、外圈光晕向外渐隐。
-    std::vector<std::uint8_t> layered(static_cast<std::size_t>(outerWidth) * outerHeight * 4, 0);
+    const DWORD exStyle = WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
+    window_ = CreateWindowExW(exStyle, kClassName, L"HaloCap pin", WS_POPUP,
+                              screenX - (kGlowPx + kBorderPx),
+                              screenY - (kGlowPx + kBorderPx), outerWidth, outerHeight, nullptr,
+                              nullptr, GetModuleHandleW(nullptr), this);
+    if (window_ == nullptr) {
+        return false;
+    }
 
+    ShowWindow(static_cast<HWND>(window_), SW_SHOWNOACTIVATE);
+    Render();
+    return true;
+}
+
+void PinWindow::Render() {
+    if (window_ == nullptr || content_.empty()) {
+        return;
+    }
+
+    const int width = contentWidth_;
+    const int height = contentHeight_;
+    const int outerWidth = width + 2 * (kBorderPx + kGlowPx);
+    const int outerHeight = height + 2 * (kBorderPx + kGlowPx);
     const int contentLeft = kGlowPx + kBorderPx;
     const int contentTop = kGlowPx + kBorderPx;
-    const int borderLeft = kGlowPx;
-    const int borderTop = kGlowPx;
-    const int borderRight = kGlowPx + kBorderPx + width + kBorderPx;
-    const int borderBottom = kGlowPx + kBorderPx + height + kBorderPx;
 
-    // 1.x 的贴图卡：白色圆角 12、1 px #25000000 边框、外圈黑色柔和阴影。
-    constexpr float kRadius = 12.0f;
+    std::vector<std::uint8_t> layered(static_cast<std::size_t>(outerWidth) * outerHeight * 4, 0);
     const auto roundedDistance = [](float px, float py, float halfWidth, float halfHeight,
                                     float radius) {
         const float qx = std::fabs(px) - halfWidth + radius;
@@ -70,7 +132,6 @@ bool PinWindow::Create(const std::uint8_t* bgra, int width, int height, int scre
         for (int x = 0; x < outerWidth; ++x) {
             const float px = static_cast<float>(x - contentLeft);
             const float py = static_cast<float>(y - contentTop);
-
             const float contentDistance =
                 roundedDistance(px - centerX, py - centerY, centerX, centerY, kRadius);
             const float outerDistance = roundedDistance(
@@ -85,9 +146,9 @@ bool PinWindow::Create(const std::uint8_t* bgra, int width, int height, int scre
             if (contentDistance <= 0.0f) {
                 const std::size_t source =
                     (static_cast<std::size_t>(y - contentTop) * width + (x - contentLeft)) * 4;
-                b = bgra[source + 0];
-                g = bgra[source + 1];
-                r = bgra[source + 2];
+                b = content_[source + 0];
+                g = content_[source + 1];
+                r = content_[source + 2];
                 a = 255;
             } else if (outerDistance <= 0.0f) {
                 b = 255;
@@ -107,60 +168,106 @@ bool PinWindow::Create(const std::uint8_t* bgra, int width, int height, int scre
         }
     }
 
+    // 悬停工具条：右上角三个圆形按钮。
+    copyRect_ = RECT{ width - 104, 8, width - 76, 36 };
+    saveRect_ = RECT{ width - 72, 8, width - 44, 36 };
+    closeRect_ = RECT{ width - 40, 8, width - 12, 36 };
+    if (hover_) {
+        Gdiplus::Bitmap canvas(outerWidth, outerHeight, outerWidth * 4, PixelFormat32bppPARGB,
+                               layered.data());
+        Gdiplus::Graphics graphics(&canvas);
+        graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
+        graphics.SetTextRenderingHint(Gdiplus::TextRenderingHintAntiAlias);
+
+        const float barLeft = static_cast<float>(contentLeft + width - 108);
+        const float barTop = static_cast<float>(contentTop + 4);
+        Gdiplus::GraphicsPath bar;
+        bar.AddArc(barLeft, barTop, 32.0f, 32.0f, 90.0f, 180.0f);
+        bar.AddArc(barLeft + 72.0f, barTop, 32.0f, 32.0f, 270.0f, 180.0f);
+        bar.CloseFigure();
+        Gdiplus::SolidBrush barBrush(Gdiplus::Color(235, 0x16, 0x1A, 0x22));
+        Gdiplus::Pen barPen(Gdiplus::Color(40, 255, 255, 255), 1.0f);
+        graphics.FillPath(&barBrush, &bar);
+        graphics.DrawPath(&barPen, &bar);
+
+        const auto buttonCenter = [&](const RECT& rect) {
+            return Gdiplus::PointF(static_cast<float>(contentLeft + rect.left + 14),
+                                   static_cast<float>(contentTop + rect.top + 14));
+        };
+        const auto drawCopy = [&](Gdiplus::PointF center) {
+            Gdiplus::Pen pen(Gdiplus::Color(255, 0xE9, 0xED, 0xF4), 1.6f);
+            graphics.DrawRectangle(&pen, center.X - 7.0f, center.Y - 8.0f, 10.0f, 12.0f);
+            graphics.DrawRectangle(&pen, center.X - 2.0f, center.Y - 4.0f, 10.0f, 12.0f);
+        };
+        const auto drawSave = [&](Gdiplus::PointF center) {
+            Gdiplus::Pen pen(Gdiplus::Color(255, 0xE9, 0xED, 0xF4), 1.6f);
+            graphics.DrawLine(&pen, center.X, center.Y - 9.0f, center.X, center.Y + 3.0f);
+            graphics.DrawLine(&pen, center.X - 4.0f, center.Y - 1.0f, center.X, center.Y + 3.0f);
+            graphics.DrawLine(&pen, center.X + 4.0f, center.Y - 1.0f, center.X, center.Y + 3.0f);
+            graphics.DrawLine(&pen, center.X - 8.0f, center.Y + 8.0f, center.X + 8.0f,
+                              center.Y + 8.0f);
+        };
+        const auto drawClose = [&](Gdiplus::PointF center) {
+            Gdiplus::Pen pen(Gdiplus::Color(255, 0xE9, 0xED, 0xF4), 1.6f);
+            graphics.DrawLine(&pen, center.X - 6.0f, center.Y - 6.0f, center.X + 6.0f,
+                              center.Y + 6.0f);
+            graphics.DrawLine(&pen, center.X + 6.0f, center.Y - 6.0f, center.X - 6.0f,
+                              center.Y + 6.0f);
+        };
+        drawCopy(buttonCenter(copyRect_));
+        drawSave(buttonCenter(saveRect_));
+        drawClose(buttonCenter(closeRect_));
+    }
+
     HDC screen = GetDC(nullptr);
     HDC memory = CreateCompatibleDC(screen);
     BITMAPINFO info{};
     info.bmiHeader.biSize = sizeof(info.bmiHeader);
     info.bmiHeader.biWidth = outerWidth;
-    info.bmiHeader.biHeight = -outerHeight;   // 顶朝下
+    info.bmiHeader.biHeight = -outerHeight;
     info.bmiHeader.biPlanes = 1;
     info.bmiHeader.biBitCount = 32;
     info.bmiHeader.biCompression = BI_RGB;
 
     void* bits = nullptr;
-    HBITMAP bitmap = CreateDIBSection(memory, &info, DIB_RGB_COLORS, &bits, nullptr, 0);
-    if (bitmap == nullptr || bits == nullptr) {
-        if (bitmap != nullptr) {
-            DeleteObject(bitmap);
-        }
-        DeleteDC(memory);
-        ReleaseDC(nullptr, screen);
-        return false;
+    HBITMAP dib = CreateDIBSection(memory, &info, DIB_RGB_COLORS, &bits, nullptr, 0);
+    if (dib != nullptr && bits != nullptr) {
+        std::memcpy(bits, layered.data(), layered.size());
+        HGDIOBJ old = SelectObject(memory, dib);
+        RECT windowRect{};
+        GetWindowRect(static_cast<HWND>(window_), &windowRect);
+        POINT destination{ windowRect.left, windowRect.top };
+        SIZE size{ outerWidth, outerHeight };
+        POINT source{ 0, 0 };
+        BLENDFUNCTION blend{};
+        blend.BlendOp = AC_SRC_OVER;
+        blend.SourceConstantAlpha = 255;
+        blend.AlphaFormat = AC_SRC_ALPHA;
+        UpdateLayeredWindow(static_cast<HWND>(window_), screen, &destination, &size, memory,
+                            &source, 0, &blend, ULW_ALPHA);
+        SelectObject(memory, old);
+        DeleteObject(dib);
     }
-    std::memcpy(bits, layered.data(), layered.size());
-    HGDIOBJ oldBitmap = SelectObject(memory, bitmap);
-
-    const DWORD exStyle = WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
-    window_ = CreateWindowExW(exStyle, kClassName, L"HaloCap pin", WS_POPUP, screenX - contentLeft,
-                              screenY - contentTop, outerWidth, outerHeight, nullptr, nullptr,
-                              GetModuleHandleW(nullptr), this);
-    if (window_ == nullptr) {
-        SelectObject(memory, oldBitmap);
-        DeleteObject(bitmap);
-        DeleteDC(memory);
-        ReleaseDC(nullptr, screen);
-        return false;
-    }
-
-    POINT destination{ screenX - contentLeft, screenY - contentTop };
-    SIZE size{ outerWidth, outerHeight };
-    POINT sourcePoint{ 0, 0 };
-    BLENDFUNCTION blend{};
-    blend.BlendOp = AC_SRC_OVER;
-    blend.SourceConstantAlpha = 255;
-    blend.AlphaFormat = AC_SRC_ALPHA;
-    UpdateLayeredWindow(static_cast<HWND>(window_), screen, &destination, &size, memory, &sourcePoint, 0,
-                        &blend, ULW_ALPHA);
-
-    SelectObject(memory, oldBitmap);
-    DeleteObject(bitmap);
     DeleteDC(memory);
     ReleaseDC(nullptr, screen);
+}
 
-    ShowWindow(static_cast<HWND>(window_), SW_SHOWNOACTIVATE);
-    contentWidth_ = width;
-    contentHeight_ = height;
-    return true;
+int PinWindow::ButtonAt(POINT client) const {
+    const int x = client.x - (kGlowPx + kBorderPx);
+    const int y = client.y - (kGlowPx + kBorderPx);
+    const auto inside = [&](const RECT& rect) {
+        return x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom;
+    };
+    if (inside(copyRect_)) {
+        return 0;
+    }
+    if (inside(saveRect_)) {
+        return 1;
+    }
+    if (inside(closeRect_)) {
+        return 2;
+    }
+    return -1;
 }
 
 void PinWindow::Close() {
@@ -180,7 +287,6 @@ LRESULT CALLBACK PinWindow::WndProc(HWND window, UINT message, WPARAM wParam, LP
             self->window_ = window;
         }
     }
-
     if (self != nullptr) {
         return self->Handle(window, message, wParam, lParam);
     }
@@ -189,7 +295,65 @@ LRESULT CALLBACK PinWindow::WndProc(HWND window, UINT message, WPARAM wParam, LP
 
 LRESULT PinWindow::Handle(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
+    case WM_MOUSEMOVE: {
+        const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        if (!trackingLeave_) {
+            TRACKMOUSEEVENT track{};
+            track.cbSize = sizeof(track);
+            track.dwFlags = TME_LEAVE;
+            track.hwndTrack = window;
+            TrackMouseEvent(&track);
+            trackingLeave_ = true;
+        }
+        const bool hover = ButtonAt(point) >= 0 ||
+                           (point.x >= kGlowPx + kBorderPx &&
+                            point.x < kGlowPx + kBorderPx + contentWidth_ &&
+                            point.y >= kGlowPx + kBorderPx &&
+                            point.y < kGlowPx + kBorderPx + contentHeight_);
+        if (hover != hover_) {
+            hover_ = hover;
+            Render();
+        }
+        if (dragging_) {
+            POINT cursor{};
+            GetCursorPos(&cursor);
+            const int x = dragWindow_.x + (cursor.x - dragOrigin_.x);
+            const int y = dragWindow_.y + (cursor.y - dragOrigin_.y);
+            SetWindowPos(window, HWND_TOPMOST, x, y, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
+        }
+        return 0;
+    }
+
+    case WM_MOUSELEAVE:
+        trackingLeave_ = false;
+        if (hover_) {
+            hover_ = false;
+            Render();
+        }
+        return 0;
+
     case WM_LBUTTONDOWN: {
+        const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        const int button = ButtonAt(point);
+        if (button == 2) {
+            Close();
+            return 0;
+        }
+        if (button == 0) {
+            halocap::platform::win32::CopyBgraToClipboard(window, content_.data(), contentWidth_,
+                                                          contentHeight_, contentWidth_ * 4);
+            return 0;
+        }
+        if (button == 1) {
+            const std::wstring directory = SaveDirectory();
+            std::error_code error;
+            std::filesystem::create_directories(std::filesystem::path(directory), error);
+            const std::wstring path = directory + L"\\" + TimestampName() + L".png";
+            halocap::platform::win32::SaveBgraPng(path, content_.data(), contentWidth_,
+                                                  contentHeight_, contentWidth_ * 4);
+            return 0;
+        }
+
         dragging_ = true;
         GetCursorPos(&dragOrigin_);
         RECT rect{};
@@ -199,17 +363,6 @@ LRESULT PinWindow::Handle(HWND window, UINT message, WPARAM wParam, LPARAM lPara
         return 0;
     }
 
-    case WM_MOUSEMOVE:
-        if (dragging_) {
-            POINT cursor{};
-            GetCursorPos(&cursor);
-            const int x = dragWindow_.x + (cursor.x - dragOrigin_.x);
-            const int y = dragWindow_.y + (cursor.y - dragOrigin_.y);
-            SetWindowPos(window, HWND_TOPMOST, x, y, 0, 0,
-                         SWP_NOSIZE | SWP_NOACTIVATE);
-        }
-        return 0;
-
     case WM_LBUTTONUP:
         if (dragging_) {
             dragging_ = false;
@@ -218,7 +371,6 @@ LRESULT PinWindow::Handle(HWND window, UINT message, WPARAM wParam, LPARAM lPara
         return 0;
 
     case WM_LBUTTONDBLCLK:
-        // 双击关闭（1.x 是悬停出现关闭按钮；分层窗口上先给一个不必瞄准的手势）。
         Close();
         return 0;
 

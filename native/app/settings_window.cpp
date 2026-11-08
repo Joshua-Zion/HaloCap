@@ -44,6 +44,44 @@ std::wstring GetText(HWND control) {
 
 }  // namespace
 
+namespace {
+
+SettingsWindow* g_hotkeyOwner = nullptr;
+int g_hotkeyIndex = -1;
+HHOOK g_hotkeyHook = nullptr;
+
+core::KeySymbol KeyFromVirtualKey(DWORD vk) {
+    if (vk >= 'A' && vk <= 'Z') {
+        return static_cast<core::KeySymbol>(static_cast<int>(core::KeySymbol::A) + (vk - 'A'));
+    }
+    if (vk >= '0' && vk <= '9') {
+        return static_cast<core::KeySymbol>(static_cast<int>(core::KeySymbol::Num0) + (vk - '0'));
+    }
+    if (vk >= VK_F1 && vk <= VK_F24) {
+        return static_cast<core::KeySymbol>(static_cast<int>(core::KeySymbol::F1) + (vk - VK_F1));
+    }
+    switch (vk) {
+    case VK_ESCAPE: return core::KeySymbol::Escape;
+    case VK_RETURN: return core::KeySymbol::Enter;
+    case VK_SPACE: return core::KeySymbol::Space;
+    case VK_TAB: return core::KeySymbol::Tab;
+    case VK_BACK: return core::KeySymbol::Backspace;
+    case VK_INSERT: return core::KeySymbol::Insert;
+    case VK_DELETE: return core::KeySymbol::Delete;
+    case VK_HOME: return core::KeySymbol::Home;
+    case VK_END: return core::KeySymbol::End;
+    case VK_PRIOR: return core::KeySymbol::PageUp;
+    case VK_NEXT: return core::KeySymbol::PageDown;
+    case VK_UP: return core::KeySymbol::Up;
+    case VK_DOWN: return core::KeySymbol::Down;
+    case VK_LEFT: return core::KeySymbol::Left;
+    case VK_RIGHT: return core::KeySymbol::Right;
+    case VK_SNAPSHOT: return core::KeySymbol::PrintScreen;
+    default: return core::KeySymbol::None;
+    }
+}
+
+}  // namespace
 SettingsWindow::SettingsWindow() = default;
 
 SettingsWindow::~SettingsWindow() { Close(); }
@@ -235,13 +273,21 @@ bool SettingsWindow::Create(void* owner, const core::AppSettings& settings,
         { L"圆盘", &settings_.radialHotkey },
     };
     int hotkeyY = 20;
-    for (const auto& hotkey : hotkeys) {
-        AddLabel(Page::Hotkeys, x, hotkeyY, 560,
-                 std::wstring(hotkey.name) + L"：" +
-                     Utf8ToWide(core::FormatHotkeyText(*hotkey.spec)));
-        hotkeyY += 32;
+    for (int i = 0; i < 5; ++i) {
+        AddLabel(Page::Hotkeys, x, hotkeyY, 56, hotkeys[i].name);
+        hotkeyValues_[i] = AddLabel(Page::Hotkeys, x + 64, hotkeyY, 210,
+                                    Utf8ToWide(core::FormatHotkeyText(*hotkeys[i].spec)));
+        HWND button = CreateWindowExW(0, L"BUTTON", L"设置",
+                                      WS_CHILD | BS_PUSHBUTTON, x + 286, hotkeyY, 64, 24,
+                                      window_, reinterpret_cast<HMENU>(300 + i),
+                                      GetModuleHandleW(nullptr), nullptr);
+        SendMessageW(button, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
+        controls_.push_back({ button, Page::Hotkeys });
+        ShowWindow(button, SW_HIDE);
+        hotkeyButtons_[i] = button;
+        hotkeyY += 34;
     }
-    AddLabel(Page::Hotkeys, x, hotkeyY + 12, 560, L"热键捕获与冲突提示在下一轮接。");
+    AddLabel(Page::Hotkeys, x, hotkeyY + 10, 560, L"点「设置」后按下新的组合键；Esc 取消。");
 
     // ---- 外观 ----
     AddLabel(Page::Appearance, x, 20, labelWidth, L"托盘菜单尺寸");
@@ -362,7 +408,109 @@ void SettingsWindow::Save() {
     }
 }
 
+void SettingsWindow::StartHotkeyCapture(int index) {
+    if (index < 0 || index >= 5) {
+        return;
+    }
+    if (g_hotkeyHook != nullptr) {
+        UnhookWindowsHookEx(g_hotkeyHook);
+        g_hotkeyHook = nullptr;
+    }
+    captureIndex_ = index;
+    g_hotkeyOwner = this;
+    g_hotkeyIndex = index;
+    if (hotkeyValues_[index] != nullptr) {
+        SetWindowTextW(hotkeyValues_[index], L"按下新的组合键…");
+    }
+    g_hotkeyHook = SetWindowsHookExW(WH_KEYBOARD_LL, &SettingsWindow::HotkeyHook,
+                                     GetModuleHandleW(nullptr), 0);
+}
+
+void SettingsWindow::FinishHotkeyCapture(const core::HotkeySpec& spec) {
+    if (captureIndex_ >= 0 && captureIndex_ < 5) {
+        switch (captureIndex_) {
+        case 0: settings_.screenshotHotkey = spec; break;
+        case 1: settings_.ocrHotkey = spec; break;
+        case 2: settings_.recordHotkey = spec; break;
+        case 3: settings_.pinHotkey = spec; break;
+        case 4: settings_.radialHotkey = spec; break;
+        default: break;
+        }
+    }
+    captureIndex_ = -1;
+    g_hotkeyOwner = nullptr;
+    g_hotkeyIndex = -1;
+    if (g_hotkeyHook != nullptr) {
+        UnhookWindowsHookEx(g_hotkeyHook);
+        g_hotkeyHook = nullptr;
+    }
+    RefreshHotkeyLabels();
+}
+
+void SettingsWindow::RefreshHotkeyLabels() {
+    const core::HotkeySpec* specs[5] = { &settings_.screenshotHotkey, &settings_.ocrHotkey,
+                                         &settings_.recordHotkey, &settings_.pinHotkey,
+                                         &settings_.radialHotkey };
+    for (int i = 0; i < 5; ++i) {
+        if (hotkeyValues_[i] != nullptr) {
+            SetWindowTextW(hotkeyValues_[i],
+                           Utf8ToWide(core::FormatHotkeyText(*specs[i])).c_str());
+        }
+    }
+}
+
+LRESULT CALLBACK SettingsWindow::HotkeyHook(int code, WPARAM wParam, LPARAM lParam) {
+    if (code < 0 || g_hotkeyOwner == nullptr) {
+        return CallNextHookEx(nullptr, code, wParam, lParam);
+    }
+    if (wParam != WM_KEYDOWN && wParam != WM_SYSKEYDOWN) {
+        return CallNextHookEx(nullptr, code, wParam, lParam);
+    }
+
+    const DWORD vk = reinterpret_cast<const KBDLLHOOKSTRUCT*>(lParam)->vkCode;
+    if (vk == VK_CONTROL || vk == VK_SHIFT || vk == VK_MENU || vk == VK_LWIN || vk == VK_RWIN) {
+        return 1;
+    }
+    if (vk == VK_ESCAPE) {
+        g_hotkeyOwner->captureIndex_ = -1;
+        g_hotkeyOwner->RefreshHotkeyLabels();
+        g_hotkeyOwner = nullptr;
+        if (g_hotkeyHook != nullptr) {
+            UnhookWindowsHookEx(g_hotkeyHook);
+            g_hotkeyHook = nullptr;
+        }
+        return 1;
+    }
+
+    core::HotkeySpec spec;
+    spec.key = KeyFromVirtualKey(vk);
+    if ((GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0) {
+        spec.modifiers |= core::kModControl;
+    }
+    if ((GetAsyncKeyState(VK_MENU) & 0x8000) != 0) {
+        spec.modifiers |= core::kModAlt;
+    }
+    if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0) {
+        spec.modifiers |= core::kModShift;
+    }
+    if (((GetAsyncKeyState(VK_LWIN) | GetAsyncKeyState(VK_RWIN)) & 0x8000) != 0) {
+        spec.modifiers |= core::kModWin;
+    }
+
+    if (spec.key == core::KeySymbol::None || !core::CheckHotkey(spec).valid) {
+        Beep(800, 60);
+        return 1;
+    }
+
+    g_hotkeyOwner->FinishHotkeyCapture(spec);
+    return 1;
+}
 void SettingsWindow::Close() {
+    if (g_hotkeyHook != nullptr) {
+        UnhookWindowsHookEx(g_hotkeyHook);
+        g_hotkeyHook = nullptr;
+    }
+    g_hotkeyOwner = nullptr;
     if (window_ != nullptr) {
         DestroyWindow(window_);
         window_ = nullptr;
@@ -504,6 +652,10 @@ LRESULT SettingsWindow::Handle(HWND window, UINT message, WPARAM wParam, LPARAM 
         if (LOWORD(wParam) == 100 && HIWORD(wParam) == LBN_SELCHANGE) {
             const int index = static_cast<int>(SendMessageW(list_, LB_GETCURSEL, 0, 0));
             ShowPage(static_cast<Page>(std::clamp(index, 0, 5)));
+            return 0;
+        }
+        if (LOWORD(wParam) >= 300 && LOWORD(wParam) <= 304) {
+            StartHotkeyCapture(static_cast<int>(LOWORD(wParam)) - 300);
             return 0;
         }
         if (LOWORD(wParam) == 200) {

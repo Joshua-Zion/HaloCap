@@ -47,6 +47,8 @@ private:
     HWND hint_ = nullptr;
     HWND previousButton_ = nullptr;
     HWND nextButton_ = nullptr;
+    HWND viewButton_ = nullptr;
+    bool showImage_ = true;
     HFONT font_ = nullptr;
     HBRUSH background_ = nullptr;
     HBRUSH cardBrush_ = nullptr;

@@ -1,6 +1,7 @@
-#pragma once
+﻿#pragma once
 
 #include <cstdint>
+#include <vector>
 #include <windows.h>
 
 namespace halocap::app {
@@ -33,6 +34,16 @@ private:
     void* window_ = nullptr;
     int contentWidth_ = 0;
     int contentHeight_ = 0;
+
+    void Render();
+    int ButtonAt(POINT client) const;   // 0 复制 / 1 保存 / 2 关闭 / -1 无
+
+    std::vector<std::uint8_t> content_;
+    bool hover_ = false;
+    bool trackingLeave_ = false;
+    RECT copyRect_{};
+    RECT saveRect_{};
+    RECT closeRect_{};
 
     bool dragging_ = false;
     POINT dragOrigin_{};

@@ -13,6 +13,7 @@ enable_testing()
 
 add_subdirectory(core)
 add_subdirectory(platform/win32)
+add_subdirectory(app)
 add_subdirectory(tools/frame_cost)
 add_subdirectory(tools/surface_probe)
 add_subdirectory(tools/capture_probe)

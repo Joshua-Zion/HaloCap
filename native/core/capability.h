@@ -136,4 +136,13 @@ constexpr std::int64_t kIdleTrimDelayMs = 1200;
 
 bool ShouldTrimAfterIdle(std::int64_t privateMemoryBytes);
 
+// §1.3 的空闲内存目标，也是 S1 的退出条件：托盘、设置、日志与覆盖层都起来之后，
+// 私有内存不该过 80 MB（此时还没有 OCR 与编码器）。
+//
+// 与上面那条 220 MB 不是一回事：220 MB 是「过线才回收」，80 MB 是「本来就不该过线」。
+// 这条阈值放在 core，是因为它要被 app 的自检当成可执行的断言，而不只是文档里的一句话。
+constexpr std::int64_t kIdleMemoryBudgetBytes = 80LL * 1024 * 1024;
+
+bool WithinIdleBudget(std::int64_t privateMemoryBytes);
+
 }

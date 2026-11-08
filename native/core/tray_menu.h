@@ -44,6 +44,9 @@ enum class TrayCommand : std::int32_t {
 
 bool IsTrayCommand(std::int32_t id);
 
+// 命令的稳定短名，日志与诊断用（"Screenshot" / "OpenRadial" …）。
+const char* TrayCommandName(TrayCommand command);
+
 // 托盘菜单的全部输入。这里没有「版本号」之外的界面细节：菜单项的文字、顺序、
 // 可用性与勾选状态都由 BuildTrayMenu 决定，平台只负责把它们画出来。
 struct TrayMenuState {

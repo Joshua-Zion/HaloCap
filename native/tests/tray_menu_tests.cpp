@@ -86,6 +86,22 @@ void TestActionTable() {
     CheckTrue(core::IsTrayCommand(1001), "the first command is in range");
     CheckTrue(core::IsTrayCommand(1009), "the last command is in range");
     CheckFalse(core::IsTrayCommand(1010), "1010 is out of range");
+
+    // 命令名是日志与诊断的稳定词，不能空、也不能是数字。
+    CheckText(core::TrayCommandName(core::TrayCommand::None), "None", "none name");
+    CheckText(core::TrayCommandName(core::TrayCommand::Screenshot), "Screenshot", "screenshot name");
+    CheckText(core::TrayCommandName(core::TrayCommand::Ocr), "Ocr", "ocr name");
+    CheckText(core::TrayCommandName(core::TrayCommand::Record), "Record", "record name");
+    CheckText(core::TrayCommandName(core::TrayCommand::Pin), "Pin", "pin name");
+    CheckText(core::TrayCommandName(core::TrayCommand::PauseRecording), "PauseRecording",
+              "pause name");
+    CheckText(core::TrayCommandName(core::TrayCommand::OpenRadial), "OpenRadial", "open name");
+    CheckText(core::TrayCommandName(core::TrayCommand::Settings), "Settings", "settings name");
+    CheckText(core::TrayCommandName(core::TrayCommand::ToggleAutoStart), "ToggleAutoStart",
+              "autostart name");
+    CheckText(core::TrayCommandName(core::TrayCommand::Exit), "Exit", "exit name");
+    CheckText(core::TrayCommandName(static_cast<core::TrayCommand>(1234)), "",
+              "an unknown command has no name");
 }
 
 void TestIdleMenu() {

@@ -2,7 +2,7 @@
 
 本目录属于 `2.0` 分支。设计依据见 [../docs/2.0-native-plan.md](../docs/2.0-native-plan.md)，分支约定见其 §10，工具链与构建前提见计划文档的「S1 的工具链」。
 
-当前状态：**S1 骨架可构建、十一套测试可跑、§3.3 规则三已做成机检；显示列表能离屏逐字节画对、能经 DirectComposition 真窗口上屏、也能自己按 60 fps 排帧数丢帧；桌面复制的 seam 与脏矩形拷贝已落地；H.264 编码这条管线跑通并且量过（GPU 侧 BGRA→NV12 + `IMFSinkWriter`）；WASAPI 的回环与麦克风两路也跑通并量过；全局热键、低级拦截与 IME 生命周期也跑通并量过；设置、日志、模型路径与系统能力（含 1.x 设置文件的只读导入）也跑通并量过；托盘菜单模型、点击与命令消息路径也跑通并量过**。还没有产品功能——托盘图标本身在这台机器上被沙箱挡住（Low 完整性令牌，见文末），图标上屏与气泡要在普通环境补跑一次；之后是组装（S2 起）。
+当前状态：**S1 完成**——八个 seam 全部落地，十一套测试全绿；[`app/`](app/main.cpp) 把设置、日志、托盘、热键与覆盖层组装成 `HaloCap.exe`，`--selftest` 量到空闲 2.3 MB、覆盖层预热后 62.5 MB（S1 的退出条件「空闲 ≤ 80 MB」，1080p / 1440p / 4K 分别 62.5 / 62.4 / 62.1 MB）。还没有产品功能：托盘命令与热键现在只记日志，截图 / 录屏 / OCR / 贴图从 S2 起接。三件环境项仍缺一次普通机器补跑：托盘图标、日志与设置写入被这个会话的 Low 完整性令牌挡住（见文末），复制权也仍被别的进程占着。
 
 一处环境阻塞要写清：本机现在对**任何**程序都拒绝 `DuplicateOutput`（`E_ACCESSDENIED`；今天早些时候还能跑出吞吐数字的 spike 2 工具现在同样被拒），所以 `ICaptureSource` 的端到端脏矩形量级数字还没拿到。拷贝逻辑本身不依赖复制权，已经单独验过（`rect_copy_test`）。
 
@@ -55,6 +55,8 @@ native/
   tools/tray_probe/     托盘验证：HMENU 与 core 模型逐项比对、点击/命令两条消息路径、图标与气泡
   tools/rect_copy_test/ 脏矩形拷贝的功能验证（进 CTest，不碰屏幕也不需要复制权）
   tests/      core 的单测（无第三方框架，十一个可执行 + CTest）
+  app/        组装根：DPI → 能力 → 设置 → 日志 → 托盘 → 热键 → 覆盖层 → 消息循环，
+              `--selftest` 量空闲内存并给出退出码
   build.cmd   vcvars → cmake configure → build → ctest
 ```
 
@@ -195,3 +197,28 @@ native> build\tools\tray_probe\tray_probe.exe
 3. **这台机器上图标加不上，原因不在代码**：工具启动的原生进程是 **Low 完整性令牌**（`PROBE_INTEGRITY=4096`，PowerShell 是 High `12288`；`PROBE_APPCONTAINER=0`）。UIPI 因此挡住发给 Shell 托盘窗口的消息，`Shell_NotifyIconW(NIM_ADD)` 返回 `ERROR_ACCESS_DENIED`——换系统自带图标也一样（`STOCK_ICON_ADDED=0`）。同一条限制也是 `store_probe` 写不进 `%APPDATA%`/`%TEMP%` 的根因。**「图标真的出现在托盘、气泡真的弹出」要在普通权限的机器上跑一次 `tray_probe` 才能结案**；菜单、提示文字与两条消息路径已经验过（120 项断言）。
 
 托盘在 core 里的规则全部来自 1.x 的 `TrayMenu.BuildMenu`：录制中只有「停止录制」与「暂停录制」可用，截图/OCR/贴图/打开光圈/设置/自启全灰；贴图还要求剪贴板里真有内容；「开机自启」是勾选项。提示文字是「正在录制 / 录制已暂停 / HaloCap · 热键 / HaloCap 光圈」四档，按 63 个 UTF-16 码元截断且不切开代理对（1.x 按 `string.Length` 截，表情会留半个字）。
+
+## app：S1 的组装与自检
+
+```
+native> build\app\HaloCap.exe                              正常起（待着；托盘菜单退出）
+native> build\app\HaloCap.exe --selftest                   起来 → 量空闲 → 建覆盖层 → 再量 → 退出
+native> build\app\HaloCap.exe --selftest --overlay-size 3840x2160
+native> build\app\HaloCap.exe --selftest --report out.txt  写进文件（explorer / 计划任务启动时没有控制台）
+native> build\app\HaloCap.exe --selftest --no-tray --no-input --no-overlay   归因用
+```
+
+组装顺序就是 S1 的清单：`SetProcessDpiAwarenessContext` → 能力探测（`OS_BUILD` / `WGC`）→ 设置（`LoadSettingsFrom`，首次运行写默认值）→ 日志（`AppendLogLine` + 启动时 `PruneLogs`）→ 托盘（`Win32Tray`，菜单状态来自 `core::TrayMenuState`）→ 热键（五把，token 1–5）→ 覆盖层（窗口 + D2D/DComp + 字体栅格；正常模式预热，避免第一次截图闪一下）→ 消息循环（30 ms 一醒，轮询热键与托盘点击）。托盘命令与热键现在只记日志，动作在 S3/S4 接；单实例是命名 mutex，`--selftest` 跳过它以便连跑。
+
+本机实测（`APP_SELFTEST=OK`，退出码 0，1920×1080 桌面）：
+
+| 场景 | 私有内存 | 工作集 |
+| --- | --- | --- |
+| idle：托盘 + 热键 + 设置 + 日志，覆盖层未建 | 2.3 MB | 16.0 MB |
+| 覆盖层挂上（窗口 + 合成链 + 一页文本图集），未 Present | **62.5 MB**（1440p 62.4、4K 62.1） | 45.9 MB |
+
+三条读数（推导与对照见计划文档 §5.1「S1 的组装与空闲内存」）：
+
+1. **两条口径都过 80 MB**：idle 2.3 MB、覆盖层预热后 62.5 MB。S1 的退出条件成立。
+2. **私有内存不随覆盖层尺寸变化**：1080p→4K 只差 0.4 MB——后缓冲在这块账上不计（本机是 GPU/驱动侧分配）。换成工作集或显存口径要另算，那是 S3 覆盖层的成本，不在 S1 的 idle 判据里；`surface_probe` 在同一次会话里仍给出 60 fps 的 120/120、比值 1.0000。
+3. **idle 的 2.3 MB 是下界**：本会话托盘图标、日志写入与设置保存都被 Low 完整性令牌挡住，真实机器上这几项只会再加几 MB。

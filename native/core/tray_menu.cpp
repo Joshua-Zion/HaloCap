@@ -78,6 +78,22 @@ bool IsTrayCommand(std::int32_t id) {
            id <= static_cast<std::int32_t>(TrayCommand::Exit);
 }
 
+const char* TrayCommandName(TrayCommand command) {
+    switch (command) {
+    case TrayCommand::None: return "None";
+    case TrayCommand::Screenshot: return "Screenshot";
+    case TrayCommand::Ocr: return "Ocr";
+    case TrayCommand::Record: return "Record";
+    case TrayCommand::Pin: return "Pin";
+    case TrayCommand::PauseRecording: return "PauseRecording";
+    case TrayCommand::OpenRadial: return "OpenRadial";
+    case TrayCommand::Settings: return "Settings";
+    case TrayCommand::ToggleAutoStart: return "ToggleAutoStart";
+    case TrayCommand::Exit: return "Exit";
+    }
+    return "";
+}
+
 std::vector<TrayMenuItem> BuildTrayMenu(const TrayMenuState& state) {
     std::vector<TrayMenuItem> items;
     items.reserve(12);

@@ -184,4 +184,8 @@ bool ShouldTrimAfterIdle(std::int64_t privateMemoryBytes) {
     return privateMemoryBytes >= kIdleTrimThresholdBytes;
 }
 
+bool WithinIdleBudget(std::int64_t privateMemoryBytes) {
+    return privateMemoryBytes <= kIdleMemoryBudgetBytes;
+}
+
 }

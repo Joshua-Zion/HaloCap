@@ -239,6 +239,17 @@ void TestIdleTrim() {
     CheckEqual(core::kIdleTrimDelayMs, 1200, "the idle trim waits 1.2 s after activity");
 }
 
+void TestIdleBudget() {
+    // 80 MB 是 S1 的退出条件，不是回收线：两条阈值的边界方向也不同。
+    CheckEqual(core::kIdleMemoryBudgetBytes, 80LL * 1024 * 1024, "the S1 idle budget is 80 MiB");
+    CheckTrue(core::WithinIdleBudget(0), "zero memory is within budget");
+    CheckTrue(core::WithinIdleBudget(core::kIdleMemoryBudgetBytes), "exactly 80 MB is within budget");
+    CheckTrue(!core::WithinIdleBudget(core::kIdleMemoryBudgetBytes + 1),
+              "one byte over the budget fails");
+    CheckTrue(!core::WithinIdleBudget(core::kIdleTrimThresholdBytes),
+              "the trim line is far outside the budget");
+}
+
 }
 
 int main() {
@@ -249,6 +260,7 @@ int main() {
     TestLogPruning();
     TestDiskFloor();
     TestIdleTrim();
+    TestIdleBudget();
 
     if (failures != 0) {
         std::printf("CAPABILITY_POLICY_TESTS=FAILED %d/%d\n", failures, checks);

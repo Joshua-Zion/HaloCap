@@ -8,6 +8,7 @@ add_library(halocap_core STATIC
     settings_policy.cpp
     store_policy.cpp
     capability_policy.cpp
+    tray_menu.cpp
 )
 
 target_include_directories(halocap_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

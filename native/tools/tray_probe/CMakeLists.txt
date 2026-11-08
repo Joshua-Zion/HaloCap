@@ -1,0 +1,2 @@
+add_executable(tray_probe main.cpp)
+target_link_libraries(tray_probe PRIVATE halocap_platform_win32)

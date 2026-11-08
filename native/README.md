@@ -2,7 +2,7 @@
 
 本目录属于 `2.0` 分支。设计依据见 [../docs/2.0-native-plan.md](../docs/2.0-native-plan.md)，分支约定见其 §10，工具链与构建前提见计划文档的「S1 的工具链」。
 
-当前状态：**S1 骨架可构建、十套测试可跑、§3.3 规则三已做成机检；显示列表能离屏逐字节画对、能经 DirectComposition 真窗口上屏、也能自己按 60 fps 排帧数丢帧；桌面复制的 seam 与脏矩形拷贝已落地；H.264 编码这条管线跑通并且量过（GPU 侧 BGRA→NV12 + `IMFSinkWriter`）；WASAPI 的回环与麦克风两路也跑通并量过；全局热键、低级拦截与 IME 生命周期也跑通并量过；设置、日志、模型路径与系统能力（含 1.x 设置文件的只读导入）也跑通并量过**。还没有产品功能——S1 剩下的最后一件是托盘，然后是组装。
+当前状态：**S1 骨架可构建、十一套测试可跑、§3.3 规则三已做成机检；显示列表能离屏逐字节画对、能经 DirectComposition 真窗口上屏、也能自己按 60 fps 排帧数丢帧；桌面复制的 seam 与脏矩形拷贝已落地；H.264 编码这条管线跑通并且量过（GPU 侧 BGRA→NV12 + `IMFSinkWriter`）；WASAPI 的回环与麦克风两路也跑通并量过；全局热键、低级拦截与 IME 生命周期也跑通并量过；设置、日志、模型路径与系统能力（含 1.x 设置文件的只读导入）也跑通并量过；托盘菜单模型、点击与命令消息路径也跑通并量过**。还没有产品功能——托盘图标本身在这台机器上被沙箱挡住（Low 完整性令牌，见文末），图标上屏与气泡要在普通环境补跑一次；之后是组装（S2 起）。
 
 一处环境阻塞要写清：本机现在对**任何**程序都拒绝 `DuplicateOutput`（`E_ACCESSDENIED`；今天早些时候还能跑出吞吐数字的 spike 2 工具现在同样被拒），所以 `ICaptureSource` 的端到端脏矩形量级数字还没拿到。拷贝逻辑本身不依赖复制权，已经单独验过（`rect_copy_test`）。
 
@@ -30,6 +30,8 @@ native/
                         以及「文件不存在 / 读不出 / 坏内容」三者的分开处理
     capability.h        ICapability 的 core 半边：系统下限、日志规则（8 MiB×6 份×14 天）、
                         磁盘下限、空闲回收线、特性开关；平台只汇报事实
+    tray_menu.h         托盘与圆盘共用：AppAction 四项、菜单项/可用性/勾选规则、
+                        提示文字与 63 个 UTF-16 码元的截断
     frame_scheduler.h   帧节奏与丢帧口径：BeginFrame / EndFrame / Stats，时钟由调用方注入微秒
   platform/win32/
     d2d_render_backend.h/.cpp      Direct2D 1.1（ID2D1Device + ID2D1DeviceContext）+ 合成链呈现
@@ -42,6 +44,7 @@ native/
     win32_input_host.h/.cpp            message-only 窗口 + RegisterHotKey + WH_KEYBOARD_LL + ImmAssociateContext
     win32_store.h/.cpp                 IStore：%APPDATA%\HaloCap2、.tmp + MoveFileExW 原子替换、日志目录
     win32_capability.h/.cpp            ICapability：RtlGetVersion + WGC 探测 + 私有内存 + 卷剩余空间
+    win32_tray.h/.cpp                  托盘：Shell_NotifyIcon + 标准 HMENU + CreateIconIndirect 画的「光圈」
   tools/frame_cost/     覆盖层帧成本测量（与 spike 3 同口径，离屏、不上屏）
   tools/surface_probe/  上屏链路验证：A/B 抓屏证「看得见」+ 60 fps 排帧数丢帧
   tools/capture_probe/  采集链路统计：应有/实取、仅鼠标唤醒、脏像素之比、每帧 CPU 与内存
@@ -49,8 +52,9 @@ native/
   tools/audio_probe/    音频链路验证：端点形状、静音时出不出包、Initialize 时序矩阵、借还契约
   tools/input_probe/    输入链路验证：热键投递、两个钩子链量拦截是否真生效、IME 断开恢复、错误分类
   tools/store_probe/    设置链路验证：真实路径、原子替换、日志分份、只读导入 1.x 设置、能力读数
+  tools/tray_probe/     托盘验证：HMENU 与 core 模型逐项比对、点击/命令两条消息路径、图标与气泡
   tools/rect_copy_test/ 脏矩形拷贝的功能验证（进 CTest，不碰屏幕也不需要复制权）
-  tests/      core 的单测（无第三方框架，十个可执行 + CTest）
+  tests/      core 的单测（无第三方框架，十一个可执行 + CTest）
   build.cmd   vcvars → cmake configure → build → ctest
 ```
 
@@ -174,4 +178,20 @@ native> build\tools\store_probe\store_probe.exe
 
 1. **1.x 的 `recording` 里有四个只读派生字段**（`framesPerSecond`、`countdownSeconds`、`audioBitrateValue`、`wantsAudio`），不是两个。少登记两个的后果是每次导入都多两条「多余的键」假警报——这条只有真读本机文件才会暴露。
 2. **`ResolveOutputSize` 与 1.x 有一处故意不同**：比值恰好落在奇数整数上时（6×864 → P720 得 5），1.x 会把奇数宽度交给编码器，而 2.0 的 `OpenVideo` 拒收奇数（NV12 的 4:2:0 划分不允许）。2.0 对宽度再取一次偶（5→4），1 像素换「录制能开始」。
-3. **写不进 `%APPDATA%` / `%TEMP%` 时探针不判 FAIL**：本会话的文件策略只允许写工作区，`store_probe` 往这两个位置写会被拒（同一时刻 `cmd` 与 PowerShell 反而能写，所以不是代码问题）。临时根写不进去会退到 exe 旁边的目录（`TEMP_ROOT_SOURCE=exe-dir`），真实日志目录写不进去打 `LOG_WRITE=blocked kind=denied` 并跳过那两条断言——与采集探针遇到「复制权被占用」同一条处理原则。**「真实 `%APPDATA%\HaloCap2` 可写」这一条因此本机还没证到**，换一台没有沙箱的机器跑一次即可结案。
+3. **写不进 `%APPDATA%` / `%TEMP%` 时探针不判 FAIL**：工具启动的原生进程是 **Low 完整性令牌**（`PROBE_INTEGRITY=4096`，PowerShell 是 High `12288`），写不上 Medium 的对象，所以这两个位置会 `ERROR_ACCESS_DENIED`——不是代码问题（托盘探针量出的就是这条根因）。临时根写不进去会退到 exe 旁边的目录（`TEMP_ROOT_SOURCE=exe-dir`），真实日志目录写不进去打 `LOG_WRITE=blocked kind=denied` 并跳过那两条断言——与采集探针遇到「复制权被占用」同一条处理原则。**「真实 `%APPDATA%\HaloCap2` 可写」这一条因此本机还没证到**，换一台没有这个限制的机器跑一次即可结案。
+
+托盘链路（会在托盘里短暂出现一个「光圈」图标，跑完即摘；没有 Shell 时跳过图标相关的两条）：
+
+```
+native> build\tools\tray_probe\tray_probe.exe
+```
+
+`TRAY_PROBE=OK` 的判据分两半：**不需要 Shell 的那半**把菜单模型建成真的 `HMENU` 再逐项读回来，与 `core::BuildTrayMenu` 比对命令 id、文字、快捷键列、可用、勾选、分隔（空闲 11 行、录制 12 行），并验托盘点击与 `WM_COMMAND` 两条消息路径；**需要 Shell 的那半**是图标真被加上、通知被接受。
+
+三条必须记在实现旁边的结论（细节与推导在计划文档 §5.1「S1 的托盘」）：
+
+1. **托盘宿主不能用 message-only 窗口**。`TaskbarCreated` 是广播消息，message-only 窗口收不到，资源管理器重启之后图标就再也回不来。宿主是 `WS_POPUP | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE` 的隐藏顶层窗口，收到广播后重新 `NIM_ADD`。
+2. **标准 `HMENU` 是与 1.x 唯一故意的差别**。1.x 的托盘菜单是自绘 WPF `ContextMenu`（圆角、图标、彩色动作），视觉等价要等 UI 那一轮；菜单项、顺序、可用性、勾选与快捷键列是 1:1 的，且都有单测。系统菜单顺带给了 Esc 收起、点别处收起、键盘导航与高 DPI。
+3. **这台机器上图标加不上，原因不在代码**：工具启动的原生进程是 **Low 完整性令牌**（`PROBE_INTEGRITY=4096`，PowerShell 是 High `12288`；`PROBE_APPCONTAINER=0`）。UIPI 因此挡住发给 Shell 托盘窗口的消息，`Shell_NotifyIconW(NIM_ADD)` 返回 `ERROR_ACCESS_DENIED`——换系统自带图标也一样（`STOCK_ICON_ADDED=0`）。同一条限制也是 `store_probe` 写不进 `%APPDATA%`/`%TEMP%` 的根因。**「图标真的出现在托盘、气泡真的弹出」要在普通权限的机器上跑一次 `tray_probe` 才能结案**；菜单、提示文字与两条消息路径已经验过（120 项断言）。
+
+托盘在 core 里的规则全部来自 1.x 的 `TrayMenu.BuildMenu`：录制中只有「停止录制」与「暂停录制」可用，截图/OCR/贴图/打开光圈/设置/自启全灰；贴图还要求剪贴板里真有内容；「开机自启」是勾选项。提示文字是「正在录制 / 录制已暂停 / HaloCap · 热键 / HaloCap 光圈」四档，按 63 个 UTF-16 码元截断且不切开代理对（1.x 按 `string.Length` 截，表情会留半个字）。

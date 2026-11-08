@@ -9,6 +9,7 @@ add_library(halocap_platform_win32 STATIC
     win32_input_host.cpp
     win32_store.cpp
     win32_capability.cpp
+    win32_tray.cpp
 )
 
 target_include_directories(halocap_platform_win32 PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

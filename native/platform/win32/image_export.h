@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <cstdint>
 #include <string>
@@ -11,6 +11,10 @@ namespace halocap::platform::win32 {
 // 编码走 WIC：PNG 是 1.x 的默认截图格式，而 WIC 是系统自带、不需要第三方库。
 bool SaveBgraPng(const std::wstring& path, const std::uint8_t* bgra, int width, int height,
                  int stride);
+
+// 同一份 BGRA 也可以写 JPEG（设置里的截图格式）；quality 1..100。
+bool SaveBgraJpeg(const std::wstring& path, const std::uint8_t* bgra, int width, int height,
+                  int stride, int quality);
 
 // owner 可以是 nullptr：没有窗口时 OpenClipboard(NULL) 一样可用。
 bool CopyBgraToClipboard(void* owner, const std::uint8_t* bgra, int width, int height, int stride);

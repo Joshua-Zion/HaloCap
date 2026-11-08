@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "display_list.h"
 #include "font_rasterizer.h"
@@ -107,6 +107,10 @@ struct AnnotationPlanOptions {
 
     // DIP → 像素的缩放。选区是 1:1 时是 1.0；预览缩放时由调用方给。
     float scale = 1.0f;
+
+    // 选区局部坐标 → 目标坐标的平移。覆盖层上标注点存的是选区局部坐标，
+    // 画到整屏时要加上选区原点；导出到选区大小的目标时是 (0,0)。
+    Point origin{};
 };
 
 void AppendAnnotationPlan(const std::vector<Annotation>& annotations,
@@ -142,6 +146,8 @@ public:
 
     bool Undo();
     bool Redo();
+    bool CanUndo() const { return cursor_ > 0; }
+    bool CanRedo() const { return cursor_ + 1 < history_.size(); }
     void Clear();
 
     const std::vector<Annotation>& Items() const { return items_; }

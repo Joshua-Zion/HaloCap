@@ -1,10 +1,11 @@
-#include "image_export.h"
+﻿#include "image_export.h"
 
 #include <windows.h>
 
 #include <wincodec.h>
 #include <wrl/client.h>
 
+#include <algorithm>
 #include <cstring>
 #include <vector>
 
@@ -71,6 +72,61 @@ bool SaveBgraPng(const std::wstring& path, const std::uint8_t* bgra, int width, 
         return false;
     }
     if (FAILED(frame->Commit())) {
+        return false;
+    }
+    return SUCCEEDED(encoder->Commit());
+}
+
+bool SaveBgraJpeg(const std::wstring& path, const std::uint8_t* bgra, int width, int height,
+                  int stride, int quality) {
+    if (path.empty() || bgra == nullptr || width <= 0 || height <= 0 || stride < width * 4) {
+        return false;
+    }
+
+    Microsoft::WRL::ComPtr<IWICImagingFactory> factory;
+    if (!CreateImagingFactory(factory.GetAddressOf())) {
+        return false;
+    }
+
+    Microsoft::WRL::ComPtr<IWICStream> stream;
+    if (FAILED(factory->CreateStream(&stream)) ||
+        FAILED(stream->InitializeFromFilename(path.c_str(), GENERIC_WRITE))) {
+        return false;
+    }
+
+    Microsoft::WRL::ComPtr<IWICBitmapEncoder> encoder;
+    if (FAILED(factory->CreateEncoder(GUID_ContainerFormatJpeg, nullptr, &encoder)) ||
+        FAILED(encoder->Initialize(stream.Get(), WICBitmapEncoderNoCache))) {
+        return false;
+    }
+
+    Microsoft::WRL::ComPtr<IWICBitmapFrameEncode> frame;
+    Microsoft::WRL::ComPtr<IPropertyBag2> options;
+    if (FAILED(encoder->CreateNewFrame(&frame, &options))) {
+        return false;
+    }
+    if (options != nullptr) {
+        PROPBAG2 bag{};
+        bag.pstrName = const_cast<LPOLESTR>(L"ImageQuality");
+        VARIANT value{};
+        value.vt = VT_R4;
+        value.fltVal = static_cast<float>(std::clamp(quality, 1, 100)) / 100.0f;
+        options->Write(1, &bag, &value);
+    }
+    if (FAILED(frame->Initialize(options.Get())) ||
+        FAILED(frame->SetSize(static_cast<UINT>(width), static_cast<UINT>(height)))) {
+        return false;
+    }
+
+    Microsoft::WRL::ComPtr<IWICBitmap> bitmap;
+    if (FAILED(factory->CreateBitmapFromMemory(
+            static_cast<UINT>(width), static_cast<UINT>(height), GUID_WICPixelFormat32bppBGRA,
+            static_cast<UINT>(stride), static_cast<UINT>(stride) * height,
+            const_cast<BYTE*>(bgra), &bitmap))) {
+        return false;
+    }
+
+    if (FAILED(frame->WriteSource(bitmap.Get(), nullptr)) || FAILED(frame->Commit())) {
         return false;
     }
     return SUCCEEDED(encoder->Commit());

@@ -12,6 +12,7 @@ add_library(halocap_platform_win32 STATIC
     win32_tray.cpp
     win32_wgc_capture.cpp
     image_export.cpp
+    desktop_grab.cpp
 )
 
 target_include_directories(halocap_platform_win32 PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

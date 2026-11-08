@@ -25,6 +25,7 @@ ATOM Win32SurfaceWindow::RegisterClass() {
 }
 
 Win32SurfaceWindow::~Win32SurfaceWindow() {
+    handler_ = nullptr;
     if (hwnd_ != nullptr) {
         DestroyWindow(hwnd_);
         hwnd_ = nullptr;
@@ -69,6 +70,11 @@ bool Win32SurfaceWindow::Create(const core::WindowBounds& bounds, const core::Wi
         return false;
     }
 
+    // Subclass the HWND so the overlay can receive mouse and toolbar messages.
+    // The class procedure stays DefWindowProc; instance lookup goes through GWLP_USERDATA.
+    SetWindowLongPtrW(hwnd_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
+    SetWindowLongPtrW(hwnd_, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&Win32SurfaceWindow::WndProc));
+
     bounds_ = bounds;
     SetVisible(options.visible);
     return true;
@@ -87,6 +93,19 @@ bool Win32SurfaceWindow::SetBounds(const core::WindowBounds& bounds) {
 
     bounds_ = bounds;
     return true;
+}
+
+void Win32SurfaceWindow::SetMessageHandler(MessageHandler handler) {
+    handler_ = std::move(handler);
+}
+
+LRESULT CALLBACK Win32SurfaceWindow::WndProc(HWND window, UINT message, WPARAM wParam,
+                                             LPARAM lParam) {
+    auto* self = reinterpret_cast<Win32SurfaceWindow*>(GetWindowLongPtrW(window, GWLP_USERDATA));
+    if (self != nullptr && self->handler_) {
+        return self->handler_(window, message, wParam, lParam);
+    }
+    return DefWindowProcW(window, message, wParam, lParam);
 }
 
 void Win32SurfaceWindow::SetVisible(bool visible) {

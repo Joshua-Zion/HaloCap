@@ -1,4 +1,4 @@
-﻿// S1 的组装：把 8 个 seam 接成一个能起来、能待着、能自己报出空闲内存的进程。
+// S1 的组装：把 8 个 seam 接成一个能起来、能待着、能自己报出空闲内存的进程。
 //
 // 这一版刻意只做 S1 的骨架：设置、日志、托盘、热键、覆盖层窗口与渲染后端就绪，消息循环待着；
 // 托盘菜单与热键只记录「收到了什么动作」——真正的截图/录屏/OCR/贴图在 S3/S4 才接。
@@ -26,6 +26,8 @@
 #include "d2d_render_backend.h"
 #include "dxgi_desktop_duplication.h"
 #include "mf_h264_encoder.h"
+#include "pin_window.h"
+#include "screenshot_overlay.h"
 #include "wasapi_audio_source.h"
 #include "win32_capability.h"
 #include "win32_input_host.h"
@@ -86,6 +88,9 @@ struct Options {
 
     // >0 = 启动后立刻录这么多秒，然后退出。无人值守的端到端自检入口。
     int recordSeconds = 0;
+
+    // 非空 = 无人值守的截图自检：开覆盖层 → 摆选区 → 标注 → 存 PNG + 贴图 → 退出。
+    std::wstring screenshotSelftestPath;
 };
 
 std::wstring Utf8ToWide(std::string_view text) {
@@ -276,6 +281,8 @@ Options ParseOptions(int argc, char** argv) {
             if (options.recordSeconds < 0) {
                 options.recordSeconds = 0;
             }
+        } else if (argument == "--screenshot-selftest" && i + 1 < argc) {
+            options.screenshotSelftestPath = Utf8ToWide(argv[++i]);
         } else if (argument == "--no-tray") {
             options.tray = false;
         } else if (argument == "--no-input") {
@@ -294,6 +301,7 @@ void PrintUsage() {
         "HaloCap (2.0 native skeleton)\n"
         "  --selftest [--seconds N] [--report PATH]\n"
         "  --record-seconds N    record N seconds, then exit (unattended check)\n"
+        "  --screenshot-selftest PATH  open the screenshot overlay, annotate, export, exit\n"
         "  --overlay-size 1920x1080\n"
         "  --no-tray | --no-input | --no-overlay\n");
 }
@@ -570,8 +578,8 @@ int Run(const Options& options) {
     trayState.ocrHotkey = core::FormatHotkeyText(settings.ocrHotkey);
     trayState.recordHotkey = core::FormatHotkeyText(settings.recordHotkey);
     trayState.pinHotkey = core::FormatHotkeyText(settings.pinHotkey);
-    // 剪贴板服务与开机自启服务还没接（S3/S4），这两项先按「不可用 / 未开启」呈现。
-    trayState.pinAvailable = false;
+    // 贴图已经接上；开机自启服务还没接（S4），先按「未开启」呈现。
+    trayState.pinAvailable = true;
     trayState.autoStart = false;
 
     Win32Tray tray;
@@ -755,6 +763,34 @@ int Run(const Options& options) {
         }
     }
 
+    // ---- 4) 截图覆盖层：热键/托盘按需打开，会话结束自动释放 ----
+    std::unique_ptr<halocap::app::ScreenshotOverlay> screenshotOverlay;
+    std::vector<std::unique_ptr<halocap::app::PinWindow>> pins;
+
+    const auto openScreenshot = [&]() {
+        if (screenshotOverlay != nullptr && screenshotOverlay->Active()) {
+            return;
+        }
+        screenshotOverlay = std::make_unique<halocap::app::ScreenshotOverlay>();
+        halocap::app::ScreenshotOverlayOptions overlayOptions;
+        overlayOptions.jpeg = settings.screenshotFormat == core::ScreenshotFormat::Jpeg;
+        overlayOptions.onPin = [&](const std::uint8_t* bgra, int width, int height, int x, int y) {
+            auto pin = std::make_unique<halocap::app::PinWindow>();
+            if (pin->Create(bgra, width, height, x, y)) {
+                pins.push_back(std::move(pin));
+            }
+        };
+
+        if (!screenshotOverlay->Open(overlayOptions)) {
+            log.Error(std::string("screenshot: overlay failed (") +
+                      screenshotOverlay->LastErrorKind() + ")");
+            screenshotOverlay.reset();
+            tray.Notify("HaloCap", "截图失败：无法获取屏幕");
+            return;
+        }
+        log.Info("screenshot: overlay opened");
+    };
+
     auto onAction = [&](core::TrayCommand command) {
         ++actions;
         if (command == core::TrayCommand::Exit) {
@@ -766,13 +802,107 @@ int Run(const Options& options) {
             toggleRecording();
             return;
         }
+        if (command == core::TrayCommand::Screenshot) {
+            openScreenshot();
+            return;
+        }
         if (command == core::TrayCommand::PauseRecording) {
             togglePause();
             return;
         }
         log.Info(std::string("action: ") + core::TrayCommandName(command) +
-                 " (behaviour lands in S3/S4)");
+                 " (behaviour lands in S4)");
     };
+
+    bool screenshotSelftestOk = true;
+    if (!options.screenshotSelftestPath.empty()) {
+        const std::int64_t openStartUs = QpcNowUs();
+        openScreenshot();
+        const double openMs = static_cast<double>(QpcNowUs() - openStartUs) / 1000.0;
+        if (screenshotOverlay == nullptr || !screenshotOverlay->Active()) {
+            screenshotSelftestOk = false;
+            log.Error("screenshot selftest: overlay did not open");
+        } else {
+            // 走真实的鼠标消息路径：拖选 + 画笔拖拽（默认工具就是画笔）。
+            HWND overlayWindow = static_cast<HWND>(screenshotOverlay->WindowHandle());
+            const auto sendMouse = [&](UINT message, int x, int y) {
+                SendMessageW(overlayWindow, message, 0, MAKELPARAM(x, y));
+            };
+            sendMouse(WM_MOUSEMOVE, 100, 100);
+            sendMouse(WM_LBUTTONDOWN, 100, 100);
+            sendMouse(WM_MOUSEMOVE, 700, 500);
+            sendMouse(WM_LBUTTONUP, 700, 500);
+            sendMouse(WM_LBUTTONDOWN, 160, 160);
+            for (int x = 170; x <= 420; x += 10) {
+                sendMouse(WM_MOUSEMOVE, x, 170);
+            }
+            sendMouse(WM_LBUTTONUP, 420, 170);
+
+            core::AnnotationStyle style;
+            style.color = core::annotation_defaults::PaletteColor(0);
+            style.thickness = 4.0f;
+            core::AnnotationDocument& document = screenshotOverlay->Document();
+
+            document.Begin(core::AnnotationTool::Pen, style);
+            for (int i = 0; i <= 40; ++i) {
+                document.AddPoint(core::Point{ 40.0f + i * 4.0f, 60.0f });
+            }
+            document.Commit();
+
+            style.color = core::annotation_defaults::PaletteColor(4);
+            document.Begin(core::AnnotationTool::Rectangle, style);
+            document.SetEnd(core::Point{ 40.0f, 120.0f });
+            document.SetEnd(core::Point{ 240.0f, 220.0f });
+            document.Commit();
+
+            style.color = core::annotation_defaults::PaletteColor(0);
+            document.Begin(core::AnnotationTool::Arrow, style);
+            document.SetEnd(core::Point{ 40.0f, 300.0f });
+            document.SetEnd(core::Point{ 240.0f, 300.0f });
+            document.Commit();
+
+            style.color = core::annotation_defaults::PaletteColor(3);
+            document.Begin(core::AnnotationTool::Step, style);
+            document.AddPoint(core::Point{ 500.0f, 60.0f });
+            document.Commit();
+
+            screenshotOverlay->AddTextAnnotation(core::Point{ 40.0f, 360.0f }, "HaloCap S3");
+            screenshotOverlay->Pump();
+            Sleep(250);
+            const double screenshotMb = PrivateMb();
+
+            const bool proof = screenshotOverlay->GrabDesktopToPng(options.screenshotSelftestPath);
+            std::string savedPath;
+            const bool saved = screenshotOverlay->SaveSelection(&savedPath);
+            const bool pinned = screenshotOverlay->PinSelection();
+            screenshotOverlay->Close();
+
+            // 贴图证明图：覆盖层关掉之后再抓，窗口与光晕才是可见的。
+            Sleep(150);
+            const bool pinProof =
+                screenshotOverlay->GrabDesktopToPng(options.screenshotSelftestPath + L".pin.png");
+
+            AddFlag(report, "APP_SCREENSHOT_OVERLAY", true);
+            AddFlag(report, "APP_SCREENSHOT_PROOF", proof);
+            AddFlag(report, "APP_SCREENSHOT_PIN_PROOF", pinProof);
+            AddFlag(report, "APP_SCREENSHOT_SAVED", saved);
+            AddFlag(report, "APP_SCREENSHOT_PINNED", pinned);
+            AddInt(report, "APP_SCREENSHOT_PINS", static_cast<long long>(pins.size()));
+            AddText(report, "APP_SCREENSHOT_PATH", savedPath.c_str());
+            char openBuffer[32] = {};
+            std::snprintf(openBuffer, sizeof(openBuffer), "%.1f", openMs);
+            AddText(report, "APP_SCREENSHOT_OPEN_MS", openBuffer);
+            AddMb(report, "APP_SCREENSHOT_PRIVATE_MB", screenshotMb);
+            AddInt(report, "APP_SCREENSHOT_ITEMS",
+                   static_cast<long long>(document.Items().size()));
+
+            screenshotSelftestOk = proof && pinProof && saved && pinned && !pins.empty() &&
+                                   openMs <= 150.0 && screenshotMb > 0.0 && screenshotMb <= 120.0;
+            log.Info(screenshotSelftestOk ? "screenshot selftest: ok"
+                                          : "screenshot selftest: failed");
+        }
+        running = false;
+    }
 
     while (running) {
         MSG message{};
@@ -786,6 +916,10 @@ int Run(const Options& options) {
             ++actions;
             if (token == kTokenRecord) {
                 toggleRecording();
+                continue;
+            }
+            if (token == kTokenScreenshot) {
+                openScreenshot();
                 continue;
             }
             log.Info("action: hotkey token=" + std::to_string(token));
@@ -810,6 +944,22 @@ int Run(const Options& options) {
         if (const core::TrayCommand command = tray.PollCommand();
             command != core::TrayCommand::None) {
             onAction(command);
+        }
+
+        // 截图覆盖层：会话自己的窗口消息由上面的 PeekMessage 派发，这里只推进渲染。
+        if (screenshotOverlay != nullptr) {
+            screenshotOverlay->Pump();
+            if (!screenshotOverlay->Active()) {
+                screenshotOverlay.reset();
+            }
+        }
+
+        for (std::size_t i = 0; i < pins.size();) {
+            if (!pins[i]->Valid()) {
+                pins.erase(pins.begin() + static_cast<std::ptrdiff_t>(i));
+            } else {
+                ++i;
+            }
         }
 
         // 录制泵：与消息循环同一个线程、同一个 30 ms 节奏。采集侧丢设备时这里会返回
@@ -916,6 +1066,9 @@ int Run(const Options& options) {
     }
 
     AddText(report, "APP_SELFTEST", options.selftest ? (ok ? "OK" : "FAILED") : "SKIPPED");
+
+    AddFlag(report, "APP_SCREENSHOT_SELFTEST", screenshotSelftestOk);
+    ok = ok && screenshotSelftestOk;
 
     std::printf("%s", report.c_str());
     if (!options.reportPath.empty()) {

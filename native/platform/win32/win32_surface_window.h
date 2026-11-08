@@ -4,6 +4,8 @@
 
 #include <windows.h>
 
+#include <functional>
+
 namespace halocap::platform::win32 {
 
 // ISurfaceWindow 的 Win32 实现。三条都不是随手写的：
@@ -34,8 +36,17 @@ public:
 
     bool IsVisible() const;
 
+    // The screenshot overlay handles its own mouse and toolbar messages, so it needs
+    // a seam into the window procedure. Set it right after Create, before any input.
+    using MessageHandler = std::function<LRESULT(HWND, UINT, WPARAM, LPARAM)>;
+    void SetMessageHandler(MessageHandler handler);
+
 private:
     static ATOM RegisterClass();
+
+    static LRESULT CALLBACK WndProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam);
+
+    MessageHandler handler_;
 
     HWND hwnd_ = nullptr;
     core::WindowBounds bounds_{};

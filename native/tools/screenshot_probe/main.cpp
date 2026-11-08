@@ -1,4 +1,4 @@
-// S3 的截图链路验证：桌面复制 → 选区 → 九种标注 → 离屏合成 → 回读 → PNG + 剪贴板。
+﻿// S3 的截图链路验证：桌面复制 → 选区 → 九种标注 → 离屏合成 → 回读 → PNG + 剪贴板。
 //
 // 它不画 UI（工具栏、鼠标编辑在 app 那边），而是把 S3 的「领域 + 导出」整条链跑一遍：
 // 选区、马赛克块、文本排版、箭头、序号、撤销后的最终列表，最后落到一个真实 PNG 上，
@@ -10,7 +10,7 @@
 #include "annotation.h"
 #include "d2d_font_rasterizer.h"
 #include "d2d_render_backend.h"
-#include "dxgi_desktop_duplication.h"
+#include "desktop_grab.h"
 #include "image_export.h"
 #include "mosaic.h"
 #include "selection.h"
@@ -29,7 +29,6 @@
 namespace core = halocap::core;
 using halocap::platform::win32::D2dFontRasterizer;
 using halocap::platform::win32::D2dRenderBackend;
-using halocap::platform::win32::Win32DesktopDuplication;
 
 namespace {
 
@@ -251,49 +250,17 @@ int main(int argc, char** argv) {
         return 2;
     }
 
-    Win32DesktopDuplication capture(backend);
-    if (!capture.Initialize()) {
-        std::printf("CAPTURE_INIT=FAILED\n");
-        return 2;
-    }
-
-    // 选区打开耗时从这里起算：复制权 → 第一帧 → 渲染目标就绪。
+    // 截图走 GDI 抓屏：本机的 DuplicateOutput 回读全是黑的（见 desktop_grab.h）。
     const std::int64_t openStartUs = QpcNowUs();
-
-    bool opened = false;
-    for (int attempt = 0; attempt < 4 && !opened; ++attempt) {
-        opened = capture.Open(0);
-        if (!opened) {
-            std::printf("OPEN_ATTEMPT=%d kind=%s\n", attempt + 1, capture.LastErrorKind());
-            if (std::string_view(capture.LastErrorKind()) != "busy") {
-                break;
-            }
-            Sleep(static_cast<DWORD>(core::BackoffUs(attempt, 250'000, 4'000'000) / 1000));
-        }
-    }
-    if (!opened) {
-        std::printf("SCREENSHOT_PROBE=BLOCKED kind=%s\n", capture.LastErrorKind());
+    halocap::platform::win32::DesktopImage desktop;
+    if (!halocap::platform::win32::GrabPrimaryDesktop(desktop)) {
+        std::printf("SCREENSHOT_PROBE=BLOCKED kind=grab\n");
         return 0;
     }
 
-    core::FrameUpdate update;
-    const std::int64_t waitDeadline = QpcNowUs() + 2'000'000;
-    while (!capture.WaitForUpdate(50, update) && QpcNowUs() < waitDeadline) {
-        if (std::string_view(capture.LastErrorKind()) != "timeout") {
-            std::printf("CAPTURE_ENDED kind=%s\n", capture.LastErrorKind());
-            std::printf("SCREENSHOT_PROBE=FAILED\n");
-            return 1;
-        }
-    }
-    if (update.target == 0) {
-        std::printf("SCREENSHOT_PROBE=FAILED first frame missing\n");
-        return 1;
-    }
-
-    const core::IntRect desktop = capture.DesktopBounds();
     core::SelectionModel selection;
-    selection.SetLimit(core::Rect{ 0.0f, 0.0f, static_cast<float>(desktop.right),
-                                   static_cast<float>(desktop.bottom) });
+    selection.SetLimit(core::Rect{ 0.0f, 0.0f, static_cast<float>(desktop.width),
+                                   static_cast<float>(desktop.height) });
     selection.Begin(core::Point{ static_cast<float>(spec.x), static_cast<float>(spec.y) });
     selection.Update(core::Point{ static_cast<float>(spec.x + (spec.width & ~1)),
                                  static_cast<float>(spec.y + (spec.height & ~1)) },
@@ -320,7 +287,15 @@ int main(int argc, char** argv) {
     std::printf("SCREENSHOT_OPEN_MS=%.1f\n", openMs);
 
     // 第一遍：只贴底图，回读出来的像素既用于马赛克取样，也作为「有没有画上东西」的对照。
-    const core::Blit baseBlit{ update.target,
+    const core::ImageHandle captured =
+        backend.RegisterImage(core::ImageRef{ desktop.bgra.data(), desktop.width, desktop.height,
+                                              desktop.width * 4 });
+    if (captured == 0) {
+        std::printf("SCREENSHOT_PROBE=FAILED register\n");
+        return 2;
+    }
+
+    const core::Blit baseBlit{ captured,
                                core::Rect{ selected.left, selected.top, selected.left + width,
                                            selected.top + height },
                                core::Rect{ 0.0f, 0.0f, static_cast<float>(width),
@@ -484,7 +459,6 @@ int main(int argc, char** argv) {
     const double peakMb = PrivateMemoryMb();
     std::printf("SCREENSHOT_PEAK_MB=%.1f\n", peakMb);
 
-    capture.Close();
     if (tileHandle != 0) {
         backend.ReleaseImage(tileHandle);
     }

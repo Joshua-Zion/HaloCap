@@ -1,4 +1,4 @@
-#include "annotation.h"
+﻿#include "annotation.h"
 
 #include <algorithm>
 #include <cmath>
@@ -96,12 +96,17 @@ Rect RectFromPoints(Point a, Point b) {
     return Rect{ std::min(a.x, b.x), std::min(a.y, b.y), std::max(a.x, b.x), std::max(a.y, b.y) };
 }
 
-Point Scaled(Point point, float scale) { return Point{ point.x * scale, point.y * scale }; }
+Point Placed(Point point, const AnnotationPlanOptions& options) {
+    return Point{ point.x * options.scale + options.origin.x,
+                  point.y * options.scale + options.origin.y };
+}
 
-Rect Scaled(Rect rect, float scale) {
+Rect Placed(Rect rect, const AnnotationPlanOptions& options) {
     const Rect normalized = rect.Normalized();
-    return Rect{ normalized.left * scale, normalized.top * scale, normalized.right * scale,
-                 normalized.bottom * scale };
+    return Rect{ normalized.left * options.scale + options.origin.x,
+                 normalized.top * options.scale + options.origin.y,
+                 normalized.right * options.scale + options.origin.x,
+                 normalized.bottom * options.scale + options.origin.y };
 }
 
 }  // namespace
@@ -247,7 +252,7 @@ void AppendStepCircle(FramePlan& plan, const Annotation& annotation, float scale
         return;
     }
 
-    const Point center = Scaled(annotation.points[0], scale);
+    const Point center = Placed(annotation.points[0], options);
     const float radius = annotation_defaults::kStepRadius * scale;
     const Color ink = IsLightColor(annotation.style.color)
                           ? Color{ 0.106f, 0.122f, 0.141f, 1.0f }
@@ -292,7 +297,7 @@ void AppendAnnotationPlan(const std::vector<Annotation>& annotations,
         case AnnotationTool::Pen: {
             const float thickness = std::max(0.4f, style.thickness * scale);
             if (annotation.points.size() == 1) {
-                const Point center = Scaled(annotation.points[0], scale);
+                const Point center = Placed(annotation.points[0], options);
                 const float radius = std::max(0.6f, thickness * 0.5f);
                 plan.Add(FillEllipse{ Rect{ center.x - radius, center.y - radius,
                                             center.x + radius, center.y + radius },
@@ -300,8 +305,8 @@ void AppendAnnotationPlan(const std::vector<Annotation>& annotations,
                 break;
             }
             for (std::size_t i = 1; i < annotation.points.size(); ++i) {
-                plan.Add(Segment{ Scaled(annotation.points[i - 1], scale),
-                                  Scaled(annotation.points[i], scale), style.color, thickness });
+                plan.Add(Segment{ Placed(annotation.points[i - 1], options),
+                                  Placed(annotation.points[i], options), style.color, thickness });
             }
             break;
         }
@@ -311,8 +316,8 @@ void AppendAnnotationPlan(const std::vector<Annotation>& annotations,
             color.a = annotation_defaults::kHighlighterAlpha;
             const float thickness = std::max(2.0f, style.thickness) * scale;
             for (std::size_t i = 1; i < annotation.points.size(); ++i) {
-                plan.Add(Segment{ Scaled(annotation.points[i - 1], scale),
-                                  Scaled(annotation.points[i], scale), color, thickness });
+                plan.Add(Segment{ Placed(annotation.points[i - 1], options),
+                                  Placed(annotation.points[i], options), color, thickness });
             }
             break;
         }
@@ -321,7 +326,7 @@ void AppendAnnotationPlan(const std::vector<Annotation>& annotations,
             if (annotation.points.size() < 2) {
                 break;
             }
-            const Rect rect = Scaled(NormalizeRect(annotation.points[0], annotation.points[1]), scale);
+            const Rect rect = Placed(NormalizeRect(annotation.points[0], annotation.points[1]), options);
             if (style.filled) {
                 plan.Add(FillRect{ rect, style.color });
             } else {
@@ -334,7 +339,7 @@ void AppendAnnotationPlan(const std::vector<Annotation>& annotations,
             if (annotation.points.size() < 2) {
                 break;
             }
-            const Rect rect = Scaled(NormalizeRect(annotation.points[0], annotation.points[1]), scale);
+            const Rect rect = Placed(NormalizeRect(annotation.points[0], annotation.points[1]), options);
             if (style.filled) {
                 plan.Add(FillEllipse{ rect, style.color });
             } else {
@@ -347,8 +352,8 @@ void AppendAnnotationPlan(const std::vector<Annotation>& annotations,
             if (annotation.points.size() < 2) {
                 break;
             }
-            const Point start = Scaled(annotation.points.front(), scale);
-            const Point end = Scaled(annotation.points.back(), scale);
+            const Point start = Placed(annotation.points.front(), options);
+            const Point end = Placed(annotation.points.back(), options);
             const float dx = end.x - start.x;
             const float dy = end.y - start.y;
             if (std::sqrt(dx * dx + dy * dy) < 0.5f) {
@@ -374,7 +379,7 @@ void AppendAnnotationPlan(const std::vector<Annotation>& annotations,
             const FontSpec spec{ options.fontFamily, style.bold ? 700 : 400,
                                  style.textSize * scale, style.color };
             const TextCell cell =
-                options.rasterizer->LayOut(annotation.text, spec, Scaled(annotation.points[0], scale));
+                options.rasterizer->LayOut(annotation.text, spec, Placed(annotation.points[0], options));
             if (cell.atlas != 0) {
                 plan.Add(cell.ToBlit());
             }
@@ -386,7 +391,7 @@ void AppendAnnotationPlan(const std::vector<Annotation>& annotations,
                 break;
             }
             const Rect destination =
-                Scaled(NormalizeRect(annotation.points[0], annotation.points[1]), scale);
+                Placed(NormalizeRect(annotation.points[0], annotation.points[1]), options);
             plan.Add(Blit{ annotation.mosaicTile,
                            Rect{ 0.0f, 0.0f, annotation.mosaicTileSize.width,
                                  annotation.mosaicTileSize.height },
@@ -447,12 +452,11 @@ void AnnotationDocument::Commit() {
         return;
     }
 
+    // 只有「两个点定义一条边」的工具需要第二点；文字与序号是单击落点。
     const bool twoPointTool = current_.tool == AnnotationTool::Rectangle ||
                               current_.tool == AnnotationTool::Ellipse ||
                               current_.tool == AnnotationTool::Arrow ||
-                              current_.tool == AnnotationTool::Mosaic ||
-                              current_.tool == AnnotationTool::Text ||
-                              current_.tool == AnnotationTool::Step;
+                              current_.tool == AnnotationTool::Mosaic;
 
     const bool usable = twoPointTool ? current_.points.size() >= 2 : !current_.points.empty();
     if (usable) {

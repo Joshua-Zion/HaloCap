@@ -22,6 +22,18 @@ add_executable(input_policy_tests input_policy_tests.cpp)
 target_link_libraries(input_policy_tests PRIVATE halocap_core)
 add_test(NAME input_policy_tests COMMAND input_policy_tests)
 
+add_executable(settings_policy_tests settings_policy_tests.cpp)
+target_link_libraries(settings_policy_tests PRIVATE halocap_core)
+add_test(NAME settings_policy_tests COMMAND settings_policy_tests)
+
+add_executable(store_policy_tests store_policy_tests.cpp)
+target_link_libraries(store_policy_tests PRIVATE halocap_core)
+add_test(NAME store_policy_tests COMMAND store_policy_tests)
+
+add_executable(capability_policy_tests capability_policy_tests.cpp)
+target_link_libraries(capability_policy_tests PRIVATE halocap_core)
+add_test(NAME capability_policy_tests COMMAND capability_policy_tests)
+
 # §3.3 规则三的链接期兜底：core 不许链接任何库（含系统导入库）。
 # include 扫描只挡住头文件，真正调用了 Win32 函数会在这里挂掉。
 foreach(_prop LINK_LIBRARIES INTERFACE_LINK_LIBRARIES)

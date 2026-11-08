@@ -574,10 +574,15 @@ const char* const kKnownLeafPaths[] = {
     "recording.audioBitrate",
 };
 
-// 1.x 把只读的计算属性也写进了文件（framesPerSecond、countdownSeconds）。
-// 它自己读回时因为没有 setter 而忽略，2.0 同样忽略——但这不是「不认识的键」，
-// 分开报才不至于让每一次导入都带着一串假警报。
-const char* const kDerivedLegacyPaths[] = { "recording.framesPerSecond", "recording.countdownSeconds" };
+// 1.x 把只读的计算属性也写进了文件（framesPerSecond、countdownSeconds、audioBitrateValue、
+// wantsAudio 四个）。它自己读回时因为没有 setter 而忽略，2.0 同样忽略——但这不是「不认识的键」，
+// 分开报才不至于让每一次导入都带着一串假警报。这四个是本机真文件里数出来的，不是照模型猜的。
+const char* const kDerivedLegacyPaths[] = {
+    "recording.framesPerSecond",
+    "recording.countdownSeconds",
+    "recording.audioBitrateValue",
+    "recording.wantsAudio",
+};
 
 bool IsIn(const char* const* list, std::size_t count, std::string_view path) {
     for (std::size_t i = 0; i < count; ++i) {
@@ -1123,7 +1128,10 @@ SizedOutput ResolveOutputSize(const RecordingSettings& settings, int sourceWidth
     }
 
     SizedOutput out;
-    out.widthPx = ClampInt(static_cast<int>(quotient), 2, MakeEven(sourceWidthPx));
+    // 宽还要再取一次偶：比值恰好落在奇数整数上时（6×864 → P720 给出 5）1.x 会把奇数宽度
+    // 交给编码器，而 2.0 的编码 seam 在 OpenVideo 就拒收奇数（NV12 的 4:2:0 划分不允许）。
+    // 这是两版唯一故意不同的地方，取偶向下偏 1 像素，换录制能不能开始。
+    out.widthPx = ClampInt(MakeEven(static_cast<int>(quotient)), 2, MakeEven(sourceWidthPx));
     out.heightPx = ClampInt(MakeEven(targetHeight), 2, MakeEven(sourceHeightPx));
     return out;
 }

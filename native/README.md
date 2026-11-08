@@ -2,7 +2,7 @@
 
 本目录属于 `2.0` 分支。设计依据见 [../docs/2.0-native-plan.md](../docs/2.0-native-plan.md)，分支约定见其 §10，工具链与构建前提见计划文档的「S1 的工具链」。
 
-当前状态：**S1 骨架可构建、七套测试可跑、§3.3 规则三已做成机检；显示列表能离屏逐字节画对、能经 DirectComposition 真窗口上屏、也能自己按 60 fps 排帧数丢帧；桌面复制的 seam 与脏矩形拷贝已落地；H.264 编码这条管线跑通并且量过（GPU 侧 BGRA→NV12 + `IMFSinkWriter`）；WASAPI 的回环与麦克风两路也跑通并量过；全局热键、低级拦截与 IME 生命周期也跑通并量过**。还没有产品功能——托盘与设置都还没进来，对应的 seam 也不提前定形（避免先写一套再被实现推翻）。
+当前状态：**S1 骨架可构建、十套测试可跑、§3.3 规则三已做成机检；显示列表能离屏逐字节画对、能经 DirectComposition 真窗口上屏、也能自己按 60 fps 排帧数丢帧；桌面复制的 seam 与脏矩形拷贝已落地；H.264 编码这条管线跑通并且量过（GPU 侧 BGRA→NV12 + `IMFSinkWriter`）；WASAPI 的回环与麦克风两路也跑通并量过；全局热键、低级拦截与 IME 生命周期也跑通并量过；设置、日志、模型路径与系统能力（含 1.x 设置文件的只读导入）也跑通并量过**。还没有产品功能——S1 剩下的最后一件是托盘，然后是组装。
 
 一处环境阻塞要写清：本机现在对**任何**程序都拒绝 `DuplicateOutput`（`E_ACCESSDENIED`；今天早些时候还能跑出吞吐数字的 spike 2 工具现在同样被拒），所以 `ICaptureSource` 的端到端脏矩形量级数字还没拿到。拷贝逻辑本身不依赖复制权，已经单独验过（`rect_copy_test`）。
 
@@ -24,8 +24,12 @@ native/
                         StereoRingBuffer（写满丢最旧）、MixInto、RemixToStereo、线性重采样、AAC 块补齐
     input_host.h        IInputHost seam：RegisterHotkey / SetInterception / PollHotkey / SuspendIme；
                         KeySymbol 76 个符号、设置文本双向换算、MatchesHotkey 与 DecideSwallow
-    settings.h          IStore 的 core 半边（seam 接口还没定形）：扁平设置树 + JSON 子集、
+    settings.h          IStore 的 core 半边：扁平设置树 + JSON 子集、
                         与 1.x 逐项对齐的 schema 与默认值、两字段热键的迁移、逐键修复报告
+    store.h             IStore seam：设置文本的原子读写、日志追加/枚举/删除；
+                        以及「文件不存在 / 读不出 / 坏内容」三者的分开处理
+    capability.h        ICapability 的 core 半边：系统下限、日志规则（8 MiB×6 份×14 天）、
+                        磁盘下限、空闲回收线、特性开关；平台只汇报事实
     frame_scheduler.h   帧节奏与丢帧口径：BeginFrame / EndFrame / Stats，时钟由调用方注入微秒
   platform/win32/
     d2d_render_backend.h/.cpp      Direct2D 1.1（ID2D1Device + ID2D1DeviceContext）+ 合成链呈现
@@ -36,14 +40,17 @@ native/
     mf_h264_encoder.h/.cpp         IMFSinkWriter + MF_SINK_WRITER_D3D_MANAGER + NV12 样本，从服务属性读编码器身份
     wasapi_audio_source.h/.cpp     共享模式事件驱动；回环加 AUDCLNT_STREAMFLAGS_LOOPBACK
     win32_input_host.h/.cpp            message-only 窗口 + RegisterHotKey + WH_KEYBOARD_LL + ImmAssociateContext
+    win32_store.h/.cpp                 IStore：%APPDATA%\HaloCap2、.tmp + MoveFileExW 原子替换、日志目录
+    win32_capability.h/.cpp            ICapability：RtlGetVersion + WGC 探测 + 私有内存 + 卷剩余空间
   tools/frame_cost/     覆盖层帧成本测量（与 spike 3 同口径，离屏、不上屏）
   tools/surface_probe/  上屏链路验证：A/B 抓屏证「看得见」+ 60 fps 排帧数丢帧
   tools/capture_probe/  采集链路统计：应有/实取、仅鼠标唤醒、脏像素之比、每帧 CPU 与内存
   tools/encoder_probe/  编码链路验证：颜色回读证转换对、五档组合量成本/字节/内存与编码器身份
   tools/audio_probe/    音频链路验证：端点形状、静音时出不出包、Initialize 时序矩阵、借还契约
   tools/input_probe/    输入链路验证：热键投递、两个钩子链量拦截是否真生效、IME 断开恢复、错误分类
+  tools/store_probe/    设置链路验证：真实路径、原子替换、日志分份、只读导入 1.x 设置、能力读数
   tools/rect_copy_test/ 脏矩形拷贝的功能验证（进 CTest，不碰屏幕也不需要复制权）
-  tests/      core 的单测（无第三方框架，七个可执行 + CTest）
+  tests/      core 的单测（无第三方框架，十个可执行 + CTest）
   build.cmd   vcvars → cmake configure → build → ctest
 ```
 
@@ -55,7 +62,7 @@ native/
 
 文本不新增图元类型：`IFontRasterizer::LayOut` 返回的 `TextCell` 只能以 `ToBlit()` 进入显示列表，所以 bounds、脏区裁剪与后端都不用为文本特判。折线（`Path`）**仍然故意不在列表里**——它要等几何缓存策略定下来，放进列表却画不出来比不放更糟。
 
-平台边界一共 8 个 seam（`ISurfaceWindow`、`IRenderBackend`、`IFontRasterizer`、`ICaptureSource`、`IEncoder`、`IAudioSource`、`IInputHost`、`IStore`+`ICapability`），职责与 macOS 对应物在 §3.2；目前已落地 `IRenderBackend`、`IFontRasterizer`、`ISurfaceWindow`、`ICaptureSource`、`IEncoder`、`IAudioSource`、`IInputHost` 七个。第八个进行中：`core/settings.h` 已经把设置树、JSON 子集与 1.x 的 schema 落盘并编进 `halocap_core`，但**还没有一套测试**，`IStore` 的接口也故意还没定形——等 `win32_store` 与探针跑通再写，免得先定一套再被实现推翻。
+平台边界一共 8 个 seam（`ISurfaceWindow`、`IRenderBackend`、`IFontRasterizer`、`ICaptureSource`、`IEncoder`、`IAudioSource`、`IInputHost`、`IStore`+`ICapability`），职责与 macOS 对应物在 §3.2；**八个都已落地**。第八个（`IStore` + `ICapability`）的 core 半边在 `capability.h` / `settings.h` / `store.h`：平台只汇报事实与搬运文本，判断（系统下限、日志规则、磁盘下限、空闲回收线、特性开关）全在 core，因此都能在没有文件系统的单测里钉住。
 
 上屏这条路有个必须记在实现旁边的实测结论：**挂在 HWND 上的 flip 交换链不接受预乘 alpha**（9 个组合 × 4 块适配器 × 3 种扩展样式全 `DXGI_ERROR_INVALID_CALL`），透明只能走 **DirectComposition 的 composition 交换链**，且它要求 `DXGI_SCALING_STRETCH`、后缓冲当 D2D 目标时还要 `TARGET | CANNOT_DRAW`。所以窗口用 `WS_EX_NOREDIRECTIONBITMAP`（不是 `WS_EX_LAYERED`），呈现归后端。完整矩阵与三条 API 细节见计划文档 §5.1「S1 的上屏路径」。
 
@@ -152,3 +159,19 @@ native> build\tools\input_probe\input_probe.exe
 3. **message-only 不能用 `GetParent(hwnd) == HWND_MESSAGE` 判**：本机 `GetParent` 返回 0，`GetAncestor(GA_PARENT)` 返回系统每线程一个的隐藏父窗口。真正的性质是「本进程在 `EnumWindows` 里没有任何顶层窗口」，探针直接数，数到 0 才算过。
 
 IME 那一侧的验证是：给窗口挂一个自建上下文，`SuspendIme` 的返回值必须正好是那个句柄；恢复之后再探一次（用 `ImmAssociateContext` 探，不用 `ImmGetContext`——没有关联时它会给出系统默认上下文，比不出东西），拿回来的还得是同一个。钩子回调每次事件驻留 114–197 µs，这个数要能打印出来：超过系统的 `LowLevelHooksTimeout` 之后钩子会被直接跳过，表现是「偶尔拦不住」而日志里什么都没有。
+
+设置、日志与能力链路（只往 2.0 自己的目录写，1.x 的设置只读；参数：可选的临时根）：
+
+```
+native> build\tools\store_probe\store_probe.exe
+```
+
+它先打印三个真实路径（`SETTINGS_PATH` / `LOG_DIR` / `MODEL_DIR`），断言它们都在 `HaloCap2` 下而不是 1.x 的 `HaloCap`；接着在临时根里走一遍「保存 → 读回 → 二次保存原子替换 → 坏文件退回默认值 → 0 字节文件报 `empty`」；再往真实日志目录写一行并跑一次过期清理；最后**只读**导入本机 `%APPDATA%\HaloCap\settings.json`，打印五把热键与四类报告，并比对导入前后文件的大小与时间戳。判据是 `STORE_PROBE=OK`。
+
+本机实测（2026-11-08）：`IMPORT_1X_MIGRATED=5`、`IMPORT_1X_IGNORED=4`、`IMPORT_1X_REPAIRED=0`、`IMPORT_1X_DROPPED=0`；`OS_BUILD=26300`、`WGC_SUPPORTED=1`；4K30 Balanced 的磁盘下限 195.8 MB，可用约 252 GB；探针进程私有内存 2.1 MB（远在 220 MB 的空闲回收线下）。
+
+三条必须记在实现旁边的结论（数字与推导都在计划文档 §5.1「S1 的设置 seam」）：
+
+1. **1.x 的 `recording` 里有四个只读派生字段**（`framesPerSecond`、`countdownSeconds`、`audioBitrateValue`、`wantsAudio`），不是两个。少登记两个的后果是每次导入都多两条「多余的键」假警报——这条只有真读本机文件才会暴露。
+2. **`ResolveOutputSize` 与 1.x 有一处故意不同**：比值恰好落在奇数整数上时（6×864 → P720 得 5），1.x 会把奇数宽度交给编码器，而 2.0 的 `OpenVideo` 拒收奇数（NV12 的 4:2:0 划分不允许）。2.0 对宽度再取一次偶（5→4），1 像素换「录制能开始」。
+3. **写不进 `%APPDATA%` / `%TEMP%` 时探针不判 FAIL**：本会话的文件策略只允许写工作区，`store_probe` 往这两个位置写会被拒（同一时刻 `cmd` 与 PowerShell 反而能写，所以不是代码问题）。临时根写不进去会退到 exe 旁边的目录（`TEMP_ROOT_SOURCE=exe-dir`），真实日志目录写不进去打 `LOG_WRITE=blocked kind=denied` 并跳过那两条断言——与采集探针遇到「复制权被占用」同一条处理原则。**「真实 `%APPDATA%\HaloCap2` 可写」这一条因此本机还没证到**，换一台没有沙箱的机器跑一次即可结案。

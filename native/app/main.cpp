@@ -1,4 +1,4 @@
-// S1 的组装：把 8 个 seam 接成一个能起来、能待着、能自己报出空闲内存的进程。
+﻿// S1 的组装：把 8 个 seam 接成一个能起来、能待着、能自己报出空闲内存的进程。
 //
 // 这一版刻意只做 S1 的骨架：设置、日志、托盘、热键、覆盖层窗口与渲染后端就绪，消息循环待着；
 // 托盘菜单与热键只记录「收到了什么动作」——真正的截图/录屏/OCR/贴图在 S3/S4 才接。
@@ -1465,6 +1465,19 @@ int Run(const Options& options) {
             pinClipboard();
         }
         Sleep(350);
+
+        // 把鼠标移到第一张贴图上，让悬停工具条出现在证明图里。
+        if (!pins.empty() && pins.back()->Handle() != nullptr) {
+            RECT pinRect{};
+            GetWindowRect(pins.back()->Handle(), &pinRect);
+            SetCursorPos((pinRect.left + pinRect.right) / 2, (pinRect.top + pinRect.bottom) / 2);
+            RECT client{};
+            GetClientRect(pins.back()->Handle(), &client);
+            SendMessageW(pins.back()->Handle(), WM_MOUSEMOVE, 0,
+                         MAKELPARAM((client.right - client.left) / 2,
+                                    (client.bottom - client.top) / 2));
+            Sleep(300);
+        }
 
         const bool pinned = pins.size() > afterCurrent;
         halocap::platform::win32::DesktopImage desktop;

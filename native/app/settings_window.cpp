@@ -1,4 +1,7 @@
-#include "settings_window.h"
+﻿#include "settings_window.h"
+
+#include <dwmapi.h>
+#include <windowsx.h>
 
 #include <algorithm>
 #include <cstdio>
@@ -17,6 +20,7 @@ namespace {
 
 constexpr wchar_t kClassName[] = L"HaloCapSettings";
 constexpr int kListWidth = 190;
+constexpr int kTitleBar = 38;
 
 std::wstring Utf8ToWide(std::string_view text) {
     if (text.empty()) {
@@ -143,9 +147,10 @@ bool SettingsWindow::EnsureClass() {
         WNDCLASSEXW description{};
         description.cbSize = sizeof(description);
         description.lpfnWndProc = &SettingsWindow::WndProc;
+        description.style = CS_DROPSHADOW;
         description.hInstance = GetModuleHandleW(nullptr);
         description.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-        description.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+        description.hbrBackground = nullptr;
         description.lpszClassName = kClassName;
         return RegisterClassExW(&description) != 0 ||
                GetLastError() == ERROR_CLASS_ALREADY_EXISTS;
@@ -212,8 +217,7 @@ bool SettingsWindow::Create(void* owner, const core::AppSettings& settings,
     onSave_ = std::move(onSave);
     saved_ = false;
 
-    window_ = CreateWindowExW(WS_EX_TOPMOST, kClassName, L"HaloCap 设置",
-                              WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 840, 600,
+    window_ = CreateWindowExW(WS_EX_TOPMOST, kClassName, L"HaloCap 设置", WS_POPUP, 0, 0, 840, 600,
                               static_cast<HWND>(owner), nullptr, GetModuleHandleW(nullptr), this);
     if (window_ == nullptr) {
         return false;
@@ -389,6 +393,37 @@ bool SettingsWindow::Create(void* owner, const core::AppSettings& settings,
             ShowWindow(button, SW_HIDE);
         }
     }
+
+    // 1.x 是无边框窗：把已建好的控件整体下移一个自绘标题栏的高度。
+    HWND shifted[] = { list_, saveButton_, cancelButton_ };
+    for (HWND control : shifted) {
+        RECT rect{};
+        GetWindowRect(control, &rect);
+        MapWindowPoints(HWND_DESKTOP, window_, reinterpret_cast<POINT*>(&rect), 2);
+        SetWindowPos(control, nullptr, rect.left, rect.top + kTitleBar, rect.right - rect.left,
+                     rect.bottom - rect.top, SWP_NOZORDER);
+    }
+    for (const PageControl& control : controls_) {
+        RECT rect{};
+        GetWindowRect(control.handle, &rect);
+        MapWindowPoints(HWND_DESKTOP, window_, reinterpret_cast<POINT*>(&rect), 2);
+        SetWindowPos(control.handle, nullptr, rect.left, rect.top + kTitleBar,
+                     rect.right - rect.left, rect.bottom - rect.top, SWP_NOZORDER);
+    }
+
+    HWND closeButton = CreateWindowExW(0, L"BUTTON", L"",
+                                       WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 840 - 44, 7, 30, 24,
+                                       window_, reinterpret_cast<HMENU>(202),
+                                       GetModuleHandleW(nullptr), nullptr);
+    SendMessageW(closeButton, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
+
+    const int screenWidth = GetSystemMetrics(SM_CXSCREEN);
+    const int screenHeight = GetSystemMetrics(SM_CYSCREEN);
+    SetWindowPos(window_, HWND_TOPMOST, (screenWidth - 840) / 2, (screenHeight - 600) / 2, 840,
+                 600, SWP_NOZORDER);
+    const DWORD cornerPreference = 2;   // DWMWCP_ROUND
+    DwmSetWindowAttribute(window_, 33 /* DWMWA_WINDOW_CORNER_PREFERENCE */, &cornerPreference,
+                          sizeof(cornerPreference));
 
     ShowPage(Page::Screenshot);
     ShowWindow(window_, SW_SHOW);
@@ -629,7 +664,17 @@ LRESULT SettingsWindow::Handle(HWND window, UINT message, WPARAM wParam, LPARAM 
         RECT client{};
         GetClientRect(window, &client);
         FillRect(dc, &client, background_);
-        const RECT card{ 212, 12, client.right - 12, client.bottom - 64 };
+
+        // 自绘标题栏：标题 + 右侧由 owner-draw 按钮画的关闭叉。
+        SetBkMode(dc, TRANSPARENT);
+        SetTextColor(dc, RGB(29, 29, 31));
+        HGDIOBJ oldFont = SelectObject(dc, font_);
+        RECT titleRect{ 16, 9, client.right - 60, 9 + 24 };
+        DrawTextW(dc, L"HaloCap 设置", -1, &titleRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        SelectObject(dc, oldFont);
+
+        const RECT card{ 212, 12 + kTitleBar, client.right - 12,
+                         client.bottom - 64 + kTitleBar };
         HGDIOBJ oldPen = SelectObject(dc, cardBorderPen_);
         HGDIOBJ oldBrush = SelectObject(dc, cardBrush_);
         RoundRect(dc, card.left, card.top, card.right, card.bottom, 24, 24);
@@ -694,6 +739,20 @@ LRESULT SettingsWindow::Handle(HWND window, UINT message, WPARAM wParam, LPARAM 
             return 1;
         }
 
+        if (item->CtlID == 202) {
+            const RECT& r = item->rcItem;
+            const int centerX = (r.left + r.right) / 2;
+            const int centerY = (r.top + r.bottom) / 2;
+            HGDIOBJ oldPen =
+                SelectObject(dc, CreatePen(PS_SOLID, 1, RGB(90, 90, 96)));
+            MoveToEx(dc, centerX - 5, centerY - 5, nullptr);
+            LineTo(dc, centerX + 5, centerY + 5);
+            MoveToEx(dc, centerX + 5, centerY - 5, nullptr);
+            LineTo(dc, centerX - 5, centerY + 5);
+            DeleteObject(SelectObject(dc, oldPen));
+            return 1;
+        }
+
         if (item->CtlID == 200 || item->CtlID == 201) {
             const bool primary = item->CtlID == 200;
             const bool pressed = (item->itemState & ODS_SELECTED) != 0;
@@ -723,6 +782,10 @@ LRESULT SettingsWindow::Handle(HWND window, UINT message, WPARAM wParam, LPARAM 
         if (LOWORD(wParam) == 100 && HIWORD(wParam) == LBN_SELCHANGE) {
             const int index = static_cast<int>(SendMessageW(list_, LB_GETCURSEL, 0, 0));
             ShowPage(static_cast<Page>(std::clamp(index, 0, 5)));
+            return 0;
+        }
+        if (LOWORD(wParam) == 202) {
+            DestroyWindow(window);
             return 0;
         }
         if (LOWORD(wParam) == 7) {

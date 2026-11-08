@@ -48,6 +48,7 @@ private:
     HWND previousButton_ = nullptr;
     HWND nextButton_ = nullptr;
     HWND viewButton_ = nullptr;
+    HWND closeButton_ = nullptr;
     bool showImage_ = true;
     HFONT font_ = nullptr;
     HBRUSH background_ = nullptr;

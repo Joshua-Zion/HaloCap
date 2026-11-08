@@ -1,5 +1,8 @@
 ﻿#include "ocr_result_window.h"
 
+#include <dwmapi.h>
+#include <windowsx.h>
+
 #include <algorithm>
 #include <cwchar>
 #include <string>
@@ -10,6 +13,7 @@ namespace {
 
 constexpr wchar_t kClassName[] = L"HaloCapOcrResult";
 constexpr int kPreviewMargin = 12;
+constexpr int kTitleBar = 40;
 constexpr int kTopBar = 44;
 
 std::wstring Utf8ToWide(std::string_view text) {
@@ -42,6 +46,7 @@ bool OcrResultWindow::EnsureClass() {
     static const bool registered = [] {
         WNDCLASSEXW description{};
         description.cbSize = sizeof(description);
+        description.style = CS_DROPSHADOW;
         description.lpfnWndProc = &OcrResultWindow::WndProc;
         description.hInstance = GetModuleHandleW(nullptr);
         description.hCursor = LoadCursorW(nullptr, IDC_ARROW);
@@ -67,9 +72,9 @@ bool OcrResultWindow::Create(void* owner, const std::uint8_t* bgra, int width, i
     const std::wstring title =
         L"HaloCap OCR — " + std::to_wstring(result.lines.size()) + L" 行";
 
-    window_ = CreateWindowExW(WS_EX_APPWINDOW | WS_EX_TOPMOST, kClassName, title.c_str(),
-                              WS_OVERLAPPEDWINDOW, CW_USEDEFAULT, CW_USEDEFAULT, 1080, 680,
-                              static_cast<HWND>(owner), nullptr, GetModuleHandleW(nullptr), this);
+    window_ = CreateWindowExW(WS_EX_APPWINDOW | WS_EX_TOPMOST, kClassName, title.c_str(), WS_POPUP,
+                              0, 0, 1080, 700, static_cast<HWND>(owner), nullptr,
+                              GetModuleHandleW(nullptr), this);
     if (window_ == nullptr) {
         return false;
     }
@@ -111,10 +116,20 @@ bool OcrResultWindow::Create(void* owner, const std::uint8_t* bgra, int width, i
     hint_ = CreateWindowExW(0, L"STATIC", L"左侧为识别区域，框出的每一段即为右侧的一行",
                             WS_CHILD | WS_VISIBLE | SS_LEFT, 0, 0, 10, 10, window_, nullptr,
                             GetModuleHandleW(nullptr), nullptr);
+    closeButton_ = CreateWindowExW(0, L"BUTTON", L"", WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0,
+                                   10, 10, window_, reinterpret_cast<HMENU>(8),
+                                   GetModuleHandleW(nullptr), nullptr);
 
-    for (HWND control : { text_, search_, findButton_, copyButton_, previousButton_, nextButton_, viewButton_, hint_ }) {
+    for (HWND control : { text_, search_, findButton_, copyButton_, previousButton_, nextButton_, viewButton_, hint_, closeButton_ }) {
         SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
     }
+
+    const int screenWidth = GetSystemMetrics(SM_CXSCREEN);
+    const int screenHeight = GetSystemMetrics(SM_CYSCREEN);
+    SetWindowPos(window_, HWND_TOPMOST, (screenWidth - 1080) / 2, (screenHeight - 700) / 2, 1080,
+                 700, SWP_NOZORDER);
+    const DWORD cornerPreference = 2;
+    DwmSetWindowAttribute(window_, 33, &cornerPreference, sizeof(cornerPreference));
 
     Layout();
     ShowWindow(window_, SW_SHOW);
@@ -166,6 +181,20 @@ LRESULT OcrResultWindow::Handle(HWND window, UINT message, WPARAM wParam, LPARAM
         Layout();
         return 0;
 
+    case WM_NCHITTEST: {
+        const LRESULT hit = DefWindowProcW(window, message, wParam, lParam);
+        if (hit == HTCLIENT) {
+            POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+            ScreenToClient(window, &point);
+            RECT client{};
+            GetClientRect(window, &client);
+            if (point.y < kTitleBar && point.x < client.right - 56) {
+                return HTCAPTION;
+            }
+        }
+        return hit;
+    }
+
     case WM_PAINT:
         Paint();
         return 0;
@@ -198,6 +227,18 @@ LRESULT OcrResultWindow::Handle(HWND window, UINT message, WPARAM wParam, LPARAM
         }
         HDC dc = item->hDC;
         SetBkMode(dc, TRANSPARENT);
+        if (item->CtlID == 8) {
+            const RECT& r = item->rcItem;
+            const int centerX = (r.left + r.right) / 2;
+            const int centerY = (r.top + r.bottom) / 2;
+            HGDIOBJ oldPen = SelectObject(dc, CreatePen(PS_SOLID, 1, RGB(90, 90, 96)));
+            MoveToEx(dc, centerX - 5, centerY - 5, nullptr);
+            LineTo(dc, centerX + 5, centerY + 5);
+            MoveToEx(dc, centerX + 5, centerY - 5, nullptr);
+            LineTo(dc, centerX - 5, centerY + 5);
+            DeleteObject(SelectObject(dc, oldPen));
+            return 1;
+        }
         const bool primary = item->CtlID == 4;
         HGDIOBJ oldPen = SelectObject(dc, primary ? GetStockObject(NULL_PEN) : borderPen_);
         HGDIOBJ oldBrush = SelectObject(dc, primary ? accentBrush_ : cardBrush_);
@@ -222,6 +263,9 @@ LRESULT OcrResultWindow::Handle(HWND window, UINT message, WPARAM wParam, LPARAM
             StepMatch(-1);
         } else if (LOWORD(wParam) == 6) {
             StepMatch(1);
+        } else if (LOWORD(wParam) == 8) {
+            DestroyWindow(window);
+            return 0;
         } else if (LOWORD(wParam) == 7) {
             showImage_ = !showImage_;
             SetWindowTextW(viewButton_, showImage_ ? L"只看文本" : L"显示图片");
@@ -265,12 +309,13 @@ void OcrResultWindow::Layout() {
     }
 
     const int previewWidth = showImage_ ? width * 58 / 100 : 0;
-    preview_ = showImage_ ? RECT{ kPreviewMargin, kPreviewMargin, previewWidth - kPreviewMargin,
-                                 height - kPreviewMargin }
-                          : RECT{};
+    preview_ = showImage_
+                   ? RECT{ kPreviewMargin, kPreviewMargin + kTitleBar,
+                           previewWidth - kPreviewMargin, height - kPreviewMargin }
+                   : RECT{};
     const int right = showImage_ ? previewWidth : kPreviewMargin;
     const int rightWidth = width - right - kPreviewMargin;
-    const int top = kPreviewMargin;
+    const int top = kPreviewMargin + kTitleBar;
 
     SetWindowPos(hint_, nullptr, right, top, rightWidth, 24, SWP_NOZORDER);
     SetWindowPos(viewButton_, nullptr, right + rightWidth - 92, top + 30, 92, 28, SWP_NOZORDER);
@@ -282,6 +327,7 @@ void OcrResultWindow::Layout() {
                  SWP_NOZORDER);
     SetWindowPos(text_, nullptr, right, top + 68, rightWidth, height - top - 68 - kPreviewMargin,
                  SWP_NOZORDER);
+    SetWindowPos(closeButton_, nullptr, width - 48, 7, 32, 26, SWP_NOZORDER);
 }
 
 void OcrResultWindow::Paint() {
@@ -291,6 +337,13 @@ void OcrResultWindow::Paint() {
     RECT client{};
     GetClientRect(window_, &client);
     FillRect(dc, &client, background_);
+
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, RGB(29, 29, 31));
+    HGDIOBJ oldFont = SelectObject(dc, font_);
+    RECT titleRect{ 16, 9, client.right - 60, 9 + 24 };
+    DrawTextW(dc, L"HaloCap OCR", -1, &titleRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    SelectObject(dc, oldFont);
 
     // 预览区是白色卡片（1.x 的 #FFFFFF 卡片 + #E7E7EC 边框）。
     if (preview_.right > preview_.left && preview_.bottom > preview_.top) {

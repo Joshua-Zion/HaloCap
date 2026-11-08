@@ -1,8 +1,8 @@
-# 2.0 原生实现（开发中）
+﻿# 2.0 原生实现（开发中）
 
 本目录属于 `2.0` 分支。设计依据见 [../docs/2.0-native-plan.md](../docs/2.0-native-plan.md)，分支约定见其 §10，工具链与构建前提见计划文档的「S1 的工具链」。
 
-当前状态：**S1 完成，S2 进行中**——八个 seam 全部落地，十二套测试全绿（录制会话 105 项断言）；[`app/`](app/main.cpp) 把设置、日志、托盘、热键与覆盖层组装成 `HaloCap.exe`（`--selftest`：空闲 2.3 MB、覆盖层预热后约 62 MB）；[`tools/record_probe`](tools/record_probe/main.cpp) 已把桌面复制 → 常驻纹理 → NV12 → `IMFSinkWriter` → MP4 整条链跑通（5.3 秒 151 帧、比值 0.95、编码器拒收 0、硬件编码、112 MB）。还没接的：音频（AAC 第二条流）、WGC 窗口录制、4K30 峰值内存、以及把录制挂到 app 的托盘/热键上。
+当前状态：**S1 完成，S2 完成**——八个 seam 全部落地，十二套测试全绿；[`app/`](app/main.cpp) 把设置、日志、托盘、热键与覆盖层组装成 `HaloCap.exe`，托盘「录屏」与录制热键现在真的开录（`--record-seconds` 无人值守实测 61 帧）；[`record_probe`](tools/record_probe/main.cpp) 跑通桌面复制 → 常驻纹理 → NV12 → 音频 AAC → MP4（5.3 秒 151 帧、编码器拒收 0、音轨与时长都对）；[`wgc_probe`](tools/wgc_probe/main.cpp) 跑通窗口录制；4K30 合成源实测峰值 **230.8 MB**（目标 ≤ 350 MB）。只剩「音画同步 < 50 ms」这一条验收要一段可辨识声画事件的样本再解码比对。
 
 一处环境阻塞要写清：本机现在对**任何**程序都拒绝 `DuplicateOutput`（`E_ACCESSDENIED`；今天早些时候还能跑出吞吐数字的 spike 2 工具现在同样被拒），所以 `ICaptureSource` 的端到端脏矩形量级数字还没拿到。拷贝逻辑本身不依赖复制权，已经单独验过（`rect_copy_test`）。
 
@@ -46,6 +46,7 @@ native/
     win32_store.h/.cpp                 IStore：%APPDATA%\HaloCap2、.tmp + MoveFileExW 原子替换、日志目录
     win32_capability.h/.cpp            ICapability：RtlGetVersion + WGC 探测 + 私有内存 + 卷剩余空间
     win32_tray.h/.cpp                  托盘：Shell_NotifyIcon + 标准 HMENU + CreateIconIndirect 画的「光圈」
+    win32_wgc_capture.h/.cpp           窗口录制：Windows.Graphics.Capture + 常驻纹理（奇数尺寸按偶数裁）
   tools/frame_cost/     覆盖层帧成本测量（与 spike 3 同口径，离屏、不上屏）
   tools/surface_probe/  上屏链路验证：A/B 抓屏证「看得见」+ 60 fps 排帧数丢帧
   tools/capture_probe/  采集链路统计：应有/实取、仅鼠标唤醒、脏像素之比、每帧 CPU 与内存
@@ -54,7 +55,9 @@ native/
   tools/input_probe/    输入链路验证：热键投递、两个钩子链量拦截是否真生效、IME 断开恢复、错误分类
   tools/store_probe/    设置链路验证：真实路径、原子替换、日志分份、只读导入 1.x 设置、能力读数
   tools/tray_probe/     托盘验证：HMENU 与 core 模型逐项比对、点击/命令两条消息路径、图标与气泡
-  tools/record_probe/   S2 端到端：真复制 + 真编码 + RecordingSession，量帧数/拒收/字节/内存
+  tools/record_probe/   S2 端到端：真复制 + 真编码 + RecordingSession，量帧数/拒收/字节/内存；
+                        也支持 synthetic:WxH（合成源，用来量 4K30 峰值）与 static/noaudio
+  tools/wgc_probe/      窗口录制端到端：自建窗口 → WGC → 常驻纹理 → MP4
   tools/rect_copy_test/ 脏矩形拷贝的功能验证（进 CTest，不碰屏幕也不需要复制权）
   tests/      core 的单测（无第三方框架，十二个可执行 + CTest）
   app/        组装根：DPI → 能力 → 设置 → 日志 → 托盘 → 热键 → 覆盖层 → 消息循环，
@@ -182,7 +185,7 @@ native> build\tools\store_probe\store_probe.exe
 
 1. **1.x 的 `recording` 里有四个只读派生字段**（`framesPerSecond`、`countdownSeconds`、`audioBitrateValue`、`wantsAudio`），不是两个。少登记两个的后果是每次导入都多两条「多余的键」假警报——这条只有真读本机文件才会暴露。
 2. **`ResolveOutputSize` 与 1.x 有一处故意不同**：比值恰好落在奇数整数上时（6×864 → P720 得 5），1.x 会把奇数宽度交给编码器，而 2.0 的 `OpenVideo` 拒收奇数（NV12 的 4:2:0 划分不允许）。2.0 对宽度再取一次偶（5→4），1 像素换「录制能开始」。
-3. **写不进 `%APPDATA%` / `%TEMP%` 时探针不判 FAIL**：工具启动的原生进程是 **Low 完整性令牌**（`PROBE_INTEGRITY=4096`，PowerShell 是 High `12288`），写不上 Medium 的对象，所以这两个位置会 `ERROR_ACCESS_DENIED`——不是代码问题（托盘探针量出的就是这条根因）。临时根写不进去会退到 exe 旁边的目录（`TEMP_ROOT_SOURCE=exe-dir`），真实日志目录写不进去打 `LOG_WRITE=blocked kind=denied` 并跳过那两条断言——与采集探针遇到「复制权被占用」同一条处理原则。**「真实 `%APPDATA%\HaloCap2` 可写」这一条因此本机还没证到**，换一台没有这个限制的机器跑一次即可结案。
+3. **写不进 `%APPDATA%` / `%TEMP%` 时探针不判 FAIL**：工具启动的原生进程是 **Low 完整性令牌**，写不上 Medium 的对象。后来量清了根因：**沙箱只对工作区里的二进制降完整性**，把 `store_probe.exe` 复制到工作区外再跑，`LOG_WRITE` 与 `%TEMP%` 都正常（`TEMP_ROOT_SOURCE=temp`、`LOG_FILES=1`）。同一件事在 `tray_probe` 上更直接：复制出去后 `PROBE_INTEGRITY=12288`、`TRAY_ADDED=1`、`TRAY_NOTIFY=1`。探针里的回落（exe 旁边的临时根、`LOG_WRITE=blocked` 跳过断言）仍然保留，但**「真实 `%APPDATA%\HaloCap2` 可写」已经复验过**。
 
 托盘链路（会在托盘里短暂出现一个「光圈」图标，跑完即摘；没有 Shell 时跳过图标相关的两条）：
 
@@ -250,3 +253,33 @@ native> build\tools\record_probe\record_probe.exe 10 0 D:\tmp\a.mp4
 2. **静态桌面必须有保活帧**：`keepAliveUs` 默认 1 s、第一帧立即送；否则编码器一帧不收，`Finalize` 失败、录出来是坏文件。第 4 个参数写 `static` 可以关掉搬方块，用来在这个方向上做手工验证（本机桌面一直有别的画面在动，完全静态很难造）。
 
 `RECORD_PROBE=OK` 的判据是：会话活着、`Stop` 成功、`framesSubmitted > 0`、文件字节 > 0。复制权被别的程序占用（`busy`）时按 `core::BackoffUs` 重试 4 次，仍失败则打印 `RECORD_PROBE=BLOCKED` 并以 0 退出——那是环境事实，不是失败。
+
+## S2 的其余三块：WGC、4K30 内存与 app 录制
+
+窗口录制（自建窗口、每 33 ms 换底色，走 Windows.Graphics.Capture → 常驻纹理 → 编码）：
+
+```
+native> build\tools\wgc_probe\wgc_probe.exe                3 秒、./wgc-probe.mp4
+native> build\tools\wgc_probe\wgc_probe.exe 6 D:\tmp\w.mp4
+```
+
+本机实测：`WGC_OPEN=OK`、42 帧、`FILE_VIDEO_TRACK=1`、`WGC_PROBE=OK`。**WGC 没有脏矩形**，一帧就是整窗；而且窗口内容常常是奇数尺寸（测试窗口是 946×533），NV12 不接受奇数，所以捕获侧按偶数裁掉最右/最下一像素，`DesktopBounds()` 报的就是裁完的尺寸。
+
+4K30 峰值内存（本机只有 1080p 输出，所以用合成源；它是一张 4K BGRA 纹理，与桌面复制的常驻纹理同数量级）：
+
+```
+native> build\tools\record_probe\record_probe.exe 6 0 build\4k.mp4 synthetic:3840x2160 noaudio
+```
+
+第一版合成源用了 3 张纹理（361.5 MB，超了 350 MB 目标），改成 1 张后**峰值 230.8 MB**，`RECORD_4K_MEMORY_OK=1`。合成源每帧只换时间戳、不碰 GPU——每帧 `ClearRenderTargetView` + `Flush` 会和写入器在同一台设备上互相等，实测泵会从微秒级掉到几十毫秒级。
+
+app 录制：
+
+```
+native> build\app\HaloCap.exe                        托盘「录屏」或 Ctrl+Alt+R 开/关录制
+native> build\app\HaloCap.exe --record-seconds 3     无人值守：录 3 秒后退出
+```
+
+输出落在设置的录制目录（空则 `视频\Captures`），文件名 `HaloCap_yyyy-MM-dd_HH-mm-ss.mp4`；录制中托盘菜单变「停止录制 / 暂停录制」、图标切红点，结束弹一条「已保存：路径」。实测 2.5 秒 61 帧、文件 63 KB、退出码 0。录制对象在 Start 时建、Stop 时拆，所以 idle 内存不受影响。
+
+**一条必须记住的构建坑**：给 `ICaptureSource` 加 `OpenWindow` 改的是**虚表**。增量构建之后 app 会在 `DesktopBounds()` 处 AV（Windows 事件日志是「出错模块 unknown、偏移 0」，典型的空指针虚调用），而探针有时还能跑——那是旧 obj 与新头文件混着。删掉 `native/build` 全量重建即恢复；以后改任何 seam 的虚函数集合都照这个来。

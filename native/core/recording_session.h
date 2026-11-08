@@ -19,6 +19,9 @@ namespace halocap::core {
 struct RecordingOptions {
     int outputIndex = 0;
 
+    // 非空 = 采这个窗口（WGC）；否则按 outputIndex 采桌面复制。
+    NativeHandle captureWindow = nullptr;
+
     // 目标帧率。桌面复制的唤醒率由光标主导（实测 100+ 次每秒），所以这个数不是「采集多少帧」，
     // 而是「最多送多少帧」。
     int targetFps = 30;

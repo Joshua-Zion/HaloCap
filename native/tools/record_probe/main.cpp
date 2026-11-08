@@ -1,4 +1,4 @@
-// S2 的第一条端到端：桌面复制 → 常驻纹理 → 录制会话 → NV12 → IMFSinkWriter → MP4。
+﻿// S2 的第一条端到端：桌面复制 → 常驻纹理 → 录制会话 → NV12 → IMFSinkWriter → MP4。
 //
 // 它跑的是产品要用的那三块真 seam（Win32DesktopDuplication / MfH264Encoder / RecordingSession），
 // 自己不重写任何采集或编码逻辑——否则量出来的数字只说明探针能跑。
@@ -20,9 +20,13 @@
 #include <mfreadwrite.h>
 #include <psapi.h>
 
+#include <algorithm>
+#include <chrono>
 #include <cstdint>
+#include <thread>
 #include <cstdio>
 #include <cstdlib>
+#include <memory>
 #include <string>
 #include <string_view>
 
@@ -171,10 +175,150 @@ bool ProbeFile(const std::wstring& path, bool& hasVideo, bool& hasAudio, std::in
     return true;
 }
 
+// 合成采集源：本机只有 1080p 输出，4K30 的峰值内存不能靠换显示器来量。
+// 它造一张指定尺寸的 BGRA 纹理（RT|SRV，与 WGC 常驻纹理同一形状），每帧清成轮换的颜色，
+// 然后用同一份 RecordingSession 与编码器跑——量到的就是产品那条录制管线的内存。
+class SyntheticCapture final : public core::ICaptureSource {
+public:
+    SyntheticCapture(D2dRenderBackend& backend, int widthPx, int heightPx)
+        : backend_(backend), widthPx_(widthPx), heightPx_(heightPx) {}
+
+    ~SyntheticCapture() override { Close(); }
+
+    bool Open(int) override {
+        // 一张预先填好颜色的纹理，与桌面复制的「一张常驻纹理」同数量级；之后每帧只换时间戳，
+        // 不再碰 GPU：采集源要是每帧都 ClearRenderTargetView + Flush，就会和写入器在同一台
+        // 设备上互相等（实测泵会从微秒级掉到几十毫秒级）。真实采集也不在 CPU 侧造画面。
+        const float colors[3][4] = {
+            { 0.15f, 0.25f, 0.55f, 1.0f },
+            { 0.55f, 0.15f, 0.25f, 1.0f },
+            { 0.20f, 0.55f, 0.25f, 1.0f },
+        };
+
+        for (int i = 0; i < 1; ++i) {
+            D3D11_TEXTURE2D_DESC description{};
+            description.Width = static_cast<UINT>(widthPx_);
+            description.Height = static_cast<UINT>(heightPx_);
+            description.MipLevels = 1;
+            description.ArraySize = 1;
+            description.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+            description.SampleDesc.Count = 1;
+            description.Usage = D3D11_USAGE_DEFAULT;
+            description.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+
+            Microsoft::WRL::ComPtr<ID3D11Texture2D> texture;
+            if (FAILED(backend_.Device()->CreateTexture2D(&description, nullptr, &texture))) {
+                errorKind_ = "hr";
+                return false;
+            }
+
+            Microsoft::WRL::ComPtr<ID3D11RenderTargetView> rtv;
+            if (FAILED(backend_.Device()->CreateRenderTargetView(texture.Get(), nullptr, &rtv))) {
+                errorKind_ = "hr";
+                return false;
+            }
+            backend_.D3dContext()->ClearRenderTargetView(rtv.Get(), colors[i]);
+
+            Microsoft::WRL::ComPtr<IDXGISurface> surface;
+            if (FAILED(texture.As(&surface))) {
+                errorKind_ = "hr";
+                return false;
+            }
+
+            D2D1_BITMAP_PROPERTIES1 properties{};
+            properties.pixelFormat =
+                D2D1::PixelFormat(DXGI_FORMAT_B8G8R8A8_UNORM, D2D1_ALPHA_MODE_IGNORE);
+            properties.bitmapOptions = D2D1_BITMAP_OPTIONS_NONE;
+
+            Microsoft::WRL::ComPtr<ID2D1Bitmap1> bitmap;
+            if (FAILED(backend_.Dc()->CreateBitmapFromDxgiSurface(surface.Get(), &properties,
+                                                                  &bitmap))) {
+                errorKind_ = "hr";
+                return false;
+            }
+
+            handles_[i] = backend_.RegisterGpuImage(bitmap.Get());
+            if (handles_[i] == 0) {
+                errorKind_ = "hr";
+                return false;
+            }
+        }
+
+        backend_.D3dContext()->Flush();
+        errorKind_ = "ok";
+        return true;
+    }
+
+    void Close() override {
+        for (core::ImageHandle& handle : handles_) {
+            if (handle != 0) {
+                backend_.ReleaseImage(handle);
+                handle = 0;
+            }
+        }
+    }
+
+    bool WaitForUpdate(std::int64_t timeoutMs, core::FrameUpdate& out) override {
+        if (handles_[0] == 0) {
+            errorKind_ = "invalid";
+            return false;
+        }
+
+        // 按 30 fps 的节拍交帧：真实采集也是「到点才有新帧」，而泵循环跑得比它快得多。
+        const std::int64_t nowUs = QpcNowUs();
+        if (lastFrameUs_ != 0) {
+            const std::int64_t nextUs = lastFrameUs_ + 33'333;
+            if (nowUs < nextUs) {
+                const std::int64_t waitUs =
+                    std::min<std::int64_t>(nextUs - nowUs, timeoutMs * 1000);
+                if (waitUs > 0) {
+                    std::this_thread::sleep_for(std::chrono::microseconds(waitUs));
+                }
+                if (nextUs - nowUs > timeoutMs * 1000) {
+                    errorKind_ = "timeout";
+                    return false;
+                }
+            }
+        }
+
+        lastFrameUs_ = QpcNowUs();
+
+        out = core::FrameUpdate{};
+        out.timestampUs = lastFrameUs_;
+        out.accumulatedFrames = 1;
+        out.contentChanged = true;
+        out.target = handles_[0];
+        ++frameIndex_;
+        out.widthPx = widthPx_;
+        out.heightPx = heightPx_;
+        out.desktopBounds = core::IntRect{ 0, 0, widthPx_, heightPx_ };
+        out.dirtyRects.assign(1, core::IntRect{ 0, 0, widthPx_, heightPx_ });
+        errorKind_ = "ok";
+        return true;
+    }
+
+    const char* LastErrorKind() const override { return errorKind_; }
+
+    core::IntRect DesktopBounds() const override {
+        return core::IntRect{ 0, 0, widthPx_, heightPx_ };
+    }
+
+private:
+    D2dRenderBackend& backend_;
+    int widthPx_ = 0;
+    int heightPx_ = 0;
+    int frameIndex_ = 0;
+    std::int64_t lastFrameUs_ = 0;
+    core::ImageHandle handles_[3] = { 0, 0, 0 };
+    const char* errorKind_ = "none";
+};
+
 }  // namespace
 
 int main(int argc, char** argv) {
     SetConsoleOutputCP(CP_UTF8);
+    // 卡住时也要看得到走到哪一步：块缓冲会把现场一起吞掉。
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
 
     if (SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) == 0) {
         std::printf("DPI_AWARE=FAILED lastError=%lu\n", static_cast<unsigned long>(GetLastError()));
@@ -200,14 +344,49 @@ int main(int argc, char** argv) {
         return 2;
     }
 
-    Win32DesktopDuplication capture(backend);
-    if (!capture.Initialize()) {
-        std::printf("CAPTURE_INIT=FAILED\n");
-        MfH264Encoder::ShutdownFoundation();
-        return 2;
+    // 合成源模式：synthetic:3840x2160 —— 本机只有 1080p 输出，4K30 的内存只能这样量。
+    bool syntheticMode = false;
+    int syntheticWidth = 0;
+    int syntheticHeight = 0;
+    std::unique_ptr<SyntheticCapture> synthetic;
+    {
+        const std::string_view mode = argc > 4 ? argv[4] : "";
+        const std::string_view prefix = "synthetic:";
+        if (mode.substr(0, prefix.size()) == prefix) {
+            int width = 0;
+            int height = 0;
+            if (std::sscanf(std::string(mode.substr(prefix.size())).c_str(), "%dx%d", &width,
+                            &height) == 2 &&
+                width >= 2 && height >= 2) {
+                syntheticMode = true;
+                syntheticWidth = width & ~1;
+                syntheticHeight = height & ~1;
+            }
+        }
     }
-    std::printf("OUTPUTS_SYSTEM=%d OUTPUTS_CAPTURABLE=%d\n", capture.TotalOutputCount(),
-                capture.OutputCount());
+
+    Win32DesktopDuplication duplication(backend);
+    if (!syntheticMode) {
+        if (!duplication.Initialize()) {
+            std::printf("CAPTURE_INIT=FAILED\n");
+            MfH264Encoder::ShutdownFoundation();
+            return 2;
+        }
+        std::printf("OUTPUTS_SYSTEM=%d OUTPUTS_CAPTURABLE=%d\n", duplication.TotalOutputCount(),
+                    duplication.OutputCount());
+    } else {
+        synthetic = std::make_unique<SyntheticCapture>(backend, syntheticWidth, syntheticHeight);
+        if (!synthetic->Open(0)) {
+            std::printf("SYNTHETIC_OPEN=FAILED kind=%s\n", synthetic->LastErrorKind());
+            MfH264Encoder::ShutdownFoundation();
+            return 2;
+        }
+        std::printf("SYNTHETIC_SIZE=%dx%d\n", syntheticWidth, syntheticHeight);
+    }
+
+    core::ICaptureSource& capture =
+        syntheticMode ? static_cast<core::ICaptureSource&>(*synthetic)
+                      : static_cast<core::ICaptureSource&>(duplication);
 
     MfH264Encoder encoder(backend);
     if (!encoder.Initialize()) {
@@ -266,13 +445,21 @@ int main(int argc, char** argv) {
     std::printf("RECORD_STATIC=%d\n", staticDesktop ? 1 : 0);
 
     bool alive = true;
+    double peakPrivateMb = 0.0;
     while (QpcNowUs() - startUs < durationUs) {
         PumpMessages();
         const std::int64_t now = QpcNowUs();
-        if (!session.Pump(now)) {
+        const bool pumpOk = session.Pump(now);
+        if (!pumpOk) {
             std::printf("SESSION_ENDED kind=%s\n", session.LastErrorKind());
             alive = false;
             break;
+        }
+
+        // 峰值比结束时的快照有用：驱动与写入器的缓冲会在中途顶起来再落回去。
+        const double privateMb = PrivateMemoryMb();
+        if (privateMb > peakPrivateMb) {
+            peakPrivateMb = privateMb;
         }
 
         // 每 33 ms 挪一步：30 fps 下每一帧都该有变化。
@@ -324,10 +511,17 @@ int main(int argc, char** argv) {
                 probed ? 1 : 0, hasVideo ? 1 : 0, hasAudioTrack ? 1 : 0,
                 static_cast<long long>(fileDurationMs));
     std::printf("RECORD_PRIVATE_MB=%.1f\n", PrivateMemoryMb());
+    std::printf("RECORD_PEAK_PRIVATE_MB=%.1f\n", peakPrivateMb);
     std::printf("RECORD_STOP_OK=%d\n", stopped ? 1 : 0);
 
+    // S2 的 4K30 目标是峰值 ≤ 350 MB。
+    constexpr double k4kPeakBudgetMb = 350.0;
+    const bool memoryOk = peakPrivateMb > 0.0 && peakPrivateMb <= k4kPeakBudgetMb;
+    std::printf("RECORD_4K_MEMORY_OK=%d\n", syntheticMode ? (memoryOk ? 1 : 0) : -1);
+
     const bool ok = alive && stopped && stats.framesSubmitted > 0 && bytes > 0 &&
-                    hasVideo && (!options.audioEnabled || hasAudioTrack);
+                    hasVideo && (!options.audioEnabled || hasAudioTrack) &&
+                    (!syntheticMode || memoryOk);
     std::printf("RECORD_PROBE=%s\n", ok ? "OK" : "FAILED");
     MfH264Encoder::ShutdownFoundation();
     return ok ? 0 : 1;

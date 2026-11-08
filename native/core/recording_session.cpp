@@ -1,4 +1,4 @@
-#include "recording_session.h"
+﻿#include "recording_session.h"
 
 #include <algorithm>
 #include <string_view>
@@ -61,7 +61,11 @@ bool RecordingSession::Start(const RecordingOptions& options, std::int64_t wallU
         return false;
     }
 
-    if (!capture_.Open(options.outputIndex)) {
+    // 窗口录制走 WGC，显示器录制走桌面复制：同一个 seam，两个入口。
+    const bool opened = options.captureWindow != nullptr
+                            ? capture_.OpenWindow(options.captureWindow)
+                            : capture_.Open(options.outputIndex);
+    if (!opened) {
         const char* kind = capture_.LastErrorKind();
         // 复制权被占用（busy）是常态分支：调用方按 BackoffUs 重试，不是给用户报错。
         SetError(kind == nullptr ? "none" : kind);

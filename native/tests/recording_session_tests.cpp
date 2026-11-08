@@ -622,6 +622,7 @@ void TestAudioUnavailableFallsBackToVideo() {
 }
 
 int main() {
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
     // 崩溃时也要能看到走到哪一步：默认的 stdout 是块缓冲，__fastfail 会跳过刷新。
     std::setvbuf(stdout, nullptr, _IONBF, 0);
     TestStartOpensBothSeams();

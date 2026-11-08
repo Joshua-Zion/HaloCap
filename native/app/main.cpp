@@ -1,4 +1,4 @@
-// S1 的组装：把 8 个 seam 接成一个能起来、能待着、能自己报出空闲内存的进程。
+﻿// S1 的组装：把 8 个 seam 接成一个能起来、能待着、能自己报出空闲内存的进程。
 //
 // 这一版刻意只做 S1 的骨架：设置、日志、托盘、热键、覆盖层窗口与渲染后端就绪，消息循环待着；
 // 托盘菜单与热键只记录「收到了什么动作」——真正的截图/录屏/OCR/贴图在 S3/S4 才接。
@@ -17,12 +17,16 @@
 #include "capability.h"
 #include "font_rasterizer.h"
 #include "input_host.h"
+#include "recording_session.h"
 #include "settings.h"
 #include "store.h"
 #include "tray_menu.h"
 
 #include "d2d_font_rasterizer.h"
 #include "d2d_render_backend.h"
+#include "dxgi_desktop_duplication.h"
+#include "mf_h264_encoder.h"
+#include "wasapi_audio_source.h"
 #include "win32_capability.h"
 #include "win32_input_host.h"
 #include "win32_store.h"
@@ -37,13 +41,18 @@
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
+#include <filesystem>
+#include <memory>
 #include <string>
 #include <string_view>
 
 namespace core = halocap::core;
 using halocap::platform::win32::D2dFontRasterizer;
 using halocap::platform::win32::D2dRenderBackend;
+using halocap::platform::win32::MfH264Encoder;
+using halocap::platform::win32::WasapiAudioSource;
 using halocap::platform::win32::Win32Capability;
+using halocap::platform::win32::Win32DesktopDuplication;
 using halocap::platform::win32::Win32InputHost;
 using halocap::platform::win32::Win32Store;
 using halocap::platform::win32::Win32SurfaceWindow;
@@ -74,6 +83,9 @@ struct Options {
     // 0 = 用主显示器尺寸。量「空闲预算在哪个分辨率下还成立」时用得到。
     int overlayWidth = 0;
     int overlayHeight = 0;
+
+    // >0 = 启动后立刻录这么多秒，然后退出。无人值守的端到端自检入口。
+    int recordSeconds = 0;
 };
 
 std::wstring Utf8ToWide(std::string_view text) {
@@ -152,6 +164,15 @@ double WorkingSetMb() {
         return -1.0;
     }
     return static_cast<double>(counters.WorkingSetSize) / 1048576.0;
+}
+
+std::int64_t FileBytesUtf8(const std::string& utf8Path) {
+    WIN32_FILE_ATTRIBUTE_DATA data{};
+    if (!GetFileAttributesExW(Utf8ToWide(utf8Path).c_str(), GetFileExInfoStandard, &data)) {
+        return -1;
+    }
+    return (static_cast<std::int64_t>(data.nFileSizeHigh) << 32) |
+           static_cast<std::int64_t>(data.nFileSizeLow);
 }
 
 // ---- 报告：每行都是 KEY=value，与其它探针同一读法 ----
@@ -250,6 +271,11 @@ Options ParseOptions(int argc, char** argv) {
                 options.overlayWidth = width;
                 options.overlayHeight = height;
             }
+        } else if (argument == "--record-seconds" && i + 1 < argc) {
+            options.recordSeconds = std::atoi(argv[++i]);
+            if (options.recordSeconds < 0) {
+                options.recordSeconds = 0;
+            }
         } else if (argument == "--no-tray") {
             options.tray = false;
         } else if (argument == "--no-input") {
@@ -267,6 +293,7 @@ void PrintUsage() {
     std::printf(
         "HaloCap (2.0 native skeleton)\n"
         "  --selftest [--seconds N] [--report PATH]\n"
+        "  --record-seconds N    record N seconds, then exit (unattended check)\n"
         "  --overlay-size 1920x1080\n"
         "  --no-tray | --no-input | --no-overlay\n");
 }
@@ -315,6 +342,9 @@ public:
 
     bool Ready() const { return ready_; }
 
+    // 录制要复用同一台 D3D 设备：采集、合成、编码必须是同一个设备/适配器（计划 §4）。
+    D2dRenderBackend& Backend() { return backend_; }
+
 private:
     static std::string Hex(long value) {
         char buffer[16];
@@ -327,6 +357,167 @@ private:
     Win32SurfaceWindow window_;
     core::TextCell hint_{};
     bool ready_ = false;
+};
+
+// ---- 录制：托盘「录屏」与录制热键的落点 ----
+
+std::int64_t QpcNowUs() {
+    static const LARGE_INTEGER frequency = [] {
+        LARGE_INTEGER value{};
+        QueryPerformanceFrequency(&value);
+        return value;
+    }();
+    LARGE_INTEGER now{};
+    QueryPerformanceCounter(&now);
+    return static_cast<std::int64_t>(now.QuadPart) * 1000000 / frequency.QuadPart;
+}
+
+// 1.x 的规则：设置里给了就用它（展开 %USERPROFILE% 这类变量），否则放到「视频\Captures」。
+std::wstring RecordingDirectory(const core::AppSettings& settings) {
+    if (!settings.recordingDirectory.empty()) {
+        const std::wstring configured = Utf8ToWide(settings.recordingDirectory);
+        wchar_t expanded[MAX_PATH] = {};
+        if (ExpandEnvironmentStringsW(configured.c_str(), expanded, MAX_PATH) > 0) {
+            return expanded;
+        }
+        return configured;
+    }
+
+    wchar_t profile[MAX_PATH] = {};
+    if (GetEnvironmentVariableW(L"USERPROFILE", profile, MAX_PATH) == 0) {
+        return {};
+    }
+    return std::wstring(profile) + L"\\Videos\\Captures";
+}
+
+std::wstring RecordingPathFor(const core::AppSettings& settings) {
+    const std::wstring directory = RecordingDirectory(settings);
+    if (directory.empty()) {
+        return {};
+    }
+
+    std::error_code ignored;
+    std::filesystem::create_directories(std::filesystem::path(directory), ignored);
+
+    SYSTEMTIME now{};
+    GetLocalTime(&now);
+    wchar_t name[160] = {};
+    std::swprintf(name, 160, L"HaloCap_%04d-%02d-%02d_%02d-%02d-%02d.mp4",
+                  static_cast<int>(now.wYear), static_cast<int>(now.wMonth),
+                  static_cast<int>(now.wDay), static_cast<int>(now.wHour),
+                  static_cast<int>(now.wMinute), static_cast<int>(now.wSecond));
+    std::wstring path = directory + L"\\" + name;
+
+    // 同名加序号（1.x 的 AppPaths 也是这么做的）。
+    int index = 2;
+    while (GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES) {
+        std::swprintf(name, 160, L"HaloCap_%04d-%02d-%02d_%02d-%02d-%02d_%d.mp4",
+                      static_cast<int>(now.wYear), static_cast<int>(now.wMonth),
+                      static_cast<int>(now.wDay), static_cast<int>(now.wHour),
+                      static_cast<int>(now.wMinute), static_cast<int>(now.wSecond), index);
+        path = directory + L"\\" + name;
+        ++index;
+    }
+    return path;
+}
+
+// 录制的全部对象都在这里：采集、编码、两路音频与录制会话。Start 时建、Stop 时拆，
+// 所以 idle 的时候它们一个字节都不占（S1 的 80 MB 预算靠这一条守住）。
+class RecordingRunner {
+public:
+    bool Start(D2dRenderBackend& backend, const core::AppSettings& settings, AppLog& log, std::string& errorKind) {
+        errorKind.clear();
+
+        const std::wstring path = RecordingPathFor(settings);
+        if (path.empty()) {
+            errorKind = "path";
+            return false;
+        }
+        path_ = WideToUtf8(path);
+
+        log.Info("recording: capture initializing");
+        capture_ = std::make_unique<Win32DesktopDuplication>(backend);
+        if (!capture_->Initialize()) {
+            errorKind = "capture";
+            Reset();
+            return false;
+        }
+
+        log.Info("recording: encoder initializing");
+        encoder_ = std::make_unique<MfH264Encoder>(backend);
+        if (!encoder_->Initialize()) {
+            errorKind = "encoder";
+            Reset();
+            return false;
+        }
+
+        if (settings.recording.systemAudio) {
+            systemAudio_ =
+                std::make_unique<WasapiAudioSource>(core::AudioSourceKind::SystemLoopback);
+        }
+        if (settings.recording.microphone) {
+            microphone_ = std::make_unique<WasapiAudioSource>(core::AudioSourceKind::Microphone);
+        }
+
+        log.Info(std::string("recording: session starting audio=") + (settings.recording.WantsAudio() ? "1" : "0"));
+        session_ = std::make_unique<core::RecordingSession>(*capture_, *encoder_,
+                                                            systemAudio_.get(), microphone_.get());
+
+        core::RecordingOptions options;
+        options.outputIndex = 0;
+        options.targetFps = settings.recording.FramesPerSecond();
+        options.outputPathUtf8 = path_;
+        options.audioEnabled = settings.recording.WantsAudio();
+
+        if (!session_->Start(options, QpcNowUs())) {
+            errorKind = session_->LastErrorKind();
+            Reset();
+            return false;
+        }
+        return true;
+    }
+
+    bool Pump(std::int64_t wallUs) { return session_ != nullptr && session_->Pump(wallUs); }
+
+    bool Pause(std::int64_t wallUs) { return session_ != nullptr && session_->Pause(wallUs); }
+
+    bool Resume(std::int64_t wallUs) { return session_ != nullptr && session_->Resume(wallUs); }
+
+    bool Paused() const { return session_ != nullptr && session_->Paused(); }
+
+    bool Stop(core::RecordingStats& stats) {
+        if (session_ == nullptr) {
+            stats = core::RecordingStats{};
+            return false;
+        }
+        const bool ok = session_->Stop(QpcNowUs(), stats);
+        Reset();
+        return ok;
+    }
+
+    bool Active() const { return session_ != nullptr; }
+
+    const char* LastErrorKind() const {
+        return session_ != nullptr ? session_->LastErrorKind() : "none";
+    }
+
+    const std::string& OutputPath() const { return path_; }
+
+private:
+    void Reset() {
+        session_.reset();
+        capture_.reset();
+        encoder_.reset();
+        systemAudio_.reset();
+        microphone_.reset();
+    }
+
+    std::unique_ptr<Win32DesktopDuplication> capture_;
+    std::unique_ptr<MfH264Encoder> encoder_;
+    std::unique_ptr<WasapiAudioSource> systemAudio_;
+    std::unique_ptr<WasapiAudioSource> microphone_;
+    std::unique_ptr<core::RecordingSession> session_;
+    std::string path_;
 };
 
 int Run(const Options& options) {
@@ -344,6 +535,9 @@ int Run(const Options& options) {
     log.Info("starting: build=" + std::to_string(facts.osBuild) +
              " wgc=" + (facts.graphicsCaptureSupported ? "1" : "0") +
              " recording=" + (flags.recording ? "1" : "0"));
+
+    // Media Foundation 一次启动，进程内复用（编码器热启动的成本因此只在第一次）。
+    MfH264Encoder::StartupFoundation();
 
     // ---- 1) 设置：读自己的目录；首次启动写一份默认值 ----
     const core::SettingsLoadResult loaded = core::LoadSettingsFrom(store);
@@ -478,11 +672,102 @@ int Run(const Options& options) {
         log.Info(overlayReady ? "overlay: prewarmed" : "overlay: prewarm failed");
     }
 
+    // ---- 录制入口：托盘「录屏」与录制热键共用这一个开关 ----
+    RecordingRunner recording;
+    bool recordingActive = false;
+    bool recordStarted = false;
+    bool recordStopped = false;
+    core::RecordingStats recordStats;
+
+    auto refreshTray = [&]() {
+        trayState.recording = recordingActive;
+        trayState.recordingPaused = recordingActive && recording.Paused();
+        if (trayIcon) {
+            tray.Apply(trayState);
+        }
+    };
+
+    auto toggleRecording = [&]() {
+        if (!recordingActive) {
+            if (!overlayReady) {
+                // 录制要复用覆盖层那台 D3D 设备（采集/编码必须同一个设备）。
+                overlayReady = overlay.Initialize(log, overlayWidth, overlayHeight);
+            }
+            std::string kind;
+            const bool started = overlayReady && recording.Start(overlay.Backend(), settings, log, kind);
+            if (started) {
+                recordingActive = true;
+                refreshTray();
+                log.Info("recording: started -> " + recording.OutputPath());
+                tray.Notify("HaloCap", "开始录制");
+            } else {
+                log.Error("recording: start failed (" +
+                          (overlayReady ? kind : std::string("overlay")) + ")");
+                tray.Notify("HaloCap", "无法开始录制");
+            }
+            return;
+        }
+
+        core::RecordingStats stats;
+        const bool stopped = recording.Stop(stats);
+        recordingActive = false;
+        refreshTray();
+        log.Info(stopped ? "recording: stopped" : "recording: stop failed");
+        if (stopped) {
+            tray.Notify("HaloCap", "已保存：" + recording.OutputPath());
+        } else {
+            tray.Notify("HaloCap", "录制失败，详见日志");
+        }
+    };
+
+    auto togglePause = [&]() {
+        if (!recordingActive) {
+            return;
+        }
+        if (recording.Paused()) {
+            recording.Resume(QpcNowUs());
+        } else {
+            recording.Pause(QpcNowUs());
+        }
+        refreshTray();
+        log.Info(recording.Paused() ? "recording: paused" : "recording: resumed");
+    };
+
+    // --record-seconds：无人值守的端到端自检（不经过托盘与热键）。
+    const bool recordRequested = options.recordSeconds > 0;
+    std::int64_t recordDeadlineMs = 0;
+    if (recordRequested) {
+        if (!overlayReady) {
+            overlayReady = overlay.Initialize(log, overlayWidth, overlayHeight);
+        }
+        std::string kind;
+        recordStarted = overlayReady && recording.Start(overlay.Backend(), settings, log, kind);
+        if (recordStarted) {
+            recordingActive = true;
+            refreshTray();
+            recordDeadlineMs =
+                static_cast<std::int64_t>(GetTickCount64()) + options.recordSeconds * 1000;
+            log.Info("recording: started (--record-seconds) -> " + recording.OutputPath());
+        } else {
+            log.Error("recording: start failed (" +
+                      (overlayReady ? kind : std::string("overlay")) + ")");
+            running = false;
+        }
+    }
+
     auto onAction = [&](core::TrayCommand command) {
         ++actions;
         if (command == core::TrayCommand::Exit) {
             log.Info("action: Exit");
             running = false;
+            return;
+        }
+        if (command == core::TrayCommand::Record) {
+            toggleRecording();
+            return;
+        }
+        if (command == core::TrayCommand::PauseRecording) {
+            togglePause();
             return;
         }
         log.Info(std::string("action: ") + core::TrayCommandName(command) +
@@ -499,6 +784,10 @@ int Run(const Options& options) {
         int token = 0;
         while (input.PollHotkey(token)) {
             ++actions;
+            if (token == kTokenRecord) {
+                toggleRecording();
+                continue;
+            }
             log.Info("action: hotkey token=" + std::to_string(token));
         }
 
@@ -521,6 +810,32 @@ int Run(const Options& options) {
         if (const core::TrayCommand command = tray.PollCommand();
             command != core::TrayCommand::None) {
             onAction(command);
+        }
+
+        // 录制泵：与消息循环同一个线程、同一个 30 ms 节奏。采集侧丢设备时这里会返回
+        // false，录制作废并给出提示，而不是让 app 卡住。
+        if (recordingActive) {
+            if (!recording.Pump(QpcNowUs())) {
+                log.Error(std::string("recording: ended by capture (") +
+                          recording.LastErrorKind() + ")");
+                core::RecordingStats ignored;
+                recording.Stop(ignored);
+                recordingActive = false;
+                refreshTray();
+                tray.Notify("HaloCap", "录制中断：采集源丢失");
+                if (recordRequested) {
+                    running = false;
+                }
+            }
+        }
+
+        if (recordRequested && recordingActive &&
+            static_cast<std::int64_t>(GetTickCount64()) >= recordDeadlineMs) {
+            recordStopped = recording.Stop(recordStats);
+            recordingActive = false;
+            refreshTray();
+            log.Info(recordStopped ? "recording: stopped" : "recording: stop failed");
+            running = false;
         }
 
         if (options.selftest) {
@@ -588,6 +903,18 @@ int Run(const Options& options) {
         ok = ok && sampledIdle && (!options.overlay || overlayPrivate >= 0.0);
     }
 
+    if (recordRequested) {
+        const std::int64_t bytes = recordStopped ? FileBytesUtf8(recording.OutputPath()) : -1;
+        AddFlag(report, "APP_RECORD_STARTED", recordStarted);
+        AddFlag(report, "APP_RECORD_STOPPED", recordStopped);
+        AddInt(report, "APP_RECORD_FRAMES", recordStats.framesSubmitted);
+        AddInt(report, "APP_RECORD_AUDIO_FRAMES", recordStats.audioFrames);
+        AddText(report, "APP_RECORD_PATH", recording.OutputPath());
+        AddInt(report, "APP_RECORD_BYTES", bytes);
+        // 无人值守录制的判据：起来了、停了、有帧、文件非空。
+        ok = ok && recordStarted && recordStopped && recordStats.framesSubmitted > 0 && bytes > 0;
+    }
+
     AddText(report, "APP_SELFTEST", options.selftest ? (ok ? "OK" : "FAILED") : "SKIPPED");
 
     std::printf("%s", report.c_str());
@@ -598,9 +925,10 @@ int Run(const Options& options) {
         }
     }
 
-    log.Info(ok ? "shutdown: clean" : "shutdown: selftest failed");
+    log.Info(ok ? "shutdown: clean" : "shutdown: failed");
     tray.Close();
     input.Close();
+    MfH264Encoder::ShutdownFoundation();
     return ok ? 0 : 1;
 }
 
@@ -608,6 +936,7 @@ int Run(const Options& options) {
 
 int main(int argc, char** argv) {
     SetConsoleOutputCP(CP_UTF8);
+    std::setvbuf(stdout, nullptr, _IONBF, 0);
 
     const Options options = ParseOptions(argc, argv);
     if (options.help) {

@@ -2,6 +2,7 @@
 
 #include "display_list.h"
 #include "geometry.h"
+#include "surface_window.h"   // NativeHandle：窗口采集的入口要用
 
 #include <cstdint>
 #include <vector>
@@ -37,6 +38,13 @@ public:
 
     // outputIndex 是平台枚举出来的输出序号；设备与适配器的配对由平台侧负责。
     virtual bool Open(int outputIndex) = 0;
+
+    // 窗口采集（WGC）走这个入口，与 Open(outputIndex) 二选一：一个实例只采一个来源。
+    // 桌面复制实现返回 false——它不是「失败」，而是「这条来源不支持窗口」。
+    virtual bool OpenWindow(NativeHandle window) {
+        (void)window;
+        return false;
+    }
 
     virtual void Close() = 0;
 

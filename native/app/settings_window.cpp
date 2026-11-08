@@ -31,9 +31,9 @@ namespace {
 using namespace Gdiplus;
 
 constexpr wchar_t kClassName[] = L"HaloCapSettings";
-constexpr float kWindowW = 856.0f;   // 820 卡片 + 18 DIP 透明边给阴影
-constexpr float kWindowH = 656.0f;
-constexpr float kMargin = 36.0f;    // 卡片 inset：18 视觉边距 + 18 阴影余量
+constexpr float kWindowW = 916.0f;   // 820 卡片 + 48 DIP/侧 透明边给阴影
+constexpr float kWindowH = 716.0f;
+constexpr float kMargin = 48.0f;    // 卡片 inset：48 DIP 阴影余量
 constexpr float kTitleBar = 50.0f;
 constexpr float kSidebar = 218.0f;
 constexpr float kFooter = 60.0f;
@@ -770,7 +770,7 @@ void SettingsWindow::BuildBackgroundCache() {
     Fonts* fonts = GetFonts();
 
     // 真软阴影：形状 → 降采样 → 两次盒式模糊 → 拉伸合成（缓存里只做一次）。
-    DrawSoftShadow(g, frame, kRadius, 0.8f, 14.0f, 6.0f, false);    FillRoundRect(g, frame, kRadius, Color(255, 255, 255, 255));
+    DrawSoftShadow(g, frame, kRadius, 0.35f, 20.0f, 6.0f, false);    FillRoundRect(g, frame, kRadius, Color(255, 255, 255, 255));
     FillRoundRect(g, frame, kRadius, content);
     StrokeRoundRect(g, frame, kRadius, Color(38, 0, 0, 0));
 

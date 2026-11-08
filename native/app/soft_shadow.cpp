@@ -1,4 +1,4 @@
-#include "soft_shadow.h"
+﻿#include "soft_shadow.h"
 
 #include <algorithm>
 #include <cmath>
@@ -132,8 +132,12 @@ void DrawSoftShadow(Graphics& target, const RectF& rect, float cornerRadius, flo
     for (int y = 0; y < smallHeight; ++y) {
         auto* row = pixels + static_cast<std::size_t>(y) * data.Stride;
         for (int x = 0; x < smallWidth; ++x) {
-            const std::uint8_t value = alpha[static_cast<std::size_t>(y) * smallWidth + x];
-            row[x * 4 + 0] = value;   // 预乘：黑 = 0，alpha 同时写进 RGB
+            // 预乘 BGRA：黑阴影的 RGB 必须等于 alpha；不透明度也一起乘进去，
+            // 否则颜色矩阵只缩放 alpha 会得到 RGB > alpha 的非法预乘值，阴影看起来是坏的。
+            const float scaled = alpha[static_cast<std::size_t>(y) * smallWidth + x] * opacity;
+            const auto value = static_cast<std::uint8_t>(
+                std::clamp(std::lround(scaled), 0L, 255L));
+            row[x * 4 + 0] = value;
             row[x * 4 + 1] = value;
             row[x * 4 + 2] = value;
             row[x * 4 + 3] = value;
@@ -141,19 +145,11 @@ void DrawSoftShadow(Graphics& target, const RectF& rect, float cornerRadius, flo
     }
     mask.UnlockBits(&data);
 
-    ColorMatrix matrix = {};
-    matrix.m[0][0] = 1.0f;
-    matrix.m[1][1] = 1.0f;
-    matrix.m[2][2] = 1.0f;
-    matrix.m[3][3] = opacity;
-    ImageAttributes attributes;
-    attributes.SetColorMatrix(&matrix);
-
     target.SetInterpolationMode(InterpolationModeHighQualityBicubic);
-    target.DrawImage(&mask, RectF(rect.X - margin, rect.Y - margin + offsetY,
-                                  totalWidth, totalHeight),
-                     0.0f, 0.0f, static_cast<float>(smallWidth), static_cast<float>(smallHeight),
-                     UnitPixel, &attributes);
+    target.DrawImage(&mask,
+                     RectF(rect.X - margin, rect.Y - margin + offsetY, totalWidth, totalHeight),
+                     0.0f, 0.0f, static_cast<float>(smallWidth),
+                     static_cast<float>(smallHeight), UnitPixel);
 }
 
 }

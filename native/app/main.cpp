@@ -1223,6 +1223,16 @@ int Run(const Options& options) {
 
     auto onAction = [&](core::TrayCommand command) {
         ++actions;
+        if (command == core::TrayCommand::ToggleAutoStart) {
+            liveSettings.autoStart = !liveSettings.autoStart;
+            std::string autoStartError;
+            halocap::platform::win32::SetAutoStart(liveSettings.autoStart, selfPath,
+                                                   &autoStartError);
+            trayState.autoStart = halocap::platform::win32::IsAutoStartEnabled(selfPath);
+            tray.Apply(trayState);
+            log.Info(liveSettings.autoStart ? "autostart: enabled" : "autostart: disabled");
+            return;
+        }
         if (command == core::TrayCommand::Exit) {
             log.Info("action: Exit");
             running = false;

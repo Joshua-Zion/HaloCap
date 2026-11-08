@@ -298,6 +298,13 @@ LRESULT ScreenshotOverlay::HandleMessage(HWND window, UINT message, WPARAM wPara
         SetCursor(LoadCursorW(nullptr, IDC_CROSS));
         return TRUE;
 
+    case WM_TIMER:
+        if (wParam == 1) {
+            StepHoverAnimation();
+            return 0;
+        }
+        break;
+
     case WM_MOUSEWHEEL: {
         const int delta = GET_WHEEL_DELTA_WPARAM(wParam);
         if ((GetKeyState(VK_CONTROL) & 0x8000) != 0) {
@@ -431,6 +438,8 @@ void ScreenshotOverlay::OnMouseMove(POINT point) {
     }
     if (hovered != hoveredToolbar_) {
         hoveredToolbar_ = hovered;
+        hoverAnimating_ = true;
+        SetTimer(static_cast<HWND>(window_->Handle()), 1, 16, nullptr);
         dirty_ = true;
     }
 
@@ -1040,6 +1049,25 @@ void ScreenshotOverlay::RenderMagnifier(core::FramePlan& plan) {
         plan.Add(coordCell.ToBlit());
     }
 }
+void ScreenshotOverlay::StepHoverAnimation() {
+    bool settled = true;
+    for (int i = 0; i < 32; ++i) {
+        const float target = (i == hoveredToolbar_) ? 1.0f : 0.0f;
+        if (hoverAlpha_[i] < target) {
+            hoverAlpha_[i] = std::min(target, hoverAlpha_[i] + 0.18f);
+            settled = false;
+        } else if (hoverAlpha_[i] > target) {
+            hoverAlpha_[i] = std::max(target, hoverAlpha_[i] - 0.18f);
+            settled = false;
+        }
+    }
+    hoverAnimating_ = !settled;
+    if (settled) {
+        KillTimer(static_cast<HWND>(window_->Handle()), 1);
+    }
+    dirty_ = true;
+}
+
 void ScreenshotOverlay::LayoutToolbar() {
     toolbar_.clear();
 

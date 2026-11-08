@@ -46,6 +46,8 @@ private:
 
     std::vector<std::uint8_t> content_;
     bool hover_ = false;
+    float zoom_ = 1.0f;
+    float opacity_ = 1.0f;
     bool trackingLeave_ = false;
     RECT copyRect_{};
     RECT saveRect_{};

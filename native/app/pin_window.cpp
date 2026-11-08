@@ -107,8 +107,8 @@ void PinWindow::Render() {
         return;
     }
 
-    const int width = contentWidth_;
-    const int height = contentHeight_;
+    const int width = std::max(1, static_cast<int>(std::lround(contentWidth_ * zoom_)));
+    const int height = std::max(1, static_cast<int>(std::lround(contentHeight_ * zoom_)));
     const int outerWidth = width + 2 * (kBorderPx + kGlowPx);
     const int outerHeight = height + 2 * (kBorderPx + kGlowPx);
     const int contentLeft = kGlowPx + kBorderPx;
@@ -151,8 +151,12 @@ void PinWindow::Render() {
             std::uint8_t a = 0;
 
             if (insideContent) {
+                const int sampleX = std::clamp(
+                    static_cast<int>(static_cast<float>(contentX) / zoom_), 0, contentWidth_ - 1);
+                const int sampleY = std::clamp(
+                    static_cast<int>(static_cast<float>(contentY) / zoom_), 0, contentHeight_ - 1);
                 const std::size_t source =
-                    (static_cast<std::size_t>(y - contentTop) * width + (x - contentLeft)) * 4;
+                    (static_cast<std::size_t>(sampleY) * contentWidth_ + sampleX) * 4;
                 b = content_[source + 0];
                 g = content_[source + 1];
                 r = content_[source + 2];
@@ -261,7 +265,7 @@ void PinWindow::Render() {
         POINT source{ 0, 0 };
         BLENDFUNCTION blend{};
         blend.BlendOp = AC_SRC_OVER;
-        blend.SourceConstantAlpha = 255;
+        blend.SourceConstantAlpha = static_cast<BYTE>(std::clamp(opacity_, 0.15f, 1.0f) * 255.0f);
         blend.AlphaFormat = AC_SRC_ALPHA;
         UpdateLayeredWindow(static_cast<HWND>(window_), screen, &destination, &size, memory,
                             &source, 0, &blend, ULW_ALPHA);
@@ -328,11 +332,13 @@ LRESULT PinWindow::Handle(HWND window, UINT message, WPARAM wParam, LPARAM lPara
             TrackMouseEvent(&track);
             trackingLeave_ = true;
         }
+        const int displayWidth = static_cast<int>(std::lround(contentWidth_ * zoom_));
+        const int displayHeight = static_cast<int>(std::lround(contentHeight_ * zoom_));
         const bool hover = ButtonAt(point) >= 0 ||
                            (point.x >= kGlowPx + kBorderPx &&
-                            point.x < kGlowPx + kBorderPx + contentWidth_ &&
+                            point.x < kGlowPx + kBorderPx + displayWidth &&
                             point.y >= kGlowPx + kBorderPx &&
-                            point.y < kGlowPx + kBorderPx + contentHeight_);
+                            point.y < kGlowPx + kBorderPx + displayHeight);
         if (hover != hover_) {
             hover_ = hover;
             Render();
@@ -354,6 +360,23 @@ LRESULT PinWindow::Handle(HWND window, UINT message, WPARAM wParam, LPARAM lPara
             Render();
         }
         return 0;
+
+    case WM_MOUSEWHEEL: {
+        const int delta = GET_WHEEL_DELTA_WPARAM(wParam);
+        if ((GetKeyState(VK_CONTROL) & 0x8000) != 0) {
+            opacity_ = std::clamp(opacity_ + (delta > 0 ? 0.08f : -0.08f), 0.15f, 1.0f);
+        } else {
+            zoom_ = std::clamp(zoom_ * (delta > 0 ? 1.1f : 0.9f), 0.12f, 8.0f);
+            const int newWidth = std::max(1, static_cast<int>(std::lround(contentWidth_ * zoom_)));
+            const int newHeight = std::max(1, static_cast<int>(std::lround(contentHeight_ * zoom_)));
+            SetWindowPos(window, nullptr, 0, 0,
+                         newWidth + 2 * (kBorderPx + kGlowPx),
+                         newHeight + 2 * (kBorderPx + kGlowPx),
+                         SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+        Render();
+        return 0;
+    }
 
     case WM_LBUTTONDOWN: {
         const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };

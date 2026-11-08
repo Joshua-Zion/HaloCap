@@ -204,6 +204,9 @@ private:
     POINT lastMouse_{};
     bool mouseInside_ = false;
     int hoveredToolbar_ = -1;
+    float hoverAlpha_[32] = {};
+    bool hoverAnimating_ = false;
+    void StepHoverAnimation();
 
     // 文字输入弹窗
     HWND editorWindow_ = nullptr;

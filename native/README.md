@@ -417,3 +417,9 @@ native> build\app\HaloCap.exe --pin-selftest pin.png
 ## 圆盘菜单
 
 `Ctrl+Alt+D` 或托盘左键在光标处弹出圆盘：四动作从 12 点顺时针（截图 / OCR / 录制 / 贴图），悬停高亮、Esc 或点空白关闭，动作直接调用对应功能。`--radial-selftest` 打开并抓证明图（`APP_RADIAL_WINDOW=1`）。
+
+## 区域 / 窗口录制
+
+设置里的录制范围决定入口：区域 → 覆盖层拖选一块（选区回调后倒计时再开录），窗口 → 取当前前台窗口走 WGC，其余整屏。区域裁剪在 NV12 转换的源矩形上完成，不额外拷贝。
+
+实测：`--record-seconds 3 --record-region 640x360@100,100` 产出 640×360 / 82 帧；`--record-seconds 3 --record-window` 让 WGC 录当前前台窗口，产出 1920×1032 / 81 帧（`record_probe --inspect` 读回尺寸）。

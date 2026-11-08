@@ -74,8 +74,27 @@ bool RecordingSession::Start(const RecordingOptions& options, std::int64_t wallU
     captureOpen_ = true;
 
     const IntRect bounds = capture_.DesktopBounds();
-    const int widthPx = bounds.right - bounds.left;
-    const int heightPx = bounds.bottom - bounds.top;
+    int widthPx = bounds.right - bounds.left;
+    int heightPx = bounds.bottom - bounds.top;
+    IntRect localCrop{};
+    if (!options.cropRegion.IsEmpty() && options.captureWindow == nullptr) {
+        // 调用方给的是屏幕坐标；编码器要的是「源纹理内」的坐标。
+        IntRect region = options.cropRegion;
+        region.left = std::clamp(region.left - bounds.left, 0, widthPx);
+        region.right = std::clamp(region.right - bounds.left, 0, widthPx);
+        region.top = std::clamp(region.top - bounds.top, 0, heightPx);
+        region.bottom = std::clamp(region.bottom - bounds.top, 0, heightPx);
+        region.right = std::min(region.right, region.left + (widthPx - region.left));
+        region.bottom = std::min(region.bottom, region.top + (heightPx - region.top));
+        // NV12 要求偶数尺寸：向内取整。
+        region.right = region.left + ((region.right - region.left) & ~1);
+        region.bottom = region.top + ((region.bottom - region.top) & ~1);
+        if (region.right - region.left >= 2 && region.bottom - region.top >= 2) {
+            localCrop = region;
+            widthPx = region.right - region.left;
+            heightPx = region.bottom - region.top;
+        }
+    }
 
     // NV12 是 4:2:0 的两个平面，奇数尺寸没有合法的色度划分，编码 seam 在 OpenVideo 就拒。
     // 选区取整是调用方的责任（ResolveOutputSize 已经保证偶数）；这里只把不合法的输入
@@ -120,6 +139,7 @@ bool RecordingSession::Start(const RecordingOptions& options, std::int64_t wallU
     config.targetFps = options.targetFps > 0 ? options.targetFps : 30;
     config.bitrateBitsPerSec = options.bitrateBitsPerSec;
     config.requestHardware = options.requestHardware;
+    config.cropRegion = localCrop;
 
     if (!encoder_.OpenVideo(config, path_)) {
         capture_.Close();

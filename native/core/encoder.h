@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "display_list.h"
 #include "frame_scheduler.h"
@@ -15,6 +15,9 @@ struct VideoEncoderConfig {
     int widthPx = 0;
     int heightPx = 0;
     int targetFps = 30;
+
+    // 非空 = 只编码源纹理上的这块区域（屏幕坐标，NV12 转换时裁剪）。
+    IntRect cropRegion{};
 
     // 0 = 按 DefaultBitrateBitsPerSec 推。
     std::int64_t bitrateBitsPerSec = 0;

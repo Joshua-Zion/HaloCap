@@ -495,6 +495,16 @@ void ScreenshotOverlay::OnMouseMove(POINT point) {
 }
 
 void ScreenshotOverlay::OnLeftButtonDown(POINT point) {
+    if (options_.mode == OverlayMode::RecordRegion) {
+        if (phase_ == Phase::Selecting) {
+            selecting_ = true;
+            selection_.Begin(core::Point{ static_cast<float>(point.x),
+                                          static_cast<float>(point.y) });
+            dirty_ = true;
+        }
+        return;
+    }
+
     // 选项栏在当前工具下展开时优先命中。
     if (optionBounds_.right > optionBounds_.left && point.x >= optionBounds_.left &&
         point.x < optionBounds_.right && point.y >= optionBounds_.top &&
@@ -602,6 +612,21 @@ void ScreenshotOverlay::OnLeftButtonUp(POINT point) {
         selecting_ = false;
         if (!selection_.Bounds().IsEmpty()) {
             phase_ = Phase::Annotating;
+            if (options_.mode == OverlayMode::RecordRegion) {
+                const core::Rect bounds = selection_.Bounds();
+                const core::IntRect rect{ static_cast<int>(bounds.left),
+                                          static_cast<int>(bounds.top),
+                                          static_cast<int>(bounds.left) +
+                                              (static_cast<int>(bounds.Width()) & ~1),
+                                          static_cast<int>(bounds.top) +
+                                              (static_cast<int>(bounds.Height()) & ~1) };
+                const auto handler = options_.onRegion;
+                Close();
+                if (handler) {
+                    handler(rect);
+                }
+                return;
+            }
         }
         dirty_ = true;
         return;
@@ -1317,9 +1342,11 @@ void ScreenshotOverlay::RenderHint(core::FramePlan& plan) {
         return;
     }
 
+    const bool recordMode = options_.mode == OverlayMode::RecordRegion;
     const bool ocrMode = options_.mode == OverlayMode::Ocr;
     const char* hint = selection_.Bounds().IsEmpty()
-                           ? (ocrMode ? "拖动选择区域 · Enter 识别 · Esc 退出"
+                           ? (recordMode ? "拖动选择录制区域 · Esc 取消"
+                              : ocrMode ? "拖动选择区域 · Enter 识别 · Esc 退出"
                                       : "拖动选择区域 · 空格全屏标注 · Esc 退出")
                            : (ocrMode ? "OCR · Enter 识别 · Esc 退出"
                                       : "标注中 · 1-9 选工具 · Ctrl+Z 撤销 · Ctrl+C 复制 · Ctrl+S 保存");
@@ -1383,11 +1410,13 @@ void ScreenshotOverlay::Render() {
         RenderSelection(plan);
     }
 
-    RenderToolbar(plan);
-    RenderOptionBar(plan);
+    if (options_.mode != OverlayMode::RecordRegion) {
+        RenderToolbar(plan);
+        RenderOptionBar(plan);
+        RenderMagnifier(plan);
+    }
     RenderHint(plan);
     RenderSizeBadge(plan);
-    RenderMagnifier(plan);
 
     backend_->WaitForFrameSlot();
     backend_->Render(plan, IntRect{});

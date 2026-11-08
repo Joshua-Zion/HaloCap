@@ -20,6 +20,7 @@ namespace halocap::app {
 enum class OverlayMode {
     Screenshot,
     Ocr,
+    RecordRegion,
 };
 
 struct ScreenshotOverlayOptions {
@@ -36,6 +37,9 @@ struct ScreenshotOverlayOptions {
     // OCR 模式：Enter /「识」把选区合成成 BGRA 交出去，由 app 跑引擎并开结果窗口。
     std::function<void(const std::uint8_t* bgra, int width, int height, int screenX, int screenY)>
         onOcr;
+
+    // 区域录制：拖完选区交回屏幕坐标，由 app 起录制。
+    std::function<void(core::IntRect rect)> onRegion;
 };
 
 // S3 的交互层：全屏覆盖层 + 选区 + 工具栏 + 标注编辑 + 文字输入 + 导出/贴图。

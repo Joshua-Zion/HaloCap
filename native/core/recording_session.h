@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "audio_source.h"
 #include "capture_source.h"
@@ -21,6 +21,9 @@ struct RecordingOptions {
 
     // 非空 = 采这个窗口（WGC）；否则按 outputIndex 采桌面复制。
     NativeHandle captureWindow = nullptr;
+
+    // 非空 = 只录这块屏幕区域（桌面录制）；窗口录制忽略。
+    IntRect cropRegion{};
 
     // 目标帧率。桌面复制的唤醒率由光标主导（实测 100+ 次每秒），所以这个数不是「采集多少帧」，
     // 而是「最多送多少帧」。

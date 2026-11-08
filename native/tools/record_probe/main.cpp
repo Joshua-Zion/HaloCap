@@ -17,6 +17,7 @@
 
 #include <windows.h>
 
+#include <mfapi.h>
 #include <mfreadwrite.h>
 #include <psapi.h>
 
@@ -147,7 +148,8 @@ std::string AbsolutePath(const std::string& utf8Path) {
 
 // 编码器说「写完了」不等于文件里有那条流。用源读取器把音轨与时长读回来，
 // 这是「MP4 里真的有 AAC」唯一不靠猜的判据。
-bool ProbeFile(const std::wstring& path, bool& hasVideo, bool& hasAudio, std::int64_t& durationMs) {
+bool ProbeFile(const std::wstring& path, bool& hasVideo, bool& hasAudio, std::int64_t& durationMs,
+               int& width, int& height) {
     hasVideo = false;
     hasAudio = false;
     durationMs = 0;
@@ -160,6 +162,15 @@ bool ProbeFile(const std::wstring& path, bool& hasVideo, bool& hasAudio, std::in
     Microsoft::WRL::ComPtr<IMFMediaType> videoType;
     hasVideo = SUCCEEDED(reader->GetNativeMediaType(
         static_cast<DWORD>(MF_SOURCE_READER_FIRST_VIDEO_STREAM), 0, &videoType));
+    if (hasVideo) {
+        UINT32 videoWidth = 0;
+        UINT32 videoHeight = 0;
+        if (SUCCEEDED(MFGetAttributeSize(videoType.Get(), MF_MT_FRAME_SIZE, &videoWidth,
+                                         &videoHeight))) {
+            width = static_cast<int>(videoWidth);
+            height = static_cast<int>(videoHeight);
+        }
+    }
 
     Microsoft::WRL::ComPtr<IMFMediaType> audioType;
     hasAudio = SUCCEEDED(reader->GetNativeMediaType(
@@ -322,6 +333,24 @@ int main(int argc, char** argv) {
 
     if (SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) == 0) {
         std::printf("DPI_AWARE=FAILED lastError=%lu\n", static_cast<unsigned long>(GetLastError()));
+    }
+
+    if (argc > 2 && std::string_view(argv[1]) == "--inspect") {
+        if (!MfH264Encoder::StartupFoundation()) {
+            std::printf("MFSTARTUP=FAILED\n");
+            return 2;
+        }
+        bool hasVideo = false;
+        bool hasAudio = false;
+        std::int64_t duration = 0;
+        int width = 0;
+        int height = 0;
+        const bool ok = ProbeFile(Utf8ToWide(argv[2]), hasVideo, hasAudio, duration, width, height);
+        std::printf("FILE_PROBED=%d VIDEO_TRACK=%d AUDIO_TRACK=%d WIDTH=%d HEIGHT=%d DURATION_MS=%lld\n",
+                    ok ? 1 : 0, hasVideo ? 1 : 0, hasAudio ? 1 : 0, width, height,
+                    static_cast<long long>(duration));
+        MfH264Encoder::ShutdownFoundation();
+        return ok ? 0 : 1;
     }
 
     const int seconds = argc > 1 ? std::atoi(argv[1]) : 5;
@@ -504,8 +533,10 @@ int main(int argc, char** argv) {
     bool hasVideo = false;
     bool hasAudioTrack = false;
     std::int64_t fileDurationMs = 0;
+    int videoWidth = 0;
+    int videoHeight = 0;
     const bool probed = ProbeFile(Utf8ToWide(options.outputPathUtf8), hasVideo, hasAudioTrack,
-                                  fileDurationMs);
+                                  fileDurationMs, videoWidth, videoHeight);
     std::printf("RECORD_BYTES=%lld\n", static_cast<long long>(bytes));
     std::printf("FILE_PROBED=%d FILE_VIDEO_TRACK=%d FILE_AUDIO_TRACK=%d FILE_DURATION_MS=%lld\n",
                 probed ? 1 : 0, hasVideo ? 1 : 0, hasAudioTrack ? 1 : 0,

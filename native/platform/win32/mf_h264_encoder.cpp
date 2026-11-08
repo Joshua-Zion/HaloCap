@@ -1,4 +1,4 @@
-#include "mf_h264_encoder.h"
+﻿#include "mf_h264_encoder.h"
 
 #include <mfapi.h>
 #include <mferror.h>
@@ -238,6 +238,14 @@ bool MfH264Encoder::OpenVideo(const core::VideoEncoderConfig& config,
     const bool wantAudio = audioRequested_;
     audioRequested_ = false;
     audioStreamActive_ = false;
+
+    if (config.cropRegion.IsEmpty()) {
+        converter_.ClearSourceRect();
+    } else {
+        RECT sourceRect{ config.cropRegion.left, config.cropRegion.top,
+                         config.cropRegion.right, config.cropRegion.bottom };
+        converter_.SetSourceRect(sourceRect);
+    }
 
     if (!converter_.EnsureTargets(config.widthPx, config.heightPx)) {
         lastHr_ = converter_.LastHr();

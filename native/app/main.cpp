@@ -47,6 +47,7 @@
 #include "win32_input_host.h"
 #include "win32_store.h"
 #include "win32_surface_window.h"
+#include "win32_wgc_capture.h"
 #include "win32_tray.h"
 
 #include <windows.h>
@@ -75,6 +76,7 @@ using halocap::platform::win32::Win32DesktopDuplication;
 using halocap::platform::win32::Win32InputHost;
 using halocap::platform::win32::Win32Store;
 using halocap::platform::win32::Win32SurfaceWindow;
+using halocap::platform::win32::Win32WgcCapture;
 using halocap::platform::win32::Win32Tray;
 
 namespace {
@@ -105,6 +107,9 @@ struct Options {
 
     // >0 = 启动后立刻录这么多秒，然后退出。无人值守的端到端自检入口。
     int recordSeconds = 0;
+    core::IntRect recordRegion{};
+    bool hasRecordRegion = false;
+    bool recordWindow = false;
 
     // 非空 = 无人值守的截图自检：开覆盖层 → 摆选区 → 标注 → 存 PNG + 贴图 → 退出。
     std::wstring screenshotSelftestPath;
@@ -309,6 +314,18 @@ Options ParseOptions(int argc, char** argv) {
                 options.overlayWidth = width;
                 options.overlayHeight = height;
             }
+        } else if (argument == "--record-window") {
+            options.recordWindow = true;
+        } else if (argument == "--record-region" && i + 1 < argc) {
+            int width = 0;
+            int height = 0;
+            int x = 0;
+            int y = 0;
+            if (std::sscanf(argv[++i], "%dx%d@%d,%d", &width, &height, &x, &y) == 4 &&
+                width >= 2 && height >= 2) {
+                options.recordRegion = core::IntRect{ x, y, x + (width & ~1), y + (height & ~1) };
+                options.hasRecordRegion = true;
+            }
         } else if (argument == "--record-seconds" && i + 1 < argc) {
             options.recordSeconds = std::atoi(argv[++i]);
             if (options.recordSeconds < 0) {
@@ -485,7 +502,9 @@ std::wstring RecordingPathFor(const core::AppSettings& settings) {
 // 所以 idle 的时候它们一个字节都不占（S1 的 80 MB 预算靠这一条守住）。
 class RecordingRunner {
 public:
-    bool Start(D2dRenderBackend& backend, const core::AppSettings& settings, AppLog& log, std::string& errorKind) {
+    bool Start(D2dRenderBackend& backend, const core::AppSettings& settings, AppLog& log,
+               std::string& errorKind, core::NativeHandle captureWindow = nullptr,
+               core::IntRect cropRegion = {}) {
         errorKind.clear();
 
         const std::wstring path = RecordingPathFor(settings);
@@ -496,11 +515,16 @@ public:
         path_ = WideToUtf8(path);
 
         log.Info("recording: capture initializing");
-        capture_ = std::make_unique<Win32DesktopDuplication>(backend);
-        if (!capture_->Initialize()) {
-            errorKind = "capture";
-            Reset();
-            return false;
+        if (captureWindow != nullptr) {
+            capture_ = std::make_unique<Win32WgcCapture>(backend);
+        } else {
+            auto duplication = std::make_unique<Win32DesktopDuplication>(backend);
+            if (!duplication->Initialize()) {
+                errorKind = "capture";
+                Reset();
+                return false;
+            }
+            capture_ = std::move(duplication);
         }
 
         log.Info("recording: encoder initializing");
@@ -528,6 +552,8 @@ public:
         options.targetFps = settings.recording.FramesPerSecond();
         options.outputPathUtf8 = path_;
         options.audioEnabled = settings.recording.WantsAudio();
+        options.captureWindow = captureWindow;
+        options.cropRegion = cropRegion;
 
         if (!session_->Start(options, QpcNowUs())) {
             errorKind = session_->LastErrorKind();
@@ -576,7 +602,7 @@ private:
         microphone_.reset();
     }
 
-    std::unique_ptr<Win32DesktopDuplication> capture_;
+    std::unique_ptr<core::ICaptureSource> capture_;
     std::unique_ptr<MfH264Encoder> encoder_;
     std::unique_ptr<WasapiAudioSource> systemAudio_;
     std::unique_ptr<WasapiAudioSource> microphone_;
@@ -794,6 +820,8 @@ int Run(const Options& options) {
     RecordingRunner recording;
     bool recordingActive = false;
     std::unique_ptr<halocap::app::RecordingHud> recordingHud;
+    std::unique_ptr<halocap::app::ScreenshotOverlay> screenshotOverlay;
+    std::vector<std::unique_ptr<halocap::app::PinWindow>> pins;
     bool recordStarted = false;
     bool recordStopped = false;
     core::RecordingStats recordStats;
@@ -806,36 +834,73 @@ int Run(const Options& options) {
         }
     };
 
+    const auto beginRecording = [&](core::NativeHandle captureWindow, core::IntRect cropRegion) {
+        if (settings.recording.countdown != core::RecordingCountdown::Off) {
+            halocap::app::RecordingCountdown countdown;
+            if (!countdown.Show(settings.recording.CountdownSeconds())) {
+                log.Info("recording: cancelled during countdown");
+                tray.Notify("HaloCap", "已取消录制");
+                return;
+            }
+        }
+        if (!overlayReady) {
+            // 录制要复用覆盖层那台 D3D 设备（采集/编码必须同一个设备）。
+            overlayReady = overlay.Initialize(log, overlayWidth, overlayHeight);
+        }
+        std::string kind;
+        const bool started = overlayReady &&
+                             recording.Start(overlay.Backend(), settings, log, kind, captureWindow,
+                                             cropRegion);
+        if (started) {
+            recordingActive = true;
+            refreshTray();
+            recordingHud = std::make_unique<halocap::app::RecordingHud>();
+            if (!recordingHud->Create()) {
+                recordingHud.reset();
+            }
+            log.Info("recording: started -> " + recording.OutputPath());
+            tray.Notify("HaloCap", "开始录制");
+        } else {
+            log.Error("recording: start failed (" +
+                      (overlayReady ? kind : std::string("overlay")) + ")");
+            tray.Notify("HaloCap", "无法开始录制");
+        }
+    };
+
     auto toggleRecording = [&]() {
         if (!recordingActive) {
-            if (settings.recording.countdown != core::RecordingCountdown::Off) {
-                halocap::app::RecordingCountdown countdown;
-                if (!countdown.Show(settings.recording.CountdownSeconds())) {
-                    log.Info("recording: cancelled during countdown");
-                    tray.Notify("HaloCap", "已取消录制");
+            if (settings.recording.range == core::RecordingRange::Window) {
+                const HWND foreground = GetForegroundWindow();
+                DWORD processId = 0;
+                if (foreground != nullptr) {
+                    GetWindowThreadProcessId(foreground, &processId);
+                }
+                if (foreground != nullptr && processId != GetCurrentProcessId() &&
+                    IsWindowVisible(foreground)) {
+                    beginRecording(foreground, core::IntRect{});
+                } else {
+                    tray.Notify("HaloCap", "未找到可录制的窗口，改为整屏");
+                    beginRecording(nullptr, core::IntRect{});
+                }
+                return;
+            }
+            if (settings.recording.range == core::RecordingRange::Region) {
+                if (screenshotOverlay != nullptr && screenshotOverlay->Active()) {
                     return;
                 }
-            }
-            if (!overlayReady) {
-                // 录制要复用覆盖层那台 D3D 设备（采集/编码必须同一个设备）。
-                overlayReady = overlay.Initialize(log, overlayWidth, overlayHeight);
-            }
-            std::string kind;
-            const bool started = overlayReady && recording.Start(overlay.Backend(), settings, log, kind);
-            if (started) {
-                recordingActive = true;
-                refreshTray();
-                recordingHud = std::make_unique<halocap::app::RecordingHud>();
-                if (!recordingHud->Create()) {
-                    recordingHud.reset();
+                screenshotOverlay = std::make_unique<halocap::app::ScreenshotOverlay>();
+                halocap::app::ScreenshotOverlayOptions overlayOptions;
+                overlayOptions.mode = halocap::app::OverlayMode::RecordRegion;
+                overlayOptions.onRegion = [&](core::IntRect rect) {
+                    beginRecording(nullptr, rect);
+                };
+                if (!screenshotOverlay->Open(overlayOptions)) {
+                    screenshotOverlay.reset();
+                    tray.Notify("HaloCap", "无法选择录制区域");
                 }
-                log.Info("recording: started -> " + recording.OutputPath());
-                tray.Notify("HaloCap", "开始录制");
-            } else {
-                log.Error("recording: start failed (" +
-                          (overlayReady ? kind : std::string("overlay")) + ")");
-                tray.Notify("HaloCap", "无法开始录制");
+                return;
             }
+            beginRecording(nullptr, core::IntRect{});
             return;
         }
 
@@ -873,7 +938,11 @@ int Run(const Options& options) {
             overlayReady = overlay.Initialize(log, overlayWidth, overlayHeight);
         }
         std::string kind;
-        recordStarted = overlayReady && recording.Start(overlay.Backend(), settings, log, kind);
+        recordStarted = overlayReady &&
+                        recording.Start(overlay.Backend(), settings, log, kind,
+                                        options.recordWindow ? GetForegroundWindow() : nullptr,
+                                        options.hasRecordRegion ? options.recordRegion
+                                                                : core::IntRect{});
         if (recordStarted) {
             recordingActive = true;
             refreshTray();
@@ -891,9 +960,6 @@ int Run(const Options& options) {
         }
     }
 
-    // ---- 4) 截图覆盖层：热键/托盘按需打开，会话结束自动释放 ----
-    std::unique_ptr<halocap::app::ScreenshotOverlay> screenshotOverlay;
-    std::vector<std::unique_ptr<halocap::app::PinWindow>> pins;
 
     // OCR：推理放在一次性的 worker 子进程里，主进程不加载 ORT。
     std::unique_ptr<halocap::app::OcrResultWindow> ocrWindow;
@@ -1622,6 +1688,12 @@ int Run(const Options& options) {
         AddInt(report, "APP_RECORD_AUDIO_FRAMES", recordStats.audioFrames);
         AddText(report, "APP_RECORD_PATH", recording.OutputPath());
         AddInt(report, "APP_RECORD_BYTES", bytes);
+        if (options.hasRecordRegion) {
+            AddInt(report, "APP_RECORD_REGION_WIDTH", options.recordRegion.right -
+                                                          options.recordRegion.left);
+            AddInt(report, "APP_RECORD_REGION_HEIGHT", options.recordRegion.bottom -
+                                                           options.recordRegion.top);
+        }
         // 无人值守录制的判据：起来了、停了、有帧、文件非空。
         ok = ok && recordStarted && recordStopped && recordStats.framesSubmitted > 0 && bytes > 0;
     }

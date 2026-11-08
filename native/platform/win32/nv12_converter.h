@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include <d3d11.h>
 #include <wrl/client.h>
@@ -34,6 +34,10 @@ public:
     bool ConvertToSlot(ID3D11Texture2D* bgraSource, int slotIndex);
 
     // 不设就用驱动默认；探针要把默认与显式两种都量一遍再决定钉哪个。
+    // 只转换源纹理上的这块矩形（像素坐标）。不设就是整幅。
+    void SetSourceRect(const RECT& rect);
+    void ClearSourceRect();
+
     void SetInputColorSpace(const D3D11_VIDEO_PROCESSOR_COLOR_SPACE& colorSpace);
     void SetOutputColorSpace(const D3D11_VIDEO_PROCESSOR_COLOR_SPACE& colorSpace);
     void UseDefaultColorSpaces();
@@ -92,6 +96,9 @@ private:
     D3D11_VIDEO_PROCESSOR_COLOR_SPACE outputColorSpace_{};
 
     UINT bindFlagsUsed_ = 0;
+    bool hasSourceRect_ = false;
+    RECT sourceRect_{};
+
     std::vector<BindAttempt> attempts_;
     UINT nv12Support_ = 0;
     UINT bgraSupport_ = 0;

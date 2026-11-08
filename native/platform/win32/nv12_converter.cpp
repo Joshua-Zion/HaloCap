@@ -1,4 +1,4 @@
-#include "nv12_converter.h"
+﻿#include "nv12_converter.h"
 
 #include <dxgi.h>
 
@@ -238,6 +238,11 @@ bool Nv12Converter::ConvertToSlot(ID3D11Texture2D* bgraSource, int slotIndex) {
 
     videoContext_->VideoProcessorSetStreamFrameFormat(processor_.Get(), 0,
                                                       D3D11_VIDEO_FRAME_FORMAT_PROGRESSIVE);
+    if (hasSourceRect_) {
+        videoContext_->VideoProcessorSetStreamSourceRect(processor_.Get(), 0, TRUE, &sourceRect_);
+    } else {
+        videoContext_->VideoProcessorSetStreamSourceRect(processor_.Get(), 0, FALSE, nullptr);
+    }
 
     if (hasInputColorSpace_) {
         videoContext_->VideoProcessorSetStreamColorSpace(processor_.Get(), 0, &inputColorSpace_);
@@ -271,6 +276,15 @@ bool Nv12Converter::ConvertToSlot(ID3D11Texture2D* bgraSource, int slotIndex) {
 
     errorKind_ = "ok";
     return true;
+}
+
+void Nv12Converter::SetSourceRect(const RECT& rect) {
+    sourceRect_ = rect;
+    hasSourceRect_ = true;
+}
+
+void Nv12Converter::ClearSourceRect() {
+    hasSourceRect_ = false;
 }
 
 void Nv12Converter::SetInputColorSpace(const D3D11_VIDEO_PROCESSOR_COLOR_SPACE& colorSpace) {

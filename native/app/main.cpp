@@ -509,7 +509,8 @@ class RecordingRunner {
 public:
     bool Start(D2dRenderBackend& backend, const core::AppSettings& settings, AppLog& log,
                std::string& errorKind, core::NativeHandle captureWindow = nullptr,
-               core::IntRect cropRegion = {}) {
+               core::IntRect cropRegion = {}, bool captureMonitor = false,
+               bool captureCursor = true) {
         errorKind.clear();
 
         const std::wstring path = RecordingPathFor(settings);
@@ -520,8 +521,9 @@ public:
         path_ = WideToUtf8(path);
 
         log.Info("recording: capture initializing");
-        if (captureWindow != nullptr) {
+        if (captureWindow != nullptr || captureMonitor) {
             capture_ = std::make_unique<Win32WgcCapture>(backend);
+            capture_->SetCursorCapture(captureCursor);
         } else {
             auto duplication = std::make_unique<Win32DesktopDuplication>(backend);
             if (!duplication->Initialize()) {
@@ -559,6 +561,7 @@ public:
         options.audioEnabled = settings.recording.WantsAudio();
         options.captureWindow = captureWindow;
         options.cropRegion = cropRegion;
+        options.captureMonitor = captureMonitor && captureWindow == nullptr;
 
         if (!session_->Start(options, QpcNowUs())) {
             errorKind = session_->LastErrorKind();
@@ -855,8 +858,9 @@ int Run(const Options& options) {
         }
         std::string kind;
         const bool started = overlayReady &&
-                             recording.Start(overlay.Backend(), settings, log, kind, captureWindow,
-                                             cropRegion);
+                             recording.Start(overlay.Backend(), settings, log, kind, captureWindow, cropRegion,
+                                             captureWindow == nullptr,
+                                             settings.recording.recordCursor);
         if (started) {
             recordingActive = true;
             refreshTray();
@@ -946,7 +950,8 @@ int Run(const Options& options) {
                         recording.Start(overlay.Backend(), settings, log, kind,
                                         options.recordWindow ? GetForegroundWindow() : nullptr,
                                         options.hasRecordRegion ? options.recordRegion
-                                                                : core::IntRect{});
+                                                                : core::IntRect{},
+                                        !options.recordWindow, settings.recording.recordCursor);
         if (recordStarted) {
             recordingActive = true;
             refreshTray();

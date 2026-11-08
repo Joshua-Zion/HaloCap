@@ -1,9 +1,11 @@
-#pragma once
+﻿#pragma once
 
 #include "capture_source.h"
 #include "d2d_render_backend.h"
 
 #include <windows.h>
+
+#include <winrt/Windows.Graphics.Capture.h>
 
 #include <d3d11.h>
 #include <wrl/client.h>
@@ -33,6 +35,11 @@ public:
 
     bool OpenWindow(core::NativeHandle window) override;
 
+    // 显示器采集（WGC 的 CreateForMonitor）：桌面上也要带光标。
+    bool OpenMonitor(int outputIndex) override;
+
+    void SetCursorCapture(bool enabled) override { cursorCapture_ = enabled; }
+
     void Close() override;
 
     bool WaitForUpdate(std::int64_t timeoutMs, core::FrameUpdate& out) override;
@@ -48,6 +55,7 @@ public:
 private:
     struct State;
 
+    bool StartItem(const winrt::Windows::Graphics::Capture::GraphicsCaptureItem& item);
     bool EnsureResident(int widthPx, int heightPx);
     void ReleaseResident();
 
@@ -61,6 +69,7 @@ private:
     int widthPx_ = 0;
     int heightPx_ = 0;
     const char* errorKind_ = "none";
+    bool cursorCapture_ = true;
     std::int32_t lastError_ = 0;
 };
 

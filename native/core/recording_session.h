@@ -22,6 +22,9 @@ struct RecordingOptions {
     // 非空 = 采这个窗口（WGC）；否则按 outputIndex 采桌面复制。
     NativeHandle captureWindow = nullptr;
 
+    // true = 用 WGC 采显示器（带光标）；false = 桌面复制。
+    bool captureMonitor = false;
+
     // 非空 = 只录这块屏幕区域（桌面录制）；窗口录制忽略。
     IntRect cropRegion{};
 

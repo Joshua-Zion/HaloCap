@@ -1,4 +1,4 @@
-﻿add_library(halocap_platform_win32 STATIC
+add_library(halocap_platform_win32 STATIC
     d2d_render_backend.cpp
     d2d_font_rasterizer.cpp
     win32_surface_window.cpp
@@ -17,11 +17,12 @@
     winrt_ocr_engine.cpp
     win32_clipboard.cpp
     win32_autostart.cpp
+    win32_update_fetch.cpp
 )
 
 target_include_directories(halocap_platform_win32 PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_include_directories(halocap_platform_win32 SYSTEM PUBLIC "${HALOCAP_ORT_DIR}/include")
-target_link_libraries(halocap_platform_win32 PUBLIC "${HALOCAP_ORT_DIR}/lib/onnxruntime.lib")
+target_link_libraries(halocap_platform_win32 PUBLIC "${HALOCAP_ORT_DIR}/lib/onnxruntime.lib" winhttp)
 # mf* 是编码 seam 的四件套：mfplat 起 Foundation 与建样本，mf 是文件流与 DXGI 缓冲，
 # mfreadwrite 提供 SinkWriter，mfuuid 提供那些 DEFINE_GUID 声明出来的属性与格式 GUID。
 # ole32 同时给 Media Foundation 与 WASAPI 用（CoCreateInstance / CoTaskMemFree / PropVariantClear）；

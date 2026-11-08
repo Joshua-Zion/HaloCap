@@ -62,9 +62,11 @@ bool RecordingSession::Start(const RecordingOptions& options, std::int64_t wallU
     }
 
     // 窗口录制走 WGC，显示器录制走桌面复制：同一个 seam，两个入口。
-    const bool opened = options.captureWindow != nullptr
-                            ? capture_.OpenWindow(options.captureWindow)
-                            : capture_.Open(options.outputIndex);
+    const bool opened =
+        options.captureWindow != nullptr
+            ? capture_.OpenWindow(options.captureWindow)
+            : (options.captureMonitor ? capture_.OpenMonitor(options.outputIndex)
+                                      : capture_.Open(options.outputIndex));
     if (!opened) {
         const char* kind = capture_.LastErrorKind();
         // 复制权被占用（busy）是常态分支：调用方按 BackoffUs 重试，不是给用户报错。

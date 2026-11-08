@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "display_list.h"
 #include "geometry.h"
@@ -45,6 +45,12 @@ public:
         (void)window;
         return false;
     }
+
+    // 显示器采集（WGC 的 CreateForMonitor）：桌面录制也要带光标，复制路径做不到。
+    virtual bool OpenMonitor(int outputIndex) { (void)outputIndex; return false; }
+
+    // 光标是否进画面（WGC 有效；复制路径没有光标）。
+    virtual void SetCursorCapture(bool enabled) { (void)enabled; }
 
     virtual void Close() = 0;
 

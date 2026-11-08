@@ -7,12 +7,14 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <string>
 
 #include "update.h"
 #include "version.h"
+#include "win32_update_fetch.h"
 
 namespace halocap::app {
 
@@ -85,6 +87,21 @@ void CopyTextToClipboard(const std::wstring& text) {
         GlobalFree(memory);
     }
     CloseClipboard();
+}
+
+std::wstring ReadUpdateUrl() {
+    wchar_t localAppData[MAX_PATH] = {};
+    if (GetEnvironmentVariableW(L"LOCALAPPDATA", localAppData, MAX_PATH) == 0) {
+        return {};
+    }
+    const std::wstring path = std::wstring(localAppData) + L"\\HaloCap2\\update.url";
+    std::ifstream stream{ std::filesystem::path(path) };
+    if (!stream) {
+        return {};
+    }
+    std::string line;
+    std::getline(stream, line);
+    return Utf8ToWide(line);
 }
 
 std::string ReadLocalUpdateManifest() {
@@ -513,6 +530,10 @@ void SettingsWindow::Save() {
     if (autoStart_ != nullptr) {
         settings_.autoStart = SendMessageW(autoStart_, BM_GETCHECK, 0, 0) == BST_CHECKED;
     }
+    if (recordCursor_ != nullptr) {
+        settings_.recording.recordCursor =
+            SendMessageW(recordCursor_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    }
 
     if (onSave_ != nullptr && onSave_(settings_)) {
         saved_ = true;
@@ -811,9 +832,25 @@ LRESULT SettingsWindow::Handle(HWND window, UINT message, WPARAM wParam, LPARAM 
             return 0;
         }
         if (LOWORD(wParam) == 8) {
-            const std::string json = ReadLocalUpdateManifest();
+            std::string json;
+            std::wstring source = L"本地清单";
+            const std::wstring url = ReadUpdateUrl();
+            if (!url.empty()) {
+                std::string networkError;
+                if (halocap::platform::win32::HttpGetUtf8(url, &json, &networkError) &&
+                    !json.empty()) {
+                    source = L"网络清单";
+                } else {
+                    json.clear();
+                }
+            }
             if (json.empty()) {
-                MessageBoxW(window, L"未找到更新清单（%LOCALAPPDATA%\\HaloCap2\\update.json）。",
+                json = ReadLocalUpdateManifest();
+            }
+            if (json.empty()) {
+                MessageBoxW(window,
+                            L"未找到更新清单：可在 %LOCALAPPDATA%\\HaloCap2\\update.url 写清单地址，"
+                            L"或放 update.json。",
                             L"HaloCap 更新", MB_OK | MB_ICONINFORMATION);
                 return 0;
             }
@@ -832,6 +869,7 @@ LRESULT SettingsWindow::Handle(HWND window, UINT message, WPARAM wParam, LPARAM 
             if (newer) {
                 message += L"\n" + Utf8ToWide(manifest.url);
             }
+            message += L"\n来源：" + source;
             MessageBoxW(window, message.c_str(), L"HaloCap 更新", MB_OK | MB_ICONINFORMATION);
             return 0;
         }

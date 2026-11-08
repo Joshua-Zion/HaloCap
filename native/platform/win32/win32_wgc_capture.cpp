@@ -1,4 +1,4 @@
-#include "win32_wgc_capture.h"
+﻿#include "win32_wgc_capture.h"
 
 #include <winrt/base.h>
 #include <winrt/Windows.Foundation.h>
@@ -84,26 +84,9 @@ bool Win32WgcCapture::Open(int outputIndex) {
     return false;
 }
 
-bool Win32WgcCapture::OpenWindow(core::NativeHandle window) {
-    if (window == nullptr) {
-        errorKind_ = "invalid";
-        return false;
-    }
-
+bool Win32WgcCapture::StartItem(const winrt::Windows::Graphics::Capture::GraphicsCaptureItem& item) {
     try {
-        // 同一线程重复调用会抛 RPC_E_CHANGED_MODE / RPC_E_INVALID_STATE；宿主已经初始化过
-        // WinRT 时那不是错误。
-        winrt::init_apartment(winrt::apartment_type::multi_threaded);
-    } catch (...) {
-    }
-
-    try {
-        if (!GraphicsCaptureSession::IsSupported()) {
-            errorKind_ = "notsupported";
-            return false;
-        }
-
-        state_->item = ItemForWindow(static_cast<HWND>(window));
+        state_->item = item;
         state_->device = WrapDevice(backend_.Device());
 
         const auto size = state_->item.Size();
@@ -113,7 +96,7 @@ bool Win32WgcCapture::OpenWindow(core::NativeHandle window) {
 
         // 光标：录制默认要带上（与 1.x 的设置项一致）。
         try {
-            state_->session.IsCursorCaptureEnabled(true);
+            state_->session.IsCursorCaptureEnabled(cursorCapture_);
         } catch (...) {
         }
         // 黄色采集边框是 Win11 的隐私提示，能关就关；系统不支持时保持默认。
@@ -146,6 +129,89 @@ bool Win32WgcCapture::OpenWindow(core::NativeHandle window) {
     }
 }
 
+bool Win32WgcCapture::OpenWindow(core::NativeHandle window) {
+    if (window == nullptr) {
+        errorKind_ = "invalid";
+        return false;
+    }
+
+    try {
+        // 同一线程重复调用会抛 RPC_E_CHANGED_MODE / RPC_E_INVALID_STATE；宿主已经初始化过
+        // WinRT 时那不是错误。
+        winrt::init_apartment(winrt::apartment_type::multi_threaded);
+    } catch (...) {
+    }
+
+    try {
+        if (!GraphicsCaptureSession::IsSupported()) {
+            errorKind_ = "notsupported";
+            return false;
+        }
+        return StartItem(ItemForWindow(static_cast<HWND>(window)));
+    } catch (const winrt::hresult_error& error) {
+        lastError_ = static_cast<std::int32_t>(error.code().value);
+        errorKind_ = KindFor(error.code().value);
+        Close();
+        return false;
+    } catch (...) {
+        lastError_ = 0;
+        errorKind_ = "hr";
+        Close();
+        return false;
+    }
+}
+
+bool Win32WgcCapture::OpenMonitor(int outputIndex) {
+    try {
+        winrt::init_apartment(winrt::apartment_type::multi_threaded);
+    } catch (...) {
+    }
+
+    try {
+        if (!GraphicsCaptureSession::IsSupported()) {
+            errorKind_ = "notsupported";
+            return false;
+        }
+
+        struct MonitorPick {
+            int target = 0;
+            int index = 0;
+            HMONITOR monitor = nullptr;
+        } pick{ outputIndex, 0, nullptr };
+        EnumDisplayMonitors(
+            nullptr, nullptr,
+            [](HMONITOR monitor, HDC, LPRECT, LPARAM param) -> BOOL {
+                auto* state = reinterpret_cast<MonitorPick*>(param);
+                if (state->index == state->target) {
+                    state->monitor = monitor;
+                    return FALSE;
+                }
+                ++state->index;
+                return TRUE;
+            },
+            reinterpret_cast<LPARAM>(&pick));
+        if (pick.monitor == nullptr) {
+            errorKind_ = "invalid";
+            return false;
+        }
+
+        auto interop = winrt::get_activation_factory<GraphicsCaptureItem, IGraphicsCaptureItemInterop>();
+        GraphicsCaptureItem item{ nullptr };
+        winrt::check_hresult(interop->CreateForMonitor(
+            pick.monitor, winrt::guid_of<GraphicsCaptureItem>(), winrt::put_abi(item)));
+        return StartItem(item);
+    } catch (const winrt::hresult_error& error) {
+        lastError_ = static_cast<std::int32_t>(error.code().value);
+        errorKind_ = KindFor(error.code().value);
+        Close();
+        return false;
+    } catch (...) {
+        lastError_ = 0;
+        errorKind_ = "hr";
+        Close();
+        return false;
+    }
+}
 void Win32WgcCapture::Close() {
     try {
         if (state_->session) {

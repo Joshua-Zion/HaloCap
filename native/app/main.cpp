@@ -1,4 +1,4 @@
-// S1 的组装：把 8 个 seam 接成一个能起来、能待着、能自己报出空闲内存的进程。
+﻿// S1 的组装：把 8 个 seam 接成一个能起来、能待着、能自己报出空闲内存的进程。
 //
 // 这一版刻意只做 S1 的骨架：设置、日志、托盘、热键、覆盖层窗口与渲染后端就绪，消息循环待着；
 // 托盘菜单与热键只记录「收到了什么动作」——真正的截图/录屏/OCR/贴图在 S3/S4 才接。
@@ -15,6 +15,7 @@
 //   HaloCap.exe --selftest --report out.txt  把上面的每一项写进文件（explorer 启动时没有控制台）
 //   --no-tray / --no-input / --no-overlay    只量某几层，用来归因
 #include "capability.h"
+#include "clipboard.h"
 #include "desktop_grab.h"
 #include "font_rasterizer.h"
 #include "image_export.h"
@@ -39,6 +40,7 @@
 #include "version.h"
 #include "wasapi_audio_source.h"
 #include "win32_capability.h"
+#include "win32_clipboard.h"
 #include "win32_input_host.h"
 #include "win32_store.h"
 #include "win32_surface_window.h"
@@ -58,6 +60,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 
 namespace core = halocap::core;
 using halocap::platform::win32::D2dFontRasterizer;
@@ -108,6 +111,9 @@ struct Options {
 
     // 非空 = 无人值守的设置页自检：打开六页设置 → 抓图 → 退出。
     std::wstring settingsSelftestPath;
+
+    // 非空 = 无人值守的贴图自检：往剪贴板写颜色文本 → 贴图 → 抓图 → 退出。
+    std::wstring pinSelftestPath;
 
     // 交付：--version 打印版本；--check-update 读一份清单并比较版本。
     bool version = false;
@@ -308,6 +314,8 @@ Options ParseOptions(int argc, char** argv) {
             options.ocrSelftestPath = Utf8ToWide(argv[++i]);
         } else if (argument == "--settings-selftest" && i + 1 < argc) {
             options.settingsSelftestPath = Utf8ToWide(argv[++i]);
+        } else if (argument == "--pin-selftest" && i + 1 < argc) {
+            options.pinSelftestPath = Utf8ToWide(argv[++i]);
         } else if (argument == "--version") {
             options.version = true;
         } else if (argument == "--check-update" && i + 1 < argc) {
@@ -333,6 +341,7 @@ void PrintUsage() {
         "  --screenshot-selftest PATH  open the screenshot overlay, annotate, export, exit\n"
         "  --ocr-selftest PATH         open the OCR overlay, recognise the selection, exit\n"
         "  --settings-selftest PATH    open the six settings pages, capture, exit\n"
+        "  --pin-selftest PATH         pin the clipboard content, capture, exit\n"
         "  --version                   print the delivery version and exit\n"
         "  --check-update PATH         compare this build with an update manifest\n"
         "  --settings-selftest PATH    open the settings pages, capture, exit\n"
@@ -992,6 +1001,99 @@ int Run(const Options& options) {
         }
     };
 
+    // 剪贴板贴图：读取 → core 决策 → 图片/卡片 → 分层贴图窗口。
+    const auto pinClipboard = [&]() {
+        halocap::platform::win32::ClipboardReadResult data;
+        if (!halocap::platform::win32::ReadClipboard(&data)) {
+            log.Error("pin: cannot read clipboard");
+            tray.Notify("HaloCap", "无法读取剪贴板");
+            return;
+        }
+
+        core::clipboard::SnapshotInput input;
+        input.sequence = data.sequence;
+        input.filePaths = data.filePaths;
+        input.hasImage = data.hasImage;
+        input.hasHtml = data.hasHtml;
+        input.html = data.html;
+        input.hasText = data.hasText;
+        input.text = data.text;
+        const core::clipboard::Snapshot snapshot = core::clipboard::NormalizeSnapshot(input);
+        if (!snapshot.HasContent()) {
+            tray.Notify("HaloCap", "剪贴板里没有可贴图的内容");
+            return;
+        }
+
+        core::clipboard::PinPlanner planner;
+        struct Item {
+            halocap::platform::win32::ClipboardImage image;
+        };
+        std::vector<Item> items;
+
+        if (!snapshot.filePaths.empty()) {
+            std::unordered_map<std::string, halocap::platform::win32::ClipboardImage> loaded;
+            const auto loader = [&](const std::string& path) {
+                halocap::platform::win32::ClipboardImage image;
+                if (!halocap::platform::win32::LoadImageFile(path, 256LL * 1024 * 1024, &image)) {
+                    return false;
+                }
+                loaded[path] = std::move(image);
+                return true;
+            };
+            const auto plans = planner.PlanFiles(snapshot, {}, loader);
+            for (const auto& plan : plans) {
+                if (plan.kind == core::clipboard::PinKind::FileImage) {
+                    items.push_back(Item{ std::move(loaded[plan.text]) });
+                    planner.MarkPasted(plan);
+                } else {
+                    halocap::platform::win32::ClipboardImage card;
+                    if (halocap::platform::win32::RenderTextCard(plan.text, 1.0, &card)) {
+                        items.push_back(Item{ std::move(card) });
+                    }
+                }
+            }
+        } else {
+            const auto plans = planner.PlanContent(snapshot);
+            for (const auto& plan : plans) {
+                if (plan.kind == core::clipboard::PinKind::Image) {
+                    items.push_back(Item{ data.image });
+                } else if (plan.kind == core::clipboard::PinKind::Color) {
+                    core::clipboard::Color color;
+                    halocap::platform::win32::ClipboardImage card;
+                    if (core::clipboard::ParseColor(plan.text, &color) &&
+                        halocap::platform::win32::RenderColorCard(color, 1.0, &card)) {
+                        items.push_back(Item{ std::move(card) });
+                    }
+                } else {
+                    halocap::platform::win32::ClipboardImage card;
+                    if (halocap::platform::win32::RenderTextCard(plan.text, 1.0, &card)) {
+                        items.push_back(Item{ std::move(card) });
+                    }
+                }
+            }
+        }
+
+        int created = 0;
+        int offset = 0;
+        for (Item& item : items) {
+            if (item.image.width <= 0 || item.image.height <= 0) {
+                continue;
+            }
+            auto pin = std::make_unique<halocap::app::PinWindow>();
+            if (pin->Create(item.image.bgra.data(), item.image.width, item.image.height,
+                            180 + offset, 160 + offset)) {
+                pins.push_back(std::move(pin));
+                ++created;
+                offset += 28;
+            }
+        }
+
+        log.Info("pin: " + std::to_string(created) + " item(s) from clipboard");
+        if (created == 0) {
+            tray.Notify("HaloCap", "贴图失败");
+        }
+    };
+
     auto onAction = [&](core::TrayCommand command) {
         ++actions;
         if (command == core::TrayCommand::Exit) {
@@ -1013,6 +1115,10 @@ int Run(const Options& options) {
         }
         if (command == core::TrayCommand::Settings) {
             openSettings();
+            return;
+        }
+        if (command == core::TrayCommand::Pin) {
+            pinClipboard();
             return;
         }
         if (command == core::TrayCommand::PauseRecording) {
@@ -1191,6 +1297,39 @@ int Run(const Options& options) {
         running = false;
     }
 
+    bool pinSelftestOk = true;
+    if (!options.pinSelftestPath.empty()) {
+        pinSelftestOk = false;
+        const std::size_t before = pins.size();
+
+        // 先贴剪贴板里现有的内容（自检脚本可以预先放一张图），再放颜色文本贴第二张。
+        pinClipboard();
+        const std::size_t afterCurrent = pins.size();
+        const bool wrote =
+            halocap::platform::win32::WriteUnicodeTextToClipboard("#1234");
+        if (wrote) {
+            pinClipboard();
+        }
+        Sleep(350);
+
+        const bool pinned = pins.size() > afterCurrent;
+        halocap::platform::win32::DesktopImage desktop;
+        const bool proof =
+            halocap::platform::win32::GrabPrimaryDesktop(desktop) &&
+            halocap::platform::win32::SaveBgraPng(options.pinSelftestPath, desktop.bgra.data(),
+                                                  desktop.width, desktop.height,
+                                                  desktop.width * 4);
+
+        AddFlag(report, "APP_PIN_CLIPBOARD", wrote);
+        AddFlag(report, "APP_PIN_WINDOW", pinned);
+        AddFlag(report, "APP_PIN_PROOF", proof);
+        AddInt(report, "APP_PIN_COUNT", static_cast<long long>(pins.size() - before));
+
+        pinSelftestOk = wrote && pinned && proof;
+        log.Info(pinSelftestOk ? "pin selftest: ok" : "pin selftest: failed");
+        running = false;
+    }
+
     while (running) {
         MSG message{};
         while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
@@ -1211,6 +1350,10 @@ int Run(const Options& options) {
             }
             if (token == kTokenOcr) {
                 openOcr();
+                continue;
+            }
+            if (token == kTokenPin) {
+                pinClipboard();
                 continue;
             }
             log.Info("action: hotkey token=" + std::to_string(token));
@@ -1368,7 +1511,8 @@ int Run(const Options& options) {
     AddFlag(report, "APP_SCREENSHOT_SELFTEST", screenshotSelftestOk);
     AddFlag(report, "APP_OCR_SELFTEST", ocrSelftestOk);
     AddFlag(report, "APP_SETTINGS_SELFTEST", settingsSelftestOk);
-    ok = ok && screenshotSelftestOk && ocrSelftestOk && settingsSelftestOk;
+    AddFlag(report, "APP_PIN_SELFTEST", pinSelftestOk);
+    ok = ok && screenshotSelftestOk && ocrSelftestOk && settingsSelftestOk && pinSelftestOk;
 
     std::printf("%s", report.c_str());
     if (!options.reportPath.empty()) {

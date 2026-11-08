@@ -606,22 +606,29 @@ void ScreenshotOverlay::LayoutToolbar() {
     const int cursorY = y + 1;
 
     const auto addButton = [&](Action action, int payload, int toolIndex, const char* label,
-                               int buttonWidth, bool enabled, bool active) {
+                               int buttonWidth, bool enabled, bool active,
+                               ToolbarIcon icon = ToolbarIcon::None) {
         ToolbarButton button;
         button.rect = RECT{ cursorX, y + 1, cursorX + buttonWidth, y + kToolbarHeight - 1 };
         button.action = action;
         button.payload = payload;
         button.toolIndex = toolIndex;
         button.label = label;
+        button.icon = icon;
         button.enabled = enabled;
         button.active = active;
         toolbar_.push_back(button);
         cursorX += buttonWidth + kToolbarGap;
     };
 
+    const ToolbarIcon toolIcons[] = {
+        ToolbarIcon::Pen,       ToolbarIcon::Rectangle, ToolbarIcon::Ellipse,
+        ToolbarIcon::Arrow,     ToolbarIcon::Text,      ToolbarIcon::Highlighter,
+        ToolbarIcon::Mosaic,    ToolbarIcon::Step,      ToolbarIcon::Eraser,
+    };
     for (int i = 0; i < toolCount; ++i) {
-        addButton(static_cast<Action>(static_cast<int>(Action::ToolPen) + i), 0, i, kToolLabels[i],
-                  kToolbarToolWidth, !selection.IsEmpty(), kTools[i] == tool_);
+        addButton(static_cast<Action>(static_cast<int>(Action::ToolPen) + i), 0, i, "",
+                  kToolbarToolWidth, !selection.IsEmpty(), kTools[i] == tool_, toolIcons[i]);
     }
 
     for (int i = 0; i < colorCount; ++i) {
@@ -640,10 +647,12 @@ void ScreenshotOverlay::LayoutToolbar() {
         } else if (actions[i] != Action::CloseOverlay) {
             enabled = !selection.IsEmpty();
         }
-        const char* label = (actions[i] == Action::Copy && options_.mode == OverlayMode::Ocr)
-                                ? "识"
-                                : kActionLabels[i];
-        addButton(actions[i], 0, -1, label, kToolbarToolWidth, enabled, false);
+        const ToolbarIcon actionIcons[] = { ToolbarIcon::Undo, ToolbarIcon::Redo,
+                                            options_.mode == OverlayMode::Ocr ? ToolbarIcon::Text
+                                                                              : ToolbarIcon::Copy,
+                                            ToolbarIcon::Save, ToolbarIcon::Pin,
+                                            ToolbarIcon::Close };
+        addButton(actions[i], 0, -1, "", kToolbarToolWidth, enabled, false, actionIcons[i]);
     }
 
     toolbarBounds_ = RECT{ x, y, x + width, y + kToolbarHeight };
@@ -681,25 +690,119 @@ void ScreenshotOverlay::RenderToolbar(core::FramePlan& plan) {
             continue;
         }
 
-        if (button.label.empty() || rasterizer_ == nullptr) {
+        if (button.icon == ToolbarIcon::None) {
             continue;
         }
 
-        const float alpha = button.enabled ? 1.0f : 0.35f;
-        const core::FontSpec spec{ options_.fontFamily, 400, 14.0f,
-                                   Color{ 1.0f, 1.0f, 1.0f, alpha } };
-        const core::TextCell measured =
-            rasterizer_->LayOut(button.label, spec, Point{ 0.0f, 0.0f });
-        if (measured.atlas == 0) {
-            continue;
+        const float alpha = button.enabled ? 0.95f : 0.32f;
+        const Color ink{ 1.0f, 1.0f, 1.0f, alpha };
+        const float cx = (rect.left + rect.right) * 0.5f;
+        const float cy = (rect.top + rect.bottom) * 0.5f;
+        const auto line = [&](float x1, float y1, float x2, float y2, float thickness) {
+            plan.Add(core::Segment{ Point{ cx + x1, cy + y1 }, Point{ cx + x2, cy + y2 }, ink,
+                                    thickness });
+        };
+        const auto addGlyph = [&](const char* text, float size) {
+            if (rasterizer_ == nullptr) {
+                return;
+            }
+            const core::FontSpec spec{ options_.fontFamily, 700, size, ink };
+            const core::TextCell measured = rasterizer_->LayOut(text, spec, Point{ 0.0f, 0.0f });
+            if (measured.atlas == 0) {
+                return;
+            }
+            const float width = measured.destination.Width();
+            const float height = measured.destination.Height();
+            const core::TextCell cell =
+                rasterizer_->LayOut(text, spec, Point{ cx - width * 0.5f, cy - height * 0.5f });
+            if (cell.atlas != 0) {
+                plan.Add(cell.ToBlit());
+            }
+        };
+
+        switch (button.icon) {
+        case ToolbarIcon::Pen:
+            line(-7.0f, 7.0f, 6.0f, -6.0f, 2.2f);
+            line(6.0f, -6.0f, 9.0f, -9.0f, 2.2f);
+            break;
+        case ToolbarIcon::Rectangle:
+            plan.Add(core::StrokeRect{
+                Rect{ cx - 8.0f, cy - 6.0f, cx + 8.0f, cy + 6.0f }, ink, 1.8f });
+            break;
+        case ToolbarIcon::Ellipse:
+            plan.Add(core::StrokeEllipse{
+                Rect{ cx - 8.0f, cy - 6.0f, cx + 8.0f, cy + 6.0f }, ink, 1.8f });
+            break;
+        case ToolbarIcon::Arrow:
+            line(-8.0f, 8.0f, 7.0f, -7.0f, 2.0f);
+            line(7.0f, -7.0f, 1.0f, -7.0f, 2.0f);
+            line(7.0f, -7.0f, 7.0f, -1.0f, 2.0f);
+            break;
+        case ToolbarIcon::Text:
+            addGlyph("T", 17.0f);
+            break;
+        case ToolbarIcon::Highlighter: {
+            Color highlight = ink;
+            highlight.a = alpha * 0.55f;
+            plan.Add(core::Segment{ Point{ cx - 8.0f, cy + 3.0f }, Point{ cx + 8.0f, cy - 3.0f },
+                                    highlight, 6.0f });
+            line(-8.0f, 8.0f, 8.0f, 2.0f, 1.4f);
+            break;
         }
-        const float textWidth = measured.destination.Width();
-        const float textHeight = measured.destination.Height();
-        const Point origin{ rect.left + (rect.Width() - textWidth) * 0.5f,
-                            rect.top + (rect.Height() - textHeight) * 0.5f };
-        const core::TextCell cell = rasterizer_->LayOut(button.label, spec, origin);
-        if (cell.atlas != 0) {
-            plan.Add(cell.ToBlit());
+        case ToolbarIcon::Mosaic:
+            for (int row = 0; row < 2; ++row) {
+                for (int column = 0; column < 3; ++column) {
+                    const float x = cx - 8.0f + column * 6.0f;
+                    const float y = cy - 6.0f + row * 6.0f;
+                    plan.Add(core::FillRect{ Rect{ x, y, x + 4.5f, y + 4.5f }, ink });
+                }
+            }
+            break;
+        case ToolbarIcon::Step:
+            plan.Add(core::StrokeEllipse{ Rect{ cx - 8.0f, cy - 8.0f, cx + 8.0f, cy + 8.0f }, ink,
+                                          1.8f });
+            addGlyph("1", 10.0f);
+            break;
+        case ToolbarIcon::Eraser:
+            line(-8.0f, 3.0f, 2.0f, -7.0f, 2.2f);
+            line(-8.0f, 8.0f, 8.0f, -2.0f, 2.2f);
+            line(-8.0f, 8.0f, 0.0f, 8.0f, 1.4f);
+            break;
+        case ToolbarIcon::Undo:
+            line(7.0f, -6.0f, -3.0f, -6.0f, 2.0f);
+            line(-3.0f, -6.0f, -7.0f, -2.0f, 2.0f);
+            line(-7.0f, -2.0f, -3.0f, 2.0f, 2.0f);
+            break;
+        case ToolbarIcon::Redo:
+            line(-7.0f, -6.0f, 3.0f, -6.0f, 2.0f);
+            line(3.0f, -6.0f, 7.0f, -2.0f, 2.0f);
+            line(7.0f, -2.0f, 3.0f, 2.0f, 2.0f);
+            break;
+        case ToolbarIcon::Copy:
+            plan.Add(core::StrokeRect{ Rect{ cx - 8.0f, cy - 8.0f, cx + 3.0f, cy + 3.0f }, ink,
+                                       1.6f });
+            plan.Add(core::StrokeRect{ Rect{ cx - 3.0f, cy - 3.0f, cx + 8.0f, cy + 8.0f }, ink,
+                                       1.6f });
+            break;
+        case ToolbarIcon::Save:
+            line(0.0f, -8.0f, 0.0f, 3.0f, 2.0f);
+            line(-4.0f, -1.0f, 0.0f, 3.0f, 2.0f);
+            line(4.0f, -1.0f, 0.0f, 3.0f, 2.0f);
+            line(-8.0f, 8.0f, -8.0f, 5.0f, 1.6f);
+            line(-8.0f, 5.0f, 8.0f, 5.0f, 1.6f);
+            line(8.0f, 5.0f, 8.0f, 8.0f, 1.6f);
+            break;
+        case ToolbarIcon::Pin:
+            plan.Add(core::FillEllipse{ Rect{ cx - 4.0f, cy - 9.0f, cx + 4.0f, cy - 1.0f }, ink });
+            line(0.0f, -1.0f, 0.0f, 6.0f, 2.0f);
+            line(0.0f, 6.0f, 4.0f, 9.0f, 2.0f);
+            break;
+        case ToolbarIcon::Close:
+            line(-7.0f, -7.0f, 7.0f, 7.0f, 2.0f);
+            line(7.0f, -7.0f, -7.0f, 7.0f, 2.0f);
+            break;
+        case ToolbarIcon::None:
+            break;
         }
     }
 }

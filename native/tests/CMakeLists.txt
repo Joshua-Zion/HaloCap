@@ -50,6 +50,10 @@ add_executable(selection_tests selection_tests.cpp)
 target_link_libraries(selection_tests PRIVATE halocap_core)
 add_test(NAME selection_tests COMMAND selection_tests)
 
+add_executable(clipboard_tests clipboard_tests.cpp)
+ target_link_libraries(clipboard_tests PRIVATE halocap_core)
+add_test(NAME clipboard_tests COMMAND clipboard_tests)
+
 add_executable(update_tests update_tests.cpp)
  target_link_libraries(update_tests PRIVATE halocap_core)
 add_test(NAME update_tests COMMAND update_tests)

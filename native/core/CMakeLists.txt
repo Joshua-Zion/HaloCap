@@ -15,6 +15,7 @@
     mosaic.cpp
     ocr.cpp
     update.cpp
+    clipboard.cpp
 )
 
 target_include_directories(halocap_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

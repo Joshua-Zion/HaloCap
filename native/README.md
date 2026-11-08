@@ -2,7 +2,7 @@
 
 本目录属于 `2.0` 分支。设计依据见 [../docs/2.0-native-plan.md](../docs/2.0-native-plan.md)，分支约定见其 §10，工具链与构建前提见计划文档的「S1 的工具链」。
 
-当前状态：**S1–S5 完成**（S4 的热键捕获、结果窗口高亮、同进程内存回落是收尾项）——十七套测试全绿；`HaloCap.exe` 有设置、日志、托盘、热键、覆盖层、录制、截图、OCR 与六页设置（托盘「录屏」/`Ctrl+Alt+R`、托盘「截图」/`Ctrl+Alt+A`、托盘「OCR」/`Ctrl+Alt+O`、托盘「设置」；`--record-seconds` / `--screenshot-selftest` / `--ocr-selftest` / `--settings-selftest` 四个自检，另有 `--version` / `--check-update`）。交付：`package.ps1` 产出 **11.05 MB** 的 win64 zip（目标 ≤ 20 MB）与 SHA-256 清单；空闲 2.5 MB、4K30 峰值 230.8 MB、截图选区 78.2 ms。
+当前状态：**S1–S5 完成**（S4 的热键捕获、结果窗口高亮、同进程内存回落是收尾项）——十八套测试全绿；`HaloCap.exe` 有设置、日志、托盘、热键、覆盖层、录制、截图、OCR、六页设置与剪贴板贴图（托盘「录屏」/`Ctrl+Alt+R`、托盘「截图」/`Ctrl+Alt+A`、托盘「OCR」/`Ctrl+Alt+O`、托盘「贴图」/`Ctrl+Alt+P`、托盘「设置」；`--record-seconds` / `--screenshot-selftest` / `--ocr-selftest` / `--settings-selftest` / `--pin-selftest` 五个自检，另有 `--version` / `--check-update`）。交付：`package.ps1` 产出 win64 zip（目标 ≤ 20 MB）与 SHA-256 清单；空闲 2.5 MB、4K30 峰值 230.8 MB、截图选区 78.2 ms。
 
 一处环境阻塞要写清：本机现在对**任何**程序都拒绝 `DuplicateOutput`（`E_ACCESSDENIED`；今天早些时候还能跑出吞吐数字的 spike 2 工具现在同样被拒），所以 `ICaptureSource` 的端到端脏矩形量级数字还没拿到。拷贝逻辑本身不依赖复制权，已经单独验过（`rect_copy_test`）。
 
@@ -39,6 +39,7 @@ native/
     ocr.h               OCR 前后处理：检测输入、DBNet 后处理、裁切、CTC 解码、按行排版与搜索
     ocr_engine.h        OCR 引擎 seam（IOcrEngine）：模型目录、识别入口
     update.h            更新清单解析与语义化版本比较（--check-update 用）
+    clipboard.h         剪贴板贴图：颜色解析、CF_HTML 取文本、快照优先级、文件批次与粘贴序列
     frame_scheduler.h   帧节奏与丢帧口径：BeginFrame / EndFrame / Stats，时钟由调用方注入微秒
   platform/win32/
     d2d_render_backend.h/.cpp      Direct2D 1.1（ID2D1Device + ID2D1DeviceContext）+ 合成链呈现
@@ -57,6 +58,7 @@ native/
     desktop_grab.h/.cpp                截图抓屏：GDI BitBlt 主显示器（本机桌面复制回读全黑，见 §5.1）
     ort_ocr_engine.h/.cpp              ONNX Runtime 的 PP-OCR 引擎：det + cls + rec，模型来自 1.x assets
     winrt_ocr_engine.h/.cpp            系统 Windows.Media.Ocr 引擎（第二引擎，无需模型）
+    win32_clipboard.h/.cpp             剪贴板读取（CF_HDROP/CF_DIB/PNG/HTML/文本）、WIC 图片、GDI 卡片
   tools/frame_cost/     覆盖层帧成本测量（与 spike 3 同口径，离屏、不上屏）
   tools/surface_probe/  上屏链路验证：A/B 抓屏证「看得见」+ 60 fps 排帧数丢帧
   tools/capture_probe/  采集链路统计：应有/实取、仅鼠标唤醒、脏像素之比、每帧 CPU 与内存
@@ -71,7 +73,7 @@ native/
                         也支持 synthetic:WxH（合成源，用来量 4K30 峰值）与 static/noaudio
   tools/wgc_probe/      窗口录制端到端：自建窗口 → WGC → 常驻纹理 → MP4
   tools/rect_copy_test/ 脏矩形拷贝的功能验证（进 CTest，不碰屏幕也不需要复制权）
-  tests/      core 的单测（无第三方框架，十七个可执行 + CTest）
+  tests/      core 的单测（无第三方框架，十八个可执行 + CTest）
   app/        组装根：DPI → 能力 → 设置 → 日志 → 托盘 → 热键 → 覆盖层 → 消息循环，
               `--selftest` 量空闲内存并给出退出码
     screenshot_overlay.h/.cpp   截图会话：全屏覆盖层、选区/把手、工具栏、鼠标键盘编辑、文字 EDIT、导出
@@ -375,7 +377,7 @@ native> build\app\HaloCap.exe --check-update dist\HaloCap-2.0.0-win64.json
 
 | 项 | 值 |
 | --- | --- |
-| 包体 | **11.05 MB**（11,591,818 字节，zip）≤ 20 MB |
+| 包体 | **11.12 MB**（11,671,000 字节（约），zip）≤ 20 MB |
 | 文件数 | 8 |
 | 清单 | `dist\HaloCap-2.0.0-win64.json`（version / url / sha256 / size / files） |
 | 签名 | 2.0 分支不签（`PACKAGE_SIGNED=0`）；main 的发行线补 `signtool` |
@@ -383,6 +385,19 @@ native> build\app\HaloCap.exe --check-update dist\HaloCap-2.0.0-win64.json
 
 更新通道是「清单 + 版本比较」：`--check-update` 打印 `UPDATE_CURRENT / UPDATE_LATEST / UPDATE_AVAILABLE / UPDATE_URL / UPDATE_SIZE`，语义化版本比较支持 `2.0.0-beta < 2.0.0`。下载/校验/替换留给 main 的发行线，2.0 只提供可测的协议（`update_tests` 19 条断言）。
 
-**与 1.x 的对照**：空闲 249 → **2.5 MB**；4K30 峰值 841 → **230.8 MB**；交付包 90 → **11.05 MB**；截图选区 0（1.x 未单测）→ **78.2 ms**；4K 体积/分钟 184 MB（真实桌面）vs 合成源 1.7 MB/分钟，**内容不同不可比**，需 4K 真机复测。
+**与 1.x 的对照**：空闲 249 → **2.5 MB**；4K30 峰值 841 → **230.8 MB**；交付包 90 → **11.12 MB**；截图选区 0（1.x 未单测）→ **78.2 ms**；4K 体积/分钟 184 MB（真实桌面）vs 合成源 1.7 MB/分钟，**内容不同不可比**，需 4K 真机复测。
 
 **测试迁移**：1.x 的 82 项里，core 部分全部落到 17 个 CTest 可执行文件（坐标/选区/热键/标注/马赛克/OCR/录制/音频/诊断/日志），日志见 `docs/2.0-native-plan.md` §5.1「S5 交付」的矩阵；未迁的是剪贴板历史解析与 WPF 工具栏图标（2.0 只做截屏贴图，工具栏是文字标签）。
+
+## 剪贴板贴图与工具栏图标
+
+```
+native> HaloCap.exe                     托盘「贴图」或 Ctrl+Alt+P
+native> build\app\HaloCap.exe --pin-selftest pin.png
+```
+
+贴图读取优先级与 1.x 一致：文件 > 位图 > HTML > 文本。颜色文本（`#1234`、`rgb(17,34,51)` 等）渲染成颜色卡，普通文本渲染成白底文本卡，位图与本地图片文件直接贴图，其余路径 / 坏图回退成路径卡；一次最多解码 16 张图片文件，同一剪贴板序列贴过一次图片后回退为路径（1.x 的粘贴序列规则）。核心规则在 `core/clipboard.*`（`clipboard_tests` 617 条断言），平台读取/解码/卡片绘制在 `platform/win32/win32_clipboard.*`。
+
+`--pin-selftest` 往剪贴板写 `#1234` 再贴图，断言 `APP_PIN_WINDOW=1 / APP_PIN_PROOF=1` 并抓证明图；图片 / 文件 / HTML 路径由 core 测试与平台读取代码覆盖，尚未逐一做视觉证明。
+
+工具栏图标从单字标签换成了 display list 画的向量图标（笔/矩/椭/箭/T/荧光/马赛克/序号/橡皮 + 撤/重/复/存/贴/关），当前工具仍是蓝底高亮，截图自检的证明图可验。

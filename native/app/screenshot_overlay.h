@@ -95,12 +95,19 @@ private:
         Undo, Redo, Copy, Save, Pin, CloseOverlay,
     };
 
+    enum class ToolbarIcon : std::int32_t {
+        None = 0,
+        Pen, Rectangle, Ellipse, Arrow, Text, Highlighter, Mosaic, Step, Eraser,
+        Undo, Redo, Copy, Save, Pin, Close,
+    };
+
     struct ToolbarButton {
         RECT rect{};
         Action action = Action::None;
         int payload = 0;      // 颜色下标
         int toolIndex = -1;
         std::string label;
+        ToolbarIcon icon = ToolbarIcon::None;
         bool enabled = true;
         bool active = false;
     };

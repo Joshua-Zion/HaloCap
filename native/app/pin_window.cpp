@@ -176,8 +176,9 @@ void PinWindow::Render() {
     }
 
     // 悬停工具条：右上角三个圆形按钮。
-    copyRect_ = RECT{ width - 104, 8, width - 76, 36 };
-    saveRect_ = RECT{ width - 72, 8, width - 44, 36 };
+    copyRect_ = RECT{ width - 136, 8, width - 108, 36 };
+    saveRect_ = RECT{ width - 104, 8, width - 76, 36 };
+    ocrRect_ = RECT{ width - 72, 8, width - 44, 36 };
     closeRect_ = RECT{ width - 40, 8, width - 12, 36 };
     if (hover_) {
         Gdiplus::Bitmap canvas(outerWidth, outerHeight, outerWidth * 4, PixelFormat32bppPARGB,
@@ -186,11 +187,11 @@ void PinWindow::Render() {
         graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
         graphics.SetTextRenderingHint(Gdiplus::TextRenderingHintAntiAlias);
 
-        const float barLeft = static_cast<float>(contentLeft + width - 108);
+        const float barLeft = static_cast<float>(contentLeft + width - 140);
         const float barTop = static_cast<float>(contentTop + 4);
         Gdiplus::GraphicsPath bar;
         bar.AddArc(barLeft, barTop, 32.0f, 32.0f, 90.0f, 180.0f);
-        bar.AddArc(barLeft + 72.0f, barTop, 32.0f, 32.0f, 270.0f, 180.0f);
+        bar.AddArc(barLeft + 104.0f, barTop, 32.0f, 32.0f, 270.0f, 180.0f);
         bar.CloseFigure();
         Gdiplus::SolidBrush barBrush(Gdiplus::Color(235, 0x16, 0x1A, 0x22));
         Gdiplus::Pen barPen(Gdiplus::Color(40, 255, 255, 255), 1.0f);
@@ -221,8 +222,20 @@ void PinWindow::Render() {
             graphics.DrawLine(&pen, center.X + 6.0f, center.Y - 6.0f, center.X - 6.0f,
                               center.Y + 6.0f);
         };
+        const auto drawOcr = [&](Gdiplus::PointF center) {
+            Gdiplus::Font font(L"Microsoft YaHei UI", 9.0f, Gdiplus::FontStyleBold,
+                               Gdiplus::UnitPixel);
+            Gdiplus::StringFormat format;
+            format.SetAlignment(Gdiplus::StringAlignmentCenter);
+            format.SetLineAlignment(Gdiplus::StringAlignmentCenter);
+            Gdiplus::SolidBrush brush(Gdiplus::Color(255, 0xE9, 0xED, 0xF4));
+            graphics.DrawString(L"OCR", 3, &font,
+                                Gdiplus::RectF(center.X - 14.0f, center.Y - 8.0f, 28.0f, 16.0f),
+                                &format, &brush);
+        };
         drawCopy(buttonCenter(copyRect_));
         drawSave(buttonCenter(saveRect_));
+        drawOcr(buttonCenter(ocrRect_));
         drawClose(buttonCenter(closeRect_));
     }
 
@@ -271,8 +284,11 @@ int PinWindow::ButtonAt(POINT client) const {
     if (inside(saveRect_)) {
         return 1;
     }
-    if (inside(closeRect_)) {
+    if (inside(ocrRect_)) {
         return 2;
+    }
+    if (inside(closeRect_)) {
+        return 3;
     }
     return -1;
 }
@@ -342,8 +358,14 @@ LRESULT PinWindow::Handle(HWND window, UINT message, WPARAM wParam, LPARAM lPara
     case WM_LBUTTONDOWN: {
         const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
         const int button = ButtonAt(point);
-        if (button == 2) {
+        if (button == 3) {
             Close();
+            return 0;
+        }
+        if (button == 2) {
+            if (onOcr_) {
+                onOcr_(content_.data(), contentWidth_, contentHeight_);
+            }
             return 0;
         }
         if (button == 0) {

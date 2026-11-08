@@ -48,6 +48,7 @@
 #include "win32_store.h"
 #include "win32_surface_window.h"
 #include "win32_wgc_capture.h"
+#include "window_picker.h"
 #include "win32_tray.h"
 
 #include <windows.h>
@@ -125,6 +126,7 @@ struct Options {
 
     // 非空 = 无人值守的圆盘自检：打开圆盘 → 抓图 → 退出。
     std::wstring radialSelftestPath;
+    std::wstring windowPickerSelftestPath;
 
     // 交付：--version 打印版本；--check-update 读一份清单并比较版本。
     bool version = false;
@@ -341,6 +343,8 @@ Options ParseOptions(int argc, char** argv) {
             options.pinSelftestPath = Utf8ToWide(argv[++i]);
         } else if (argument == "--radial-selftest" && i + 1 < argc) {
             options.radialSelftestPath = Utf8ToWide(argv[++i]);
+        } else if (argument == "--window-picker-selftest" && i + 1 < argc) {
+            options.windowPickerSelftestPath = Utf8ToWide(argv[++i]);
         } else if (argument == "--version") {
             options.version = true;
         } else if (argument == "--check-update" && i + 1 < argc) {
@@ -368,6 +372,7 @@ void PrintUsage() {
         "  --settings-selftest PATH    open the six settings pages, capture, exit\n"
         "  --pin-selftest PATH         pin the clipboard content, capture, exit\n"
         "  --radial-selftest PATH      open the radial menu, capture, exit\n"
+        "  --window-picker-selftest PATH  open the window picker, capture, exit\n"
         "  --version                   print the delivery version and exit\n"
         "  --check-update PATH         compare this build with an update manifest\n"
         "  --settings-selftest PATH    open the settings pages, capture, exit\n"
@@ -820,6 +825,7 @@ int Run(const Options& options) {
     RecordingRunner recording;
     bool recordingActive = false;
     std::unique_ptr<halocap::app::RecordingHud> recordingHud;
+    std::unique_ptr<halocap::app::WindowPicker> windowPicker;
     std::unique_ptr<halocap::app::ScreenshotOverlay> screenshotOverlay;
     std::vector<std::unique_ptr<halocap::app::PinWindow>> pins;
     bool recordStarted = false;
@@ -870,17 +876,15 @@ int Run(const Options& options) {
     auto toggleRecording = [&]() {
         if (!recordingActive) {
             if (settings.recording.range == core::RecordingRange::Window) {
-                const HWND foreground = GetForegroundWindow();
-                DWORD processId = 0;
-                if (foreground != nullptr) {
-                    GetWindowThreadProcessId(foreground, &processId);
+                if (windowPicker != nullptr && windowPicker->Active()) {
+                    return;
                 }
-                if (foreground != nullptr && processId != GetCurrentProcessId() &&
-                    IsWindowVisible(foreground)) {
-                    beginRecording(foreground, core::IntRect{});
-                } else {
-                    tray.Notify("HaloCap", "未找到可录制的窗口，改为整屏");
-                    beginRecording(nullptr, core::IntRect{});
+                windowPicker = std::make_unique<halocap::app::WindowPicker>();
+                if (!windowPicker->Open([&](HWND target) {
+                        beginRecording(target, core::IntRect{});
+                    })) {
+                    windowPicker.reset();
+                    tray.Notify("HaloCap", "无法选择录制窗口");
                 }
                 return;
             }
@@ -967,6 +971,7 @@ int Run(const Options& options) {
     std::unique_ptr<halocap::app::RadialMenu> radialMenu;
     double ocrRecognizeMs = 0.0;
     std::string ocrWorkerEngine = "pp";
+    std::function<void(const std::uint8_t*, int, int, int, int)> ocrRunner;
 
     const auto openScreenshot = [&]() {
         if (screenshotOverlay != nullptr && screenshotOverlay->Active()) {
@@ -978,6 +983,12 @@ int Run(const Options& options) {
         overlayOptions.onPin = [&](const std::uint8_t* bgra, int width, int height, int x, int y) {
             auto pin = std::make_unique<halocap::app::PinWindow>();
             if (pin->Create(bgra, width, height, x, y)) {
+                pin->SetOcrHandler([&ocrRunner](const std::uint8_t* image, int imageWidth,
+                                                int imageHeight) {
+                    if (ocrRunner) {
+                        ocrRunner(image, imageWidth, imageHeight, 0, 0);
+                    }
+                });
                 pins.push_back(std::move(pin));
             }
         };
@@ -1064,6 +1075,8 @@ int Run(const Options& options) {
             tray.Notify("HaloCap", "OCR 没有识别到文字");
         }
     };
+
+    ocrRunner = runOcr;
 
     const auto openOcr = [&]() {
         if (screenshotOverlay != nullptr && screenshotOverlay->Active()) {
@@ -1471,6 +1484,33 @@ int Run(const Options& options) {
         running = false;
     }
 
+    bool windowPickerSelftestOk = true;
+    if (!options.windowPickerSelftestPath.empty()) {
+        windowPickerSelftestOk = false;
+        POINT saved{};
+        GetCursorPos(&saved);
+        SetCursorPos(900, 500);
+        windowPicker = std::make_unique<halocap::app::WindowPicker>();
+        const bool opened = windowPicker->Open([](HWND) {});
+        Sleep(400);
+        halocap::platform::win32::DesktopImage desktop;
+        const bool proof =
+            halocap::platform::win32::GrabPrimaryDesktop(desktop) &&
+            halocap::platform::win32::SaveBgraPng(options.windowPickerSelftestPath,
+                                                  desktop.bgra.data(), desktop.width,
+                                                  desktop.height, desktop.width * 4);
+        if (windowPicker != nullptr) {
+            windowPicker->Close();
+        }
+        SetCursorPos(saved.x, saved.y);
+        AddFlag(report, "APP_WINDOW_PICKER_WINDOW", opened);
+        AddFlag(report, "APP_WINDOW_PICKER_PROOF", proof);
+        windowPickerSelftestOk = opened && proof;
+        log.Info(windowPickerSelftestOk ? "window picker selftest: ok"
+                                        : "window picker selftest: failed");
+        running = false;
+    }
+
     bool radialSelftestOk = true;
     if (!options.radialSelftestPath.empty()) {
         radialSelftestOk = false;
@@ -1558,6 +1598,9 @@ int Run(const Options& options) {
         }
         if (radialMenu != nullptr && !radialMenu->Active()) {
             radialMenu.reset();
+        }
+        if (windowPicker != nullptr && !windowPicker->Active()) {
+            windowPicker.reset();
         }
         // 截图覆盖层：会话自己的窗口消息由上面的 PeekMessage 派发，这里只推进渲染。
         if (screenshotOverlay != nullptr) {
@@ -1705,8 +1748,9 @@ int Run(const Options& options) {
     AddFlag(report, "APP_SETTINGS_SELFTEST", settingsSelftestOk);
     AddFlag(report, "APP_PIN_SELFTEST", pinSelftestOk);
     AddFlag(report, "APP_RADIAL_SELFTEST", radialSelftestOk);
+    AddFlag(report, "APP_WINDOW_PICKER_SELFTEST", windowPickerSelftestOk);
     ok = ok && screenshotSelftestOk && ocrSelftestOk && settingsSelftestOk && pinSelftestOk &&
-         radialSelftestOk;
+         radialSelftestOk && windowPickerSelftestOk;
 
     std::printf("%s", report.c_str());
     if (!options.reportPath.empty()) {

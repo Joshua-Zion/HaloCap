@@ -4,6 +4,8 @@
 #include <vector>
 #include <windows.h>
 
+#include <functional>
+
 namespace halocap::app {
 
 // 贴图窗口：无边框、置顶、分层窗口（UpdateLayeredWindow），内容是合成后的截图 + 一圈光晕。
@@ -21,6 +23,10 @@ public:
 
     // bgra: width*height*4，函数返回后调用方可以释放。screenX/Y 是图像左上角。
     bool Create(const std::uint8_t* bgra, int width, int height, int screenX, int screenY);
+
+    // 贴图上的 OCR：把当前图像交给调用方识别。
+    using OcrHandler = std::function<void(const std::uint8_t*, int, int)>;
+    void SetOcrHandler(OcrHandler handler) { onOcr_ = std::move(handler); }
 
     void Close();
     bool Valid() const { return window_ != nullptr; }
@@ -44,6 +50,8 @@ private:
     RECT copyRect_{};
     RECT saveRect_{};
     RECT closeRect_{};
+    RECT ocrRect_{};
+    OcrHandler onOcr_;
 
     bool dragging_ = false;
     POINT dragOrigin_{};

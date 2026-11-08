@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "capability.h"
 #include "settings.h"
@@ -58,6 +58,11 @@ private:
     HWND cancelButton_ = nullptr;
     HFONT font_ = nullptr;
     HBRUSH background_ = nullptr;
+    HBRUSH sidebarBrush_ = nullptr;
+    HBRUSH cardBrush_ = nullptr;
+    HBRUSH accentBrush_ = nullptr;
+    HPEN cardBorderPen_ = nullptr;
+    HPEN fieldBorderPen_ = nullptr;
 
     struct PageControl {
         HWND handle = nullptr;

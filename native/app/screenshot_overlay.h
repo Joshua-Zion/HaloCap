@@ -99,6 +99,7 @@ private:
         None = 0,
         Pen, Rectangle, Ellipse, Arrow, Text, Highlighter, Mosaic, Step, Eraser,
         Undo, Redo, Copy, Save, Pin, Close,
+        Separator,
     };
 
     struct ToolbarButton {

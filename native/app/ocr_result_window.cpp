@@ -74,7 +74,11 @@ bool OcrResultWindow::Create(void* owner, const std::uint8_t* bgra, int width, i
         return false;
     }
 
-    background_ = CreateSolidBrush(RGB(28, 31, 38));
+    // 1.x 结果窗口：浅色内容底、白色卡片、#007AFF 主按钮。
+    background_ = CreateSolidBrush(RGB(247, 247, 249));
+    cardBrush_ = CreateSolidBrush(RGB(255, 255, 255));
+    accentBrush_ = CreateSolidBrush(RGB(0, 122, 255));
+    borderPen_ = CreatePen(PS_SOLID, 1, RGB(231, 231, 236));
     font_ = CreateFontW(-16, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
                         OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH,
                         L"Microsoft YaHei UI");
@@ -88,12 +92,12 @@ bool OcrResultWindow::Create(void* owner, const std::uint8_t* bgra, int width, i
                               WS_CHILD | WS_VISIBLE | ES_LEFT | ES_AUTOHSCROLL, 0, 0, 10, 10,
                               window_, reinterpret_cast<HMENU>(2), GetModuleHandleW(nullptr),
                               nullptr);
-    findButton_ = CreateWindowExW(0, L"BUTTON", L"查找", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON, 0,
-                                  0, 10, 10, window_, reinterpret_cast<HMENU>(3),
-                                  GetModuleHandleW(nullptr), nullptr);
-    copyButton_ = CreateWindowExW(0, L"BUTTON", L"复制全部", WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
-                                  0, 0, 10, 10, window_, reinterpret_cast<HMENU>(4),
-                                  GetModuleHandleW(nullptr), nullptr);
+    findButton_ = CreateWindowExW(0, L"BUTTON", L"查找",
+                                  WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 10, 10, window_,
+                                  reinterpret_cast<HMENU>(3), GetModuleHandleW(nullptr), nullptr);
+    copyButton_ = CreateWindowExW(0, L"BUTTON", L"复制全部",
+                                  WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 10, 10, window_,
+                                  reinterpret_cast<HMENU>(4), GetModuleHandleW(nullptr), nullptr);
     hint_ = CreateWindowExW(0, L"STATIC", L"左侧为识别区域，框出的每一段即为右侧的一行",
                             WS_CHILD | WS_VISIBLE | SS_LEFT, 0, 0, 10, 10, window_, nullptr,
                             GetModuleHandleW(nullptr), nullptr);
@@ -117,9 +121,15 @@ void OcrResultWindow::Close() {
         DeleteObject(font_);
         font_ = nullptr;
     }
-    if (background_ != nullptr) {
-        DeleteObject(background_);
-        background_ = nullptr;
+    for (HBRUSH* brush : { &background_, &cardBrush_, &accentBrush_ }) {
+        if (*brush != nullptr) {
+            DeleteObject(*brush);
+            *brush = nullptr;
+        }
+    }
+    if (borderPen_ != nullptr) {
+        DeleteObject(borderPen_);
+        borderPen_ = nullptr;
     }
 }
 
@@ -157,6 +167,42 @@ LRESULT OcrResultWindow::Handle(HWND window, UINT message, WPARAM wParam, LPARAM
         return 1;
     }
 
+    case WM_CTLCOLORSTATIC: {
+        HDC dc = reinterpret_cast<HDC>(wParam);
+        SetTextColor(dc, RGB(29, 29, 31));
+        SetBkColor(dc, RGB(247, 247, 249));
+        return reinterpret_cast<LRESULT>(background_);
+    }
+
+    case WM_CTLCOLOREDIT: {
+        HDC dc = reinterpret_cast<HDC>(wParam);
+        SetTextColor(dc, RGB(29, 29, 31));
+        SetBkColor(dc, RGB(255, 255, 255));
+        return reinterpret_cast<LRESULT>(cardBrush_);
+    }
+
+    case WM_DRAWITEM: {
+        const auto* item = reinterpret_cast<const DRAWITEMSTRUCT*>(lParam);
+        if (item == nullptr) {
+            return 0;
+        }
+        HDC dc = item->hDC;
+        SetBkMode(dc, TRANSPARENT);
+        const bool primary = item->CtlID == 4;
+        HGDIOBJ oldPen = SelectObject(dc, primary ? GetStockObject(NULL_PEN) : borderPen_);
+        HGDIOBJ oldBrush = SelectObject(dc, primary ? accentBrush_ : cardBrush_);
+        const RECT& r = item->rcItem;
+        RoundRect(dc, r.left, r.top, r.right, r.bottom, 16, 16);
+        SelectObject(dc, oldBrush);
+        SelectObject(dc, oldPen);
+        SetTextColor(dc, primary ? RGB(255, 255, 255) : RGB(29, 29, 31));
+        wchar_t text[32] = {};
+        const LRESULT length = GetWindowTextW(item->hwndItem, text, 32);
+        DrawTextW(dc, text, static_cast<int>(length), const_cast<RECT*>(&r),
+                  DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        return 1;
+    }
+
     case WM_COMMAND:
         if (LOWORD(wParam) == 3) {
             FindNext();
@@ -165,20 +211,6 @@ LRESULT OcrResultWindow::Handle(HWND window, UINT message, WPARAM wParam, LPARAM
         }
         return 0;
 
-    case WM_CTLCOLORSTATIC: {
-        HDC dc = reinterpret_cast<HDC>(wParam);
-        SetTextColor(dc, RGB(220, 224, 232));
-        SetBkColor(dc, RGB(28, 31, 38));
-        return reinterpret_cast<LRESULT>(background_);
-    }
-
-    case WM_CTLCOLOREDIT: {
-        HDC dc = reinterpret_cast<HDC>(wParam);
-        SetTextColor(dc, RGB(235, 238, 245));
-        SetBkColor(dc, RGB(40, 44, 54));
-        static HBRUSH editBrush = CreateSolidBrush(RGB(40, 44, 54));
-        return reinterpret_cast<LRESULT>(editBrush);
-    }
 
     case WM_CLOSE:
         DestroyWindow(window);
@@ -237,6 +269,15 @@ void OcrResultWindow::Paint() {
     RECT client{};
     GetClientRect(window_, &client);
     FillRect(dc, &client, background_);
+
+    // 预览区是白色卡片（1.x 的 #FFFFFF 卡片 + #E7E7EC 边框）。
+    if (preview_.right > preview_.left && preview_.bottom > preview_.top) {
+        HGDIOBJ oldPen = SelectObject(dc, borderPen_);
+        HGDIOBJ oldBrush = SelectObject(dc, cardBrush_);
+        RoundRect(dc, preview_.left, preview_.top, preview_.right, preview_.bottom, 24, 24);
+        SelectObject(dc, oldBrush);
+        SelectObject(dc, oldPen);
+    }
 
     if (image_.empty() || preview_.right <= preview_.left || preview_.bottom <= preview_.top) {
         EndPaint(window_, &paint);

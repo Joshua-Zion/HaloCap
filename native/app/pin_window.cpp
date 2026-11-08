@@ -51,44 +51,52 @@ bool PinWindow::Create(const std::uint8_t* bgra, int width, int height, int scre
     const int borderRight = kGlowPx + kBorderPx + width + kBorderPx;
     const int borderBottom = kGlowPx + kBorderPx + height + kBorderPx;
 
+    // 1.x 的贴图卡：白色圆角 12、1 px #25000000 边框、外圈黑色柔和阴影。
+    constexpr float kRadius = 12.0f;
+    const auto roundedDistance = [](float px, float py, float halfWidth, float halfHeight,
+                                    float radius) {
+        const float qx = std::fabs(px) - halfWidth + radius;
+        const float qy = std::fabs(py) - halfHeight + radius;
+        const float outsideX = std::max(qx, 0.0f);
+        const float outsideY = std::max(qy, 0.0f);
+        return std::sqrt(outsideX * outsideX + outsideY * outsideY) +
+               std::min(std::max(qx, qy), 0.0f) - radius;
+    };
+
+    const float centerX = static_cast<float>(width) * 0.5f;
+    const float centerY = static_cast<float>(height) * 0.5f;
+
     for (int y = 0; y < outerHeight; ++y) {
         for (int x = 0; x < outerWidth; ++x) {
+            const float px = static_cast<float>(x - contentLeft);
+            const float py = static_cast<float>(y - contentTop);
+
+            const float contentDistance =
+                roundedDistance(px - centerX, py - centerY, centerX, centerY, kRadius);
+            const float outerDistance = roundedDistance(
+                px - centerX, py - centerY, centerX + kBorderPx, centerY + kBorderPx,
+                kRadius + kBorderPx);
+
             std::uint8_t b = 0;
             std::uint8_t g = 0;
             std::uint8_t r = 0;
             std::uint8_t a = 0;
 
-            const bool insideBorder = x >= borderLeft && x < borderRight && y >= borderTop &&
-                                      y < borderBottom;
-            const bool insideContent = x >= contentLeft && x < contentLeft + width &&
-                                       y >= contentTop && y < contentTop + height;
-
-            if (insideContent) {
+            if (contentDistance <= 0.0f) {
                 const std::size_t source =
                     (static_cast<std::size_t>(y - contentTop) * width + (x - contentLeft)) * 4;
                 b = bgra[source + 0];
                 g = bgra[source + 1];
                 r = bgra[source + 2];
                 a = 255;
-            } else if (insideBorder) {
-                // 1px 白边：贴图在深色背景上也要有清晰轮廓。
+            } else if (outerDistance <= 0.0f) {
                 b = 255;
                 g = 255;
                 r = 255;
                 a = 255;
-            } else {
-                // 光晕：到边框的切比雪夫距离越近越不透明，颜色取冷灰蓝。
-                const int dx = std::max({ borderLeft - x, x - (borderRight - 1), 0 });
-                const int dy = std::max({ borderTop - y, y - (borderBottom - 1), 0 });
-                const int distance = std::max(dx, dy);
-                if (distance < kGlowPx) {
-                    const float t = 1.0f - static_cast<float>(distance) / kGlowPx;
-                    const auto alpha = static_cast<std::uint8_t>(90.0f * t * t);
-                    b = 60;
-                    g = 90;
-                    r = 120;
-                    a = alpha;
-                }
+            } else if (outerDistance < static_cast<float>(kGlowPx)) {
+                const float t = 1.0f - outerDistance / static_cast<float>(kGlowPx);
+                a = static_cast<std::uint8_t>(72.0f * t * t);
             }
 
             const std::size_t destination = (static_cast<std::size_t>(y) * outerWidth + x) * 4;

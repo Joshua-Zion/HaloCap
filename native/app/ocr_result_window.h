@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "ocr.h"
 
@@ -45,6 +45,9 @@ private:
     HWND hint_ = nullptr;
     HFONT font_ = nullptr;
     HBRUSH background_ = nullptr;
+    HBRUSH cardBrush_ = nullptr;
+    HBRUSH accentBrush_ = nullptr;
+    HPEN borderPen_ = nullptr;
 
     std::vector<std::uint8_t> image_;
     int imageWidth_ = 0;

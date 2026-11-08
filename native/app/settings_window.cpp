@@ -132,21 +132,32 @@ bool SettingsWindow::Create(void* owner, const core::AppSettings& settings,
     font_ = CreateFontW(-15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
                         OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH,
                         L"Microsoft YaHei UI");
+    // 1.x 设置页的浅色配色：内容底 #F7F7F9、侧栏 #EDEDF1、卡片白、强调 #007AFF。
+    background_ = CreateSolidBrush(RGB(247, 247, 249));
+    sidebarBrush_ = CreateSolidBrush(RGB(237, 237, 241));
+    cardBrush_ = CreateSolidBrush(RGB(255, 255, 255));
+    accentBrush_ = CreateSolidBrush(RGB(0, 122, 255));
+    cardBorderPen_ = CreatePen(PS_SOLID, 1, RGB(231, 231, 236));
+    fieldBorderPen_ = CreatePen(PS_SOLID, 1, RGB(217, 217, 222));
 
-    list_ = CreateWindowExW(WS_EX_CLIENTEDGE, L"LISTBOX", L"",
-                            WS_CHILD | WS_VISIBLE | LBS_NOTIFY | WS_VSCROLL, 12, 12, kListWidth,
-                            500, window_, reinterpret_cast<HMENU>(100), GetModuleHandleW(nullptr),
-                            nullptr);
+    list_ = CreateWindowExW(0, L"LISTBOX", L"",
+                            WS_CHILD | WS_VISIBLE | LBS_NOTIFY | WS_VSCROLL |
+                                LBS_OWNERDRAWFIXED | LBS_HASSTRINGS,
+                            12, 12, kListWidth, 500, window_, reinterpret_cast<HMENU>(100),
+                            GetModuleHandleW(nullptr), nullptr);
     SendMessageW(list_, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
+    SendMessageW(list_, LB_SETITEMHEIGHT, 0, 34);
     for (const wchar_t* item : { L"截图", L"录制", L"OCR", L"快捷键", L"外观", L"关于 / 诊断" }) {
         SendMessageW(list_, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(item));
     }
     SendMessageW(list_, LB_SETCURSEL, 0, 0);
 
-    saveButton_ = CreateWindowExW(0, L"BUTTON", L"保存", WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON,
-                                  620, 520, 90, 30, window_, reinterpret_cast<HMENU>(200),
+    saveButton_ = CreateWindowExW(0, L"BUTTON", L"保存",
+                                  WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 620, 520, 90, 34,
+                                  window_, reinterpret_cast<HMENU>(200),
                                   GetModuleHandleW(nullptr), nullptr);
-    cancelButton_ = CreateWindowExW(0, L"BUTTON", L"取消", WS_CHILD | WS_VISIBLE, 720, 520, 90, 30,
+    cancelButton_ = CreateWindowExW(0, L"BUTTON", L"取消",
+                                    WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 720, 520, 90, 34,
                                     window_, reinterpret_cast<HMENU>(201),
                                     GetModuleHandleW(nullptr), nullptr);
     for (HWND button : { saveButton_, cancelButton_ }) {
@@ -360,9 +371,17 @@ void SettingsWindow::Close() {
         DeleteObject(font_);
         font_ = nullptr;
     }
-    if (background_ != nullptr) {
-        DeleteObject(background_);
-        background_ = nullptr;
+    for (HBRUSH* brush : { &background_, &sidebarBrush_, &cardBrush_, &accentBrush_ }) {
+        if (*brush != nullptr) {
+            DeleteObject(*brush);
+            *brush = nullptr;
+        }
+    }
+    for (HPEN* pen : { &cardBorderPen_, &fieldBorderPen_ }) {
+        if (*pen != nullptr) {
+            DeleteObject(*pen);
+            *pen = nullptr;
+        }
     }
 }
 
@@ -385,6 +404,102 @@ LRESULT CALLBACK SettingsWindow::WndProc(HWND window, UINT message, WPARAM wPara
 
 LRESULT SettingsWindow::Handle(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
+    case WM_ERASEBKGND: {
+        // 1.x：整窗 #F7F7F9，右侧内容区是一张 12 px 圆角的白卡。
+        HDC dc = reinterpret_cast<HDC>(wParam);
+        RECT client{};
+        GetClientRect(window, &client);
+        FillRect(dc, &client, background_);
+        const RECT card{ 212, 12, client.right - 12, client.bottom - 64 };
+        HGDIOBJ oldPen = SelectObject(dc, cardBorderPen_);
+        HGDIOBJ oldBrush = SelectObject(dc, cardBrush_);
+        RoundRect(dc, card.left, card.top, card.right, card.bottom, 24, 24);
+        SelectObject(dc, oldBrush);
+        SelectObject(dc, oldPen);
+        return 1;
+    }
+
+    case WM_CTLCOLORSTATIC: {
+        HDC dc = reinterpret_cast<HDC>(wParam);
+        SetTextColor(dc, RGB(29, 29, 31));
+        SetBkColor(dc, RGB(255, 255, 255));
+        return reinterpret_cast<LRESULT>(cardBrush_);
+    }
+
+    case WM_CTLCOLOREDIT: {
+        HDC dc = reinterpret_cast<HDC>(wParam);
+        SetTextColor(dc, RGB(29, 29, 31));
+        SetBkColor(dc, RGB(255, 255, 255));
+        return reinterpret_cast<LRESULT>(cardBrush_);
+    }
+
+    case WM_CTLCOLORLISTBOX: {
+        HDC dc = reinterpret_cast<HDC>(wParam);
+        SetTextColor(dc, RGB(110, 110, 115));
+        SetBkColor(dc, RGB(237, 237, 241));
+        return reinterpret_cast<LRESULT>(sidebarBrush_);
+    }
+
+    case WM_DRAWITEM: {
+        const auto* item = reinterpret_cast<const DRAWITEMSTRUCT*>(lParam);
+        if (item == nullptr) {
+            return 0;
+        }
+        HDC dc = item->hDC;
+        SetBkMode(dc, TRANSPARENT);
+
+        if (item->CtlID == 100) {
+            const bool selected = (item->itemState & ODS_SELECTED) != 0;
+            FillRect(dc, &item->rcItem, sidebarBrush_);
+            RECT textRect = item->rcItem;
+            textRect.left += 14;
+            if (selected) {
+                HGDIOBJ oldPen = SelectObject(dc, GetStockObject(NULL_PEN));
+                HGDIOBJ oldBrush = SelectObject(dc, CreateSolidBrush(RGB(224, 224, 230)));
+                RECT pill{ item->rcItem.left + 8, item->rcItem.top + 3,
+                           item->rcItem.right - 8, item->rcItem.bottom - 3 };
+                RoundRect(dc, pill.left, pill.top, pill.right, pill.bottom, 16, 16);
+                SelectObject(dc, oldBrush);
+                SelectObject(dc, oldPen);
+                SetTextColor(dc, RGB(29, 29, 31));
+            } else {
+                SetTextColor(dc, RGB(110, 110, 115));
+            }
+            wchar_t text[128] = {};
+            const LRESULT length = SendMessageW(list_, LB_GETTEXT, item->itemID,
+                                                reinterpret_cast<LPARAM>(text));
+            if (length > 0) {
+                DrawTextW(dc, text, static_cast<int>(length), &textRect,
+                          DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+            }
+            return 1;
+        }
+
+        if (item->CtlID == 200 || item->CtlID == 201) {
+            const bool primary = item->CtlID == 200;
+            const bool pressed = (item->itemState & ODS_SELECTED) != 0;
+            HGDIOBJ oldPen = SelectObject(dc, primary ? GetStockObject(NULL_PEN) : fieldBorderPen_);
+            HGDIOBJ oldBrush = SelectObject(
+                dc, primary ? accentBrush_ : cardBrush_);
+            const RECT& r = item->rcItem;
+            RoundRect(dc, r.left, r.top, r.right, r.bottom, 20, 20);
+            SelectObject(dc, oldBrush);
+            SelectObject(dc, oldPen);
+
+            SetTextColor(dc, primary ? RGB(255, 255, 255) : RGB(29, 29, 31));
+            if (pressed) {
+                RECT shade = r;
+                FrameRect(dc, &shade, static_cast<HBRUSH>(GetStockObject(GRAY_BRUSH)));
+            }
+            wchar_t text[32] = {};
+            const LRESULT length = GetWindowTextW(item->hwndItem, text, 32);
+            DrawTextW(dc, text, static_cast<int>(length), const_cast<RECT*>(&r),
+                      DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            return 1;
+        }
+        return 0;
+    }
+
     case WM_COMMAND:
         if (LOWORD(wParam) == 100 && HIWORD(wParam) == LBN_SELCHANGE) {
             const int index = static_cast<int>(SendMessageW(list_, LB_GETCURSEL, 0, 0));

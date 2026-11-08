@@ -1,4 +1,4 @@
-#include "display_list.h"
+﻿#include "display_list.h"
 
 #include <algorithm>
 #include <type_traits>
@@ -34,6 +34,12 @@ Rect BoundsOf(const Item& item) {
             } else if constexpr (std::is_same_v<T, FillEllipse>) {
                 return specific.rect;
             } else if constexpr (std::is_same_v<T, StrokeEllipse>) {
+                const float half = specific.thickness * 0.5f;
+                return Rect{ specific.rect.left - half, specific.rect.top - half,
+                             specific.rect.right + half, specific.rect.bottom + half };
+            } else if constexpr (std::is_same_v<T, FillRoundedRect>) {
+                return specific.rect;
+            } else if constexpr (std::is_same_v<T, StrokeRoundedRect>) {
                 const float half = specific.thickness * 0.5f;
                 return Rect{ specific.rect.left - half, specific.rect.top - half,
                              specific.rect.right + half, specific.rect.bottom + half };

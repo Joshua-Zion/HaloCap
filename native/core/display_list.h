@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #include "geometry.h"
 
@@ -51,6 +51,20 @@ struct StrokeEllipse {
     float thickness = 1.0f;
 };
 
+// 圆角矩形：1.x 的工具栏/提示条/卡片全是 8–12 px 圆角，直角会明显不像。
+struct FillRoundedRect {
+    Rect rect;
+    float radius = 8.0f;
+    Color color;
+};
+
+struct StrokeRoundedRect {
+    Rect rect;
+    float radius = 8.0f;
+    Color color;
+    float thickness = 1.0f;
+};
+
 struct Blit {
     ImageHandle image = 0;
     Rect source;
@@ -60,7 +74,7 @@ struct Blit {
 
 // 折线（Path）与字形 run（GlyphRun）尚未进入显示列表：前者要等几何缓存策略，
 // 后者要等 IFontRasterizer 的图集。放进列表却画不出来比不放更糟。
-using Item = std::variant<FillRect, StrokeRect, FillEllipse, StrokeEllipse, Segment, Blit>;
+using Item = std::variant<FillRect, StrokeRect, FillEllipse, StrokeEllipse, FillRoundedRect, StrokeRoundedRect, Segment, Blit>;
 
 // core 只产显示列表，向量顺序即图层顺序，不触碰任何渲染 API（§3.3 规则一）。
 class FramePlan {

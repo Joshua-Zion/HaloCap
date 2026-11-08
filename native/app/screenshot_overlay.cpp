@@ -631,10 +631,14 @@ void ScreenshotOverlay::LayoutToolbar() {
                   kToolbarToolWidth, !selection.IsEmpty(), kTools[i] == tool_, toolIcons[i]);
     }
 
+    addButton(Action::None, 0, -1, "", 1, false, false, ToolbarIcon::Separator);
+
     for (int i = 0; i < colorCount; ++i) {
         const bool active = style_.color == core::annotation_defaults::PaletteColor(i);
         addButton(Action::Color, i, -1, "", kToolbarColorWidth, !selection.IsEmpty(), active);
     }
+
+    addButton(Action::None, 0, -1, "", 1, false, false, ToolbarIcon::Separator);
 
     const Action actions[] = { Action::Undo,   Action::Redo, Action::Copy,
                                Action::Save,   Action::Pin,  Action::CloseOverlay };
@@ -666,8 +670,9 @@ void ScreenshotOverlay::RenderToolbar(core::FramePlan& plan) {
                            static_cast<float>(toolbarBounds_.top) - oy,
                            static_cast<float>(toolbarBounds_.right) - ox,
                            static_cast<float>(toolbarBounds_.bottom) - oy };
-    plan.Add(core::FillRect{ background, Color{ 0.07f, 0.08f, 0.11f, 0.94f } });
-    plan.Add(core::StrokeRect{ background, Color{ 1.0f, 1.0f, 1.0f, 0.22f }, 1.0f });
+    // 1.x 的工具栏：浅色 #FAF8F9FB、10 px 圆角、#22000000 边框。
+    plan.Add(core::FillRoundedRect{ background, 10.0f, Color{ 0.98f, 0.976f, 0.984f, 0.98f } });
+    plan.Add(core::StrokeRoundedRect{ background, 10.0f, Color{ 0.0f, 0.0f, 0.0f, 0.13f }, 1.0f });
 
     for (const ToolbarButton& button : toolbar_) {
         const Rect rect{ static_cast<float>(button.rect.left) - ox,
@@ -676,16 +681,26 @@ void ScreenshotOverlay::RenderToolbar(core::FramePlan& plan) {
                          static_cast<float>(button.rect.bottom) - oy };
 
         if (button.active) {
-            plan.Add(core::FillRect{ rect, Color{ 0.30f, 0.52f, 0.92f, 0.55f } });
+            plan.Add(core::FillRoundedRect{ rect, 7.0f, Color{ 0.184f, 0.486f, 0.965f, 1.0f } });
+        }
+
+        if (button.icon == ToolbarIcon::Separator) {
+            const float dividerX = rect.left + (rect.right - rect.left) * 0.5f;
+            plan.Add(core::FillRect{ Rect{ dividerX, rect.top + 9.0f, dividerX + 1.0f,
+                                           rect.bottom - 9.0f },
+                                     Color{ 0.0f, 0.0f, 0.0f, 0.10f } });
+            continue;
         }
 
         if (button.action == Action::Color) {
-            const Rect swatch{ rect.left + 3.0f, rect.top + 12.0f, rect.right - 3.0f,
-                               rect.bottom - 12.0f };
-            plan.Add(core::FillRect{ swatch,
-                                     core::annotation_defaults::PaletteColor(button.payload) });
+            const float inset = 4.0f;
+            const Rect swatch{ rect.left + inset, rect.top + inset, rect.right - inset,
+                               rect.bottom - inset };
+            plan.Add(core::FillEllipse{ swatch,
+                                        core::annotation_defaults::PaletteColor(button.payload) });
             if (button.active) {
-                plan.Add(core::StrokeRect{ swatch, Color{ 1.0f, 1.0f, 1.0f, 0.9f }, 1.0f });
+                plan.Add(core::StrokeEllipse{ swatch, Color{ 0.184f, 0.486f, 0.965f, 1.0f },
+                                              2.0f });
             }
             continue;
         }
@@ -694,8 +709,10 @@ void ScreenshotOverlay::RenderToolbar(core::FramePlan& plan) {
             continue;
         }
 
-        const float alpha = button.enabled ? 0.95f : 0.32f;
-        const Color ink{ 1.0f, 1.0f, 1.0f, alpha };
+        const float alpha = button.enabled ? 1.0f : 0.4f;
+        const Color ink = button.active
+                              ? Color{ 1.0f, 1.0f, 1.0f, alpha }
+                              : Color{ 0.235f, 0.259f, 0.314f, alpha };
         const float cx = (rect.left + rect.right) * 0.5f;
         const float cy = (rect.top + rect.bottom) * 0.5f;
         const auto line = [&](float x1, float y1, float x2, float y2, float thickness) {
@@ -801,6 +818,7 @@ void ScreenshotOverlay::RenderToolbar(core::FramePlan& plan) {
             line(-7.0f, -7.0f, 7.0f, 7.0f, 2.0f);
             line(7.0f, -7.0f, -7.0f, 7.0f, 2.0f);
             break;
+        case ToolbarIcon::Separator:
         case ToolbarIcon::None:
             break;
         }
@@ -827,7 +845,9 @@ void ScreenshotOverlay::RenderSelection(core::FramePlan& plan) {
     plan.Add(core::FillRect{ Rect{ 0.0f, local.top, local.left, local.bottom }, dim });
     plan.Add(core::FillRect{ Rect{ local.right, local.top, width, local.bottom }, dim });
 
-    plan.Add(core::StrokeRect{ local, Color{ 1.0f, 1.0f, 1.0f, 0.95f }, 1.5f });
+    // 1.x 的选区：蓝色 #2F7CF6 边框，把手是 7×7 的蓝色小方块。
+    const Color accent{ 0.184f, 0.486f, 0.965f, 1.0f };
+    plan.Add(core::StrokeRect{ local, accent, 1.5f });
 
     if (phase_ != Phase::Annotating) {
         return;
@@ -841,10 +861,8 @@ void ScreenshotOverlay::RenderSelection(core::FramePlan& plan) {
                               { local.left, local.bottom }, { local.left, cy } };
 
     for (const Point& handle : handles) {
-        const Rect rect{ handle.x - kHandleSize * 0.5f, handle.y - kHandleSize * 0.5f,
-                         handle.x + kHandleSize * 0.5f, handle.y + kHandleSize * 0.5f };
-        plan.Add(core::FillRect{ rect, Color{ 1.0f, 1.0f, 1.0f, 1.0f } });
-        plan.Add(core::StrokeRect{ rect, Color{ 0.1f, 0.12f, 0.15f, 1.0f }, 1.0f });
+        const Rect rect{ handle.x - 3.5f, handle.y - 3.5f, handle.x + 3.5f, handle.y + 3.5f };
+        plan.Add(core::FillRect{ rect, accent });
     }
 }
 
@@ -860,17 +878,32 @@ void ScreenshotOverlay::RenderHint(core::FramePlan& plan) {
                            : (ocrMode ? "OCR · Enter 识别 · Esc 退出"
                                       : "标注中 · 1-9 选工具 · Ctrl+Z 撤销 · Ctrl+C 复制 · Ctrl+S 保存");
     const core::FontSpec spec{ options_.fontFamily, 400, 13.0f,
-                               Color{ 1.0f, 1.0f, 1.0f, 0.92f } };
+                               Color{ 0.235f, 0.259f, 0.314f, 1.0f } };
     const core::TextCell measured = rasterizer_->LayOut(hint, spec, Point{ 0.0f, 0.0f });
     if (measured.atlas == 0) {
         return;
     }
 
-    const float width = measured.destination.Width() + 16.0f;
-    const float height = measured.destination.Height() + 8.0f;
-    plan.Add(core::FillRect{ Rect{ 8.0f, 8.0f, 8.0f + width, 8.0f + height },
-                             Color{ 0.0f, 0.0f, 0.0f, 0.55f } });
-    const core::TextCell cell = rasterizer_->LayOut(hint, spec, Point{ 16.0f, 12.0f });
+    // 1.x 的提示条：顶部居中、白色圆角、左边一个蓝色圆点、深色文字。
+    const float textWidth = measured.destination.Width();
+    const float textHeight = measured.destination.Height();
+    const float chipWidth = textWidth + 34.0f;
+    const float chipHeight = textHeight + 16.0f;
+    const float chipLeft = (static_cast<float>(screenWidth_) - chipWidth) * 0.5f;
+    const float chipTop = 26.0f;
+
+    plan.Add(core::FillRoundedRect{ Rect{ chipLeft, chipTop, chipLeft + chipWidth,
+                                         chipTop + chipHeight },
+                                    10.0f, Color{ 1.0f, 1.0f, 1.0f, 0.97f } });
+    plan.Add(core::StrokeRoundedRect{ Rect{ chipLeft, chipTop, chipLeft + chipWidth,
+                                            chipTop + chipHeight },
+                                     10.0f, Color{ 0.0f, 0.0f, 0.0f, 0.12f }, 1.0f });
+    const float dotX = chipLeft + 14.0f;
+    const float dotY = chipTop + chipHeight * 0.5f;
+    plan.Add(core::FillEllipse{ Rect{ dotX - 3.0f, dotY - 3.0f, dotX + 3.0f, dotY + 3.0f },
+                                Color{ 0.184f, 0.486f, 0.965f, 1.0f } });
+    const core::TextCell cell =
+        rasterizer_->LayOut(hint, spec, Point{ dotX + 9.0f, chipTop + 8.0f });
     if (cell.atlas != 0) {
         plan.Add(cell.ToBlit());
     }

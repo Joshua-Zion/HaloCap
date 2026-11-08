@@ -1,4 +1,4 @@
-#include "d2d_render_backend.h"
+﻿#include "d2d_render_backend.h"
 
 #include <d3d11.h>
 
@@ -308,6 +308,15 @@ void D2dRenderBackend::Render(const core::FramePlan& plan, core::IntRect clip) {
                 } else if constexpr (std::is_same_v<T, core::StrokeEllipse>) {
                     const D2D1_ELLIPSE ellipse = ToEllipse(specific.rect);
                     dc_->DrawEllipse(&ellipse, BrushFor(specific.color), specific.thickness, nullptr);
+                } else if constexpr (std::is_same_v<T, core::FillRoundedRect>) {
+                    const D2D1_ROUNDED_RECT rounded{ ToD2D(specific.rect), specific.radius,
+                                                     specific.radius };
+                    dc_->FillRoundedRectangle(&rounded, BrushFor(specific.color));
+                } else if constexpr (std::is_same_v<T, core::StrokeRoundedRect>) {
+                    const D2D1_ROUNDED_RECT rounded{ ToD2D(specific.rect), specific.radius,
+                                                     specific.radius };
+                    dc_->DrawRoundedRectangle(&rounded, BrushFor(specific.color),
+                                              specific.thickness, nullptr);
                 } else if constexpr (std::is_same_v<T, core::Segment>) {
                     dc_->DrawLine(ToD2D(specific.from), ToD2D(specific.to),
                                   BrushFor(specific.color), specific.thickness, nullptr);

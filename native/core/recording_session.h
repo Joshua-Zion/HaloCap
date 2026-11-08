@@ -30,6 +30,11 @@ struct RecordingOptions {
     // 每次等帧等多久。等不到不是错误（静态桌面就是这样）。
     std::int64_t captureTimeoutMs = 20;
 
+    // 静态桌面的保活间隔：画面不变化时也至少每这么久送一帧。0 = 关闭（只适合探针）。
+    // 为什么必须有：编码器一帧没收时 Finalize 直接失败（编码 seam 记过「一帧没收」那条），
+    // 静止画面录出来会是一个坏文件，而不是「一段静止的视频」。
+    std::int64_t keepAliveUs = 1'000'000;
+
     std::string outputPathUtf8;
 };
 
@@ -94,12 +99,16 @@ private:
     void MergeEncoderStats(const EncoderStats& encoderStats);
     void CloseOnDestroy();
 
+    // 送一帧；返回 false 只表示「会话必须结束」（设备没了）。
+    bool SubmitFrame(std::int64_t mediaUs, ImageHandle texture);
+
     ICaptureSource& capture_;
     IEncoder& encoder_;
 
     RecordingOptions options_;
     RecordingClock clock_;
-    FrameGate gate_{ 30 };
+    // 按目标网格取样：严格最小间隔的 FrameGate 在采集节奏远快于目标帧率时会掉到 23.7 fps。
+    FramePacer pacer_{ 30 };
     RecordingStats stats_;
 
     std::int64_t startWallUs_ = 0;

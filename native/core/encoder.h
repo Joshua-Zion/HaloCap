@@ -111,6 +111,10 @@ private:
 //   · 时间戳倒退 → 样本必须严格不递减，否则时间轴错乱；
 //   · 送得比目标帧率快 → 桌面复制的唤醒率由光标主导（spike 2 实测 100+ 次每秒），
 //     不设闸门就等于让编码器替我们做没有意义的重复工作。
+//
+// 这是「严格最小间隔」版本：距上次接受不足一个帧间隔就拒。它的问题是节拍由采集节奏决定——
+// 采集每 10 ms 一帧、目标 30 fps（33.3 ms）时会稳定地接受在 40 ms 上（23.7 fps，S2 实测）。
+// 录制会话因此改用下面的 FramePacer；FrameGate 留给「只要不超速」的测量工具。
 class FrameGate {
 public:
     enum class Decision {
@@ -132,6 +136,36 @@ private:
     std::int64_t lastAcceptedUs_ = -1;
     std::int64_t accepted_ = 0;
     std::int64_t dropped_ = 0;
+};
+
+// 按「目标网格」取样：把媒体时间四舍五入到第几个帧间隔，只有落到新的格子上才接受。
+// 与 FrameGate 的差别在效果上：
+//   · 采集每 10 ms 一帧 → 接受在 20/50/90/120 ms …，长期收敛到 30 fps，而不是钉在 40 ms；
+//   · 采集每 16.7 ms 一帧（60 fps 内容）→ 接受在 16.7/50/83.3 ms，正好 30 fps；
+//   · 采集比目标慢（每 100 ms 一帧）→ 每一帧都接受（内容就这么多，不能凭空变快）。
+// 网格是绝对时间上的，所以长时间跑不会累积漂移；倒退的时间戳一律拒。
+class FramePacer {
+public:
+    enum class Decision {
+        Submit,
+        TooEarly,
+        NonMonotonic,
+    };
+
+    explicit FramePacer(int targetFps);
+
+    Decision Decide(std::int64_t mediaTimeUs);
+
+    std::int64_t IntervalUs() const { return intervalUs_; }
+    std::int64_t AcceptedCount() const { return accepted_; }
+    std::int64_t SkippedCount() const { return skipped_; }
+
+private:
+    std::int64_t intervalUs_ = 0;
+    std::int64_t lastTick_ = -1;
+    std::int64_t lastAcceptedUs_ = -1;
+    std::int64_t accepted_ = 0;
+    std::int64_t skipped_ = 0;
 };
 
 }

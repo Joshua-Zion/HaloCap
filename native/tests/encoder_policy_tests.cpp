@@ -6,6 +6,7 @@ namespace {
 
 using halocap::core::DefaultBitrateBitsPerSec;
 using halocap::core::FrameGate;
+using halocap::core::FramePacer;
 using halocap::core::RecordingClock;
 using halocap::core::ToReferenceTime100ns;
 using halocap::core::VideoEncoderConfig;
@@ -158,8 +159,61 @@ void TestBitrate() {
     CheckEqual(config.FrameUs(), 33333, "config frame interval comes from the same rule");
 }
 
-void TestReferenceTime() {
-    CheckEqual(ToReferenceTime100ns(0), 0, "zero");
+void TestFramePacer() {
+    FramePacer pacer(30);
+    CheckEqual(pacer.IntervalUs(), 33333, "30 fps pacer interval");
+
+    // 采集每 10 ms 一帧（远快于目标）：网格取样应收敛到每秒约 30 帧，
+    // 而不是像严格最小间隔那样钉在 40 ms（那是 S2 实测 23.7 fps 的来源）。
+    int accepted = 0;
+    for (int i = 0; i < 100; ++i) {
+        if (pacer.Decide(static_cast<std::int64_t>(i) * 10'000) == FramePacer::Decision::Submit) {
+            ++accepted;
+        }
+    }
+    CheckTrue(accepted >= 29 && accepted <= 32, "10 ms cadence converges to about 30 fps");
+    CheckEqual(pacer.AcceptedCount(), accepted, "accepted counter matches");
+    CheckEqual(pacer.AcceptedCount() + pacer.SkippedCount(), 100,
+               "every frame is either accepted or skipped");
+
+    // 60 fps 的内容（16.7 ms 一帧）同样要被取成 30。
+    FramePacer sixty(30);
+    int acceptedSixty = 0;
+    for (int i = 0; i < 60; ++i) {
+        if (sixty.Decide(static_cast<std::int64_t>(i) * 16'667) == FramePacer::Decision::Submit) {
+            ++acceptedSixty;
+        }
+    }
+    CheckTrue(acceptedSixty >= 28 && acceptedSixty <= 32, "60 fps content is sampled to 30 fps");
+
+    // 采集比目标慢：每一帧都接受（内容就这么多，不能凭空变快）。
+    FramePacer slow(30);
+    int acceptedSlow = 0;
+    for (int i = 0; i < 10; ++i) {
+        if (slow.Decide(static_cast<std::int64_t>(i) * 100'000) == FramePacer::Decision::Submit) {
+            ++acceptedSlow;
+        }
+    }
+    CheckEqual(acceptedSlow, 10, "slower-than-target content is never skipped");
+
+    // 倒退一律拒。
+    FramePacer backwards(30);
+    CheckTrue(backwards.Decide(100'000) == FramePacer::Decision::Submit, "first frame accepted");
+    CheckTrue(backwards.Decide(50'000) == FramePacer::Decision::NonMonotonic,
+              "a backwards timestamp is rejected");
+
+    // targetFps 0 = 不限帧。
+    FramePacer unlimited(0);
+    int acceptedAll = 0;
+    for (int i = 0; i < 10; ++i) {
+        if (unlimited.Decide(static_cast<std::int64_t>(i) * 1'000) == FramePacer::Decision::Submit) {
+            ++acceptedAll;
+        }
+    }
+    CheckEqual(acceptedAll, 10, "unlimited accepts every frame");
+}
+
+void TestReferenceTime() {    CheckEqual(ToReferenceTime100ns(0), 0, "zero");
     CheckEqual(ToReferenceTime100ns(1), 10, "one microsecond is ten ticks");
     CheckEqual(ToReferenceTime100ns(33333), 333330, "a 30fps frame");
     CheckEqual(ToReferenceTime100ns(3600000000), 36000000000, "one hour in ticks");
@@ -173,6 +227,7 @@ int main() {
     TestGate30FromSource60();
     TestGateEdgeDecisions();
     TestGateUnlimited();
+    TestFramePacer();
     TestBitrate();
     TestReferenceTime();
 

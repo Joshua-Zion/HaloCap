@@ -86,7 +86,7 @@ bool RecordingSession::Start(const RecordingOptions& options, std::int64_t wallU
     encoderOpen_ = true;
 
     clock_.Start(wallUs);
-    gate_ = FrameGate(config.targetFps);
+    pacer_ = FramePacer(config.targetFps);
     recording_ = true;
     startWallUs_ = wallUs;
     SetError("ok");
@@ -131,28 +131,42 @@ bool RecordingSession::Pump(std::int64_t wallUs) {
 
     ++stats_.wakeups;
 
-    // 仅鼠标唤醒的帧不送编码器：spike 2 实测 8 秒 1215 次唤醒里 1068 次只是鼠标在动。
-    if (!update.contentChanged) {
-        return true;
-    }
-
-    ++stats_.contentFrames;
-    stats_.dirtyPixelSum += SummarizeDirtyRects(update.dirtyRects).sumAreaPx;
-
     // 时间戳优先用采集侧给的时刻（那是帧被拿到的时刻）；负数才表示「没给」，退到本次泵的时间。
     // 0 是合法时间戳：第一帧就落在录制起点上，不能把它当成「缺失」。
     const std::int64_t stampUs = update.timestampUs >= 0 ? update.timestampUs : wallUs;
     const std::int64_t mediaUs = clock_.MediaTimeUs(stampUs);
 
-    if (gate_.Decide(mediaUs) != FrameGate::Decision::Submit) {
-        // 太早（比目标帧率快）或时间戳倒退。两种都不进编码器，但要记下来：
-        // 「丢帧」与「本来就没有新内容」是两件事。
+    // 仅鼠标唤醒的帧不送编码器（spike 2 实测 8 秒 1215 次唤醒里 1068 次只是鼠标在动），
+    // 但静态桌面要保活，否则一帧样本都没有、Finalize 失败。
+    if (!update.contentChanged) {
+        if (options_.keepAliveUs <= 0 || update.target == 0 || mediaUs < stats_.mediaTimeUs) {
+            return true;
+        }
+        const bool firstFrame = stats_.framesSubmitted == 0;
+        const bool due = stats_.framesSubmitted > 0 &&
+                         mediaUs - stats_.mediaTimeUs >= options_.keepAliveUs;
+        if (!firstFrame && !due) {
+            return true;
+        }
+        return SubmitFrame(mediaUs, update.target);
+    }
+
+    ++stats_.contentFrames;
+    stats_.dirtyPixelSum += SummarizeDirtyRects(update.dirtyRects).sumAreaPx;
+
+    if (pacer_.Decide(mediaUs) != FramePacer::Decision::Submit) {
+        // 这个采样格子里已经有一帧了，或者时间戳倒退。两者都不进编码器，但要记下来：
+        // 「按目标帧率取样」与「本来就没有新内容」是两件事。
         ++stats_.framesGateDropped;
         return true;
     }
 
+    return SubmitFrame(mediaUs, update.target);
+}
+
+bool RecordingSession::SubmitFrame(std::int64_t mediaUs, ImageHandle texture) {
     EncodedFrame frame;
-    frame.texture = update.target;
+    frame.texture = texture;
     frame.timeUs = mediaUs;
 
     if (!encoder_.Submit(frame)) {

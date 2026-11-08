@@ -151,6 +151,8 @@ int main(int argc, char** argv) {
     const int seconds = argc > 1 ? std::atoi(argv[1]) : 5;
     const int outputIndex = argc > 2 ? std::atoi(argv[2]) : 0;
     const std::string outputPath = argc > 3 ? argv[3] : "record-probe.mp4";
+    // 第 4 个参数写 static 就不搬方块：用来验证静态桌面的保活帧（否则文件会因 0 样本而坏）。
+    const bool staticDesktop = argc > 4 && std::string_view(argv[4]) == "static";
 
     if (!MfH264Encoder::StartupFoundation()) {
         std::printf("MFSTARTUP=FAILED\n");
@@ -220,7 +222,8 @@ int main(int argc, char** argv) {
     const int screenWidth = GetSystemMetrics(SM_CXSCREEN);
     const int screenHeight = GetSystemMetrics(SM_CYSCREEN);
 
-    HWND mover = CreateMover();
+    HWND mover = staticDesktop ? nullptr : CreateMover();
+    std::printf("RECORD_STATIC=%d\n", staticDesktop ? 1 : 0);
 
     bool alive = true;
     while (QpcNowUs() - startUs < durationUs) {

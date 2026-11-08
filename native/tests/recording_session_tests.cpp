@@ -248,12 +248,12 @@ void TestPumpSubmitsContentFrames() {
     CheckEqual(s.session.Stats().wallTimeUs, 90'000, "wall time follows the pump clock");
 }
 
-void TestPumpSkipsStaticFrames() {
+void TestStaticFramesKeepAlive() {
     Session s;
     CheckTrue(s.session.Start(DefaultOptions(), 0), "start");
-    s.capture.pending.push_back(Frame(0, 100, false));    // 仅鼠标
-    s.capture.pending.push_back(Frame(40'000, 101, false));
-    s.capture.pending.push_back(Frame(80'000, 102, true));
+    s.capture.pending.push_back(Frame(0, 100, false));       // 静态：第一帧保活
+    s.capture.pending.push_back(Frame(40'000, 101, false));  // 一秒内：跳过
+    s.capture.pending.push_back(Frame(80'000, 102, true));   // 有内容：正常走网格取样
 
     CheckTrue(s.session.Pump(10'000), "pump 1");
     CheckTrue(s.session.Pump(50'000), "pump 2");
@@ -261,15 +261,20 @@ void TestPumpSkipsStaticFrames() {
 
     CheckEqual(s.session.Stats().wakeups, 3, "all wakeups counted");
     CheckEqual(s.session.Stats().contentFrames, 1, "only one frame had content");
-    CheckEqual(static_cast<long long>(s.encoder.submitted.size()), 1, "one frame submitted");
+    CheckEqual(s.session.Stats().framesSubmitted, 2, "keep-alive frame plus the content frame");
+
+    s.capture.pending.push_back(Frame(1'200'000, 103, false));
+    CheckTrue(s.session.Pump(1'200'000), "pump 4");
+    CheckEqual(s.session.Stats().framesSubmitted, 3, "a keep-alive frame is sent after one second");
+
     if (!s.encoder.submitted.empty()) {
-        CheckEqual(s.encoder.submitted[0].texture, 102, "the content frame is the one submitted");
+        CheckEqual(s.encoder.submitted[0].texture, 100, "the first static frame is the keep-alive");
     }
 }
 
 void TestGateDropsFastAndBackwardsFrames() {
     {
-        // 30 fps 的间隔是 33.3 ms；10 ms 一帧就是「比目标帧率快」。
+        // 目标 30 fps（33.3 ms）；10 ms 一帧会被网格取样丢到约 30 fps，而不是每帧都送。
         Session s;
         CheckTrue(s.session.Start(DefaultOptions(), 0), "start");
         s.capture.pending.push_back(Frame(0, 1));
@@ -278,8 +283,8 @@ void TestGateDropsFastAndBackwardsFrames() {
         s.session.Pump(0);
         s.session.Pump(10'000);
         s.session.Pump(20'000);
-        CheckEqual(s.session.Stats().framesSubmitted, 1, "only the first frame is submitted");
-        CheckEqual(s.session.Stats().framesGateDropped, 2, "two frames are too early");
+        CheckEqual(s.session.Stats().framesSubmitted, 2, "two of three frames share a grid slot");
+        CheckEqual(s.session.Stats().framesGateDropped, 1, "one frame is skipped by the pacer");
     }
 
     {
@@ -426,7 +431,7 @@ int main() {
     TestStartOpensBothSeams();
     TestStartGuards();
     TestPumpSubmitsContentFrames();
-    TestPumpSkipsStaticFrames();
+    TestStaticFramesKeepAlive();
     TestGateDropsFastAndBackwardsFrames();
     TestPauseFreezesTimeline();
     TestEncoderRejectionAndDeviceLoss();

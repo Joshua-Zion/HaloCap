@@ -74,4 +74,32 @@ FrameGate::Decision FrameGate::Decide(std::int64_t mediaTimeUs) {
     return Decision::Submit;
 }
 
+FramePacer::FramePacer(int targetFps) : intervalUs_(FrameIntervalUs(targetFps)) {}
+
+FramePacer::Decision FramePacer::Decide(std::int64_t mediaTimeUs) {
+    if (mediaTimeUs < lastAcceptedUs_) {
+        ++skipped_;
+        return Decision::NonMonotonic;
+    }
+
+    if (intervalUs_ <= 0) {
+        lastAcceptedUs_ = mediaTimeUs;
+        ++accepted_;
+        return Decision::Submit;
+    }
+
+    // 四舍五入到最近的格子：+interval/2 再整除。这样 10 ms 一帧的采集节奏会接受在
+    // 20/50/90/120 ms …，长期正好收敛到 30 fps，而不是被「距上次 ≥ 33.3 ms」钉在 40 ms。
+    const std::int64_t tick = (mediaTimeUs + intervalUs_ / 2) / intervalUs_;
+    if (tick <= lastTick_) {
+        ++skipped_;
+        return Decision::TooEarly;
+    }
+
+    lastTick_ = tick;
+    lastAcceptedUs_ = mediaTimeUs;
+    ++accepted_;
+    return Decision::Submit;
+}
+
 }

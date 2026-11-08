@@ -34,6 +34,12 @@ public:
 
     bool Submit(const core::EncodedFrame& frame) override;
 
+    // 第二条流（AAC）。必须在 OpenVideo 之前调用：两条流一起 AddStream 再 BeginWriting。
+    // 配置是一次性的：OpenVideo 消费掉它，之后要再录带音频的会话得重新配置。
+    bool ConfigureAudio(const core::AudioEncoderConfig& config) override;
+
+    bool SubmitAudio(const core::AudioFrame& frame) override;
+
     bool Close(core::EncoderStats& outStats) override;
 
     const char* LastErrorKind() const override { return errorKind_; }
@@ -70,6 +76,8 @@ public:
 private:
     bool BuildOutputType(IMFMediaType** outType);
     bool BuildInputType(int variant, IMFMediaType** outType);
+    bool BuildAudioOutputType(IMFMediaType** outType);
+    bool BuildAudioInputType(IMFMediaType** outType);
 
     // 读服务上的属性，把「实际用了哪一家」写进 vendor_ / hardwareObserved_。
     void ObserveChosenEncoder();
@@ -85,6 +93,15 @@ private:
     Microsoft::WRL::ComPtr<IMFSinkWriter> writer_;
     Microsoft::WRL::ComPtr<IMFByteStream> byteStream_;
     DWORD streamIndex_ = 0;
+
+    // 音频第二条流
+    core::AudioEncoderConfig audioConfig_{};
+    bool audioRequested_ = false;
+    bool audioStreamActive_ = false;
+    DWORD audioStreamIndex_ = 0;
+    std::int64_t audioFramesWritten_ = 0;
+    std::int64_t audioBlocksWritten_ = 0;
+    std::int64_t lastAudioTimeUs_ = -1;
 
     core::VideoEncoderConfig config_{};
     std::string lastPathUtf8_;

@@ -1,4 +1,4 @@
-// S2 的编排层：帧从采集 seam 进来、过时钟与闸门、进编码 seam。
+﻿// S2 的编排层：帧从采集 seam 进来、过时钟与闸门、进编码 seam。
 // 三个 seam 都用假的，所以这里验的是「编排」本身：只送有变化的帧、按目标帧率闸门、
 // 暂停冻结时间轴、停止时收尾编码器、错误怎么分类。
 #include "recording_session.h"
@@ -99,6 +99,15 @@ public:
     const char* submitError = "ok";
     bool closeResult = true;
 
+    // 音频第二条流：默认不支持，与「只做视频的编码器」一致。
+    bool audioSupported = false;
+    bool audioConfigured = false;
+    core::AudioEncoderConfig audioConfig;
+    std::vector<std::pair<std::int64_t, std::int32_t>> audioBlocks;
+
+    // 调用顺序：用来证明 ConfigureAudio 在 OpenVideo 之前（sink writer 的时序约束）。
+    std::vector<std::string> calls;
+
     core::VideoEncoderConfig config;
     std::string path;
     std::vector<core::EncodedFrame> submitted;
@@ -108,10 +117,29 @@ public:
 
     bool OpenVideo(const core::VideoEncoderConfig& value, std::string_view outputPath) override {
         ++openCount;
+        calls.push_back("video");
         config = value;
         path = std::string(outputPath);
         error = openResult ? "ok" : openError;
         return openResult;
+    }
+
+    bool ConfigureAudio(const core::AudioEncoderConfig& value) override {
+        calls.push_back("audio");
+        if (!audioSupported) {
+            return false;
+        }
+        audioConfigured = true;
+        audioConfig = value;
+        return true;
+    }
+
+    bool SubmitAudio(const core::AudioFrame& frame) override {
+        if (!audioSupported || !audioConfigured) {
+            return false;
+        }
+        audioBlocks.emplace_back(frame.timeUs, frame.frameCount);
+        return true;
     }
 
     bool Submit(const core::EncodedFrame& frame) override {
@@ -154,10 +182,71 @@ core::RecordingOptions DefaultOptions() {
     return options;
 }
 
+class FakeAudioSource final : public core::IAudioSource {
+public:
+    core::AudioFormat format{ 48000, 2, true };
+    bool openResult = true;
+    int openCount = 0;
+    bool closeCalled = false;
+    const char* error = "ok";
+
+    std::deque<std::vector<float>> packets;
+    std::deque<std::int64_t> timestamps;
+    bool held = false;
+
+    void Push(std::int64_t timestampUs, std::int32_t frames, float sample = 0.25f) {
+        packets.emplace_back(static_cast<std::size_t>(frames) * 2, sample);
+        timestamps.push_back(timestampUs);
+    }
+
+    bool Open() override {
+        ++openCount;
+        error = openResult ? "ok" : "notfound";
+        return openResult;
+    }
+
+    void Close() override { closeCalled = true; }
+
+    core::AudioFormat Format() const override { return format; }
+
+    bool WaitForPacket(std::int64_t, core::AudioChunk& out) override {
+        if (held) {
+            // 借还契约：没还就想再等，seam 的设计要求这里拒。
+            error = "invalid";
+            return false;
+        }
+        if (packets.empty()) {
+            error = "timeout";
+            return false;
+        }
+        out.samples = packets.front().data();
+        out.frameCount = static_cast<std::int32_t>(packets.front().size() / 2);
+        out.timestampUs = timestamps.front();
+        out.silent = false;
+        out.discontinuity = false;
+        held = true;
+        error = "ok";
+        return true;
+    }
+
+    void ReleasePacket() override {
+        if (!held) {
+            return;
+        }
+        held = false;
+        packets.pop_front();
+        timestamps.pop_front();
+    }
+
+    const char* LastErrorKind() const override { return error; }
+    std::int32_t LastErrorCode() const override { return 0; }
+    std::string EndpointNameUtf8() const override { return "fake audio"; }
+};
+
 struct Session {
     FakeCapture capture;
     FakeEncoder encoder;
-    core::RecordingSession session{ capture, encoder };
+    core::RecordingSession session{ capture, encoder, nullptr, nullptr };
 };
 
 void TestStartOpensBothSeams() {
@@ -402,7 +491,7 @@ void TestDestructorClosesSeams() {
     FakeCapture capture;
     FakeEncoder encoder;
     {
-        core::RecordingSession session(capture, encoder);
+        core::RecordingSession session(capture, encoder, nullptr, nullptr);
         CheckTrue(session.Start(DefaultOptions(), 0), "start in scope");
     }
     CheckEqual(encoder.closeCount, 1, "destructor closes the encoder");
@@ -423,6 +512,113 @@ void TestSubmitRatio() {
     CheckNear(stats.SubmitRatio(30), 0.0, 0.0001, "no duration has no ratio");
 }
 
+void TestAudioConfiguredBeforeVideo() {
+    FakeCapture capture;
+    FakeEncoder encoder;
+    encoder.audioSupported = true;
+    FakeAudioSource audio;
+    core::RecordingSession session(capture, encoder, &audio, nullptr);
+
+    core::RecordingOptions options = DefaultOptions();
+    options.audioEnabled = true;
+    CheckTrue(session.Start(options, 0), "start with audio");
+
+    CheckTrue(encoder.audioConfigured, "audio stream is configured");
+    CheckEqual(encoder.audioConfig.sampleRateHz, 48000, "audio sample rate");
+    CheckEqual(encoder.audioConfig.channelCount, 2, "audio channels");
+    CheckEqual(encoder.audioConfig.bitrateBitsPerSec, 192000, "audio bitrate");
+    CheckEqual(session.Stats().audioActive ? 1 : 0, 1, "stats report audio active");
+
+    // sink writer 的时序：两条流要一起 AddStream，所以音频配置必须发生在 OpenVideo 之前。
+    CheckTrue(encoder.calls.size() >= 2, "encoder saw both calls");
+    if (encoder.calls.size() >= 2) {
+        CheckTrue(encoder.calls[0] == "audio", "audio is configured before the video open");
+        CheckTrue(encoder.calls[1] == "video", "video open comes second");
+    }
+
+    core::RecordingStats stats;
+    CheckTrue(session.Stop(0, stats), "stop with audio");
+}
+
+void TestAudioBlocksAndTimeline() {
+    FakeCapture capture;
+    FakeEncoder encoder;
+    encoder.audioSupported = true;
+    FakeAudioSource audio;
+    core::RecordingSession session(capture, encoder, &audio, nullptr);
+
+    core::RecordingOptions options = DefaultOptions();
+    options.audioEnabled = true;
+    options.keepAliveUs = 0;
+    CheckTrue(session.Start(options, 0), "start");
+
+    // 两包各 480 帧（10 ms），时间戳 0 与 10 ms：960 帧，不够一块 1024。
+    audio.Push(0, 480);
+    audio.Push(10'000, 480);
+    CheckTrue(session.Pump(20'000), "pump 1");
+    CheckEqual(static_cast<long long>(encoder.audioBlocks.size()), 0, "no block until 1024 frames");
+
+    // 第三包补齐：1440 帧 → 提交一块。
+    audio.Push(20'000, 480);
+    CheckTrue(session.Pump(30'000), "pump 2");
+    CheckEqual(static_cast<long long>(encoder.audioBlocks.size()), 1, "one block after 1440 frames");
+    if (!encoder.audioBlocks.empty()) {
+        CheckEqual(encoder.audioBlocks[0].first, 0, "the first block starts at media time zero");
+        CheckEqual(encoder.audioBlocks[0].second, 1024, "blocks are 1024 frames");
+    }
+    CheckEqual(session.Stats().audioFrames, 1024, "frames submitted to the encoder");
+
+    core::RecordingStats stats;
+    CheckTrue(session.Stop(35'000, stats), "stop");
+    CheckEqual(stats.audioBlocks, 2, "the remainder is padded to a whole block at stop");
+    CheckEqual(stats.audioFrames, 2048, "two blocks total");
+    CheckTrue(stats.audioActive, "stats still report audio active after stop");
+}
+
+void TestAudioSilenceFill() {
+    FakeCapture capture;
+    FakeEncoder encoder;
+    encoder.audioSupported = true;
+    FakeAudioSource audio;   // 一个包都不出：回环在桌面静音时就是这样
+    core::RecordingSession session(capture, encoder, &audio, nullptr);
+
+    core::RecordingOptions options = DefaultOptions();
+    options.audioEnabled = true;
+    options.keepAliveUs = 0;
+    CheckTrue(session.Start(options, 0), "start");
+
+    // 一秒没有包：一次最多补 500 ms 静音（24000 帧），所以有 23 整块。
+    CheckTrue(session.Pump(1'000'000), "pump with no packets");
+    CheckEqual(session.Stats().audioSilenceFrames, 24'000, "silence is capped at 500 ms per pump");
+    CheckEqual(session.Stats().audioBlocks, 23, "23 whole blocks from the silence fill");
+
+    core::RecordingStats stats;
+    CheckTrue(session.Stop(1'000'000, stats), "stop");
+}
+
+void TestAudioUnavailableFallsBackToVideo() {
+    FakeCapture capture;
+    FakeEncoder encoder;
+    encoder.audioSupported = true;
+    FakeAudioSource audio;
+    audio.openResult = false;   // 没有录音设备 / 被独占
+    core::RecordingSession session(capture, encoder, &audio, nullptr);
+
+    core::RecordingOptions options = DefaultOptions();
+    options.audioEnabled = true;
+    CheckTrue(session.Start(options, 0), "recording still starts without audio");
+    CheckTrue(!encoder.audioConfigured, "no audio stream is added when no source opened");
+    CheckEqual(session.Stats().audioActive ? 1 : 0, 0, "audio is inactive");
+
+    // 视频照常录：没有声音不该让一次录制作废。
+    capture.pending.push_back(Frame(0, 1));
+    CheckTrue(session.Pump(0), "video still records");
+    CheckEqual(session.Stats().framesSubmitted, 1, "one video frame submitted");
+
+    core::RecordingStats stats;
+    CheckTrue(session.Stop(0, stats), "stop");
+}
+
 }
 
 int main() {
@@ -439,6 +635,10 @@ int main() {
     TestStopMergesStats();
     TestDestructorClosesSeams();
     TestSubmitRatio();
+    TestAudioConfiguredBeforeVideo();
+    TestAudioBlocksAndTimeline();
+    TestAudioSilenceFill();
+    TestAudioUnavailableFallsBackToVideo();
 
     if (failures != 0) {
         std::printf("RECORDING_SESSION_TESTS=FAILED %d/%d\n", failures, checks);

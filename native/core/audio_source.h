@@ -126,4 +126,8 @@ std::int32_t SilenceFramesToNextBlock(std::int64_t totalFrames,
 std::int64_t FramesToUs(std::int64_t frames, std::int32_t sampleRateHz);
 std::int64_t UsToFrames(std::int64_t us, std::int32_t sampleRateHz);
 
+// 浮点交织样本 → 16 位 PCM（AAC 编码器的输入类型）。先夹到 ±1 再乘 32767：
+// 超出范围的样本直接截断会听成爆音，而 16 位 PCM 的满幅是 32767（不是 32768，负数对称才不爆）。
+void ConvertFloatToPcm16(const float* source, std::int32_t sampleCount, std::int16_t* destination);
+
 }

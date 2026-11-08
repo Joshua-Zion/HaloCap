@@ -157,4 +157,19 @@ std::int64_t UsToFrames(std::int64_t us, std::int32_t sampleRateHz) {
     return us * sampleRateHz / 1000000;
 }
 
+void ConvertFloatToPcm16(const float* source, std::int32_t sampleCount, std::int16_t* destination) {
+    if (source == nullptr || destination == nullptr) {
+        return;
+    }
+    for (std::int32_t i = 0; i < sampleCount; ++i) {
+        float value = source[i];
+        if (value > 1.0f) {
+            value = 1.0f;
+        } else if (value < -1.0f) {
+            value = -1.0f;
+        }
+        destination[i] = static_cast<std::int16_t>(std::lround(value * 32767.0f));
+    }
+}
+
 }

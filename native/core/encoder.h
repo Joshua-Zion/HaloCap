@@ -37,12 +37,31 @@ struct EncodedFrame {
     std::int64_t timeUs = 0;   // 必须是 RecordingClock 折算过的媒体时间
 };
 
+// 第二条流：AAC。配置必须在 OpenVideo 之前给出——两条流要一起 AddStream，
+// 之后才能 SetInputMediaType 与 BeginWriting（sink writer 的时序，不是我们的选择）。
+struct AudioEncoderConfig {
+    int sampleRateHz = 48000;
+    int channelCount = 2;              // 管线里一律是立体声（RemixToStereo 之后）
+    std::int64_t bitrateBitsPerSec = 192000;
+};
+
+// 一块 PCM16 交织立体声（帧 = 采样点数 / 声道数）。1024 帧是 AAC 的块长。
+struct AudioFrame {
+    const std::int16_t* samples = nullptr;
+    std::int32_t frameCount = 0;
+    std::int64_t timeUs = 0;
+};
+
 // 统计口径与 1.x 对齐（§4 最后一条），两版的实测数字要能直接比。
 struct EncoderStats {
     std::int64_t acceptedFrames = 0;    // ≈ 1.x 的 EncodedFrames
     std::int64_t rejectedFrames = 0;    // ≈ 1.x 的 DroppedFrames：写入器没收的都算丢
     std::int64_t outputBytes = 0;
     std::int64_t mediaTimeUs = 0;       // 最后一样本的呈现时间
+
+    // 音频那一侧：写进第二条流的帧数与块数。
+    std::int64_t audioFrames = 0;
+    std::int64_t audioBlocks = 0;
 
     // 观测到的「这一路真用了硬件编码器」。判据来自协商完成之后服务上的
     // MFT_ENUM_HARDWARE_VENDOR_ID_Attribute（本机是 "VEN_8086"），软件编码器没有这一位。
@@ -67,6 +86,18 @@ public:
 
     // MP4 的 moov 在收尾时才写完，不 Close 就没有有效文件。
     virtual bool Close(EncoderStats& outStats) = 0;
+
+    // 第二条流（AAC）。默认实现返回 false：只做视频的实现（以及单测里的假编码器）
+    // 不需要为了编译而实现音频；录制会话在配置失败时降级成纯视频。
+    virtual bool ConfigureAudio(const AudioEncoderConfig& config) {
+        (void)config;
+        return false;
+    }
+
+    virtual bool SubmitAudio(const AudioFrame& frame) {
+        (void)frame;
+        return false;
+    }
 
     // 平台侧实际会返回的几种："ok" / "invalid" / "mf"（0xC00D 那一段，编码器说不）/
     // "device"（设备没了，录制要整段重来）/ "hr"（其余，多半是我们自己调用写错）/ "none"。

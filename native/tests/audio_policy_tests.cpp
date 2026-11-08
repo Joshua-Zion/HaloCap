@@ -6,6 +6,7 @@
 
 namespace {
 
+using halocap::core::ConvertFloatToPcm16;
 using halocap::core::FramesToUs;
 using halocap::core::MixInto;
 using halocap::core::RemixToStereo;
@@ -266,6 +267,27 @@ void TestTimeConversion() {
     CheckEqual(worstError, 0, "frames->us->frames stays exact at 48k because 1e6/48k truncates down");
 }
 
+void TestPcmConversion() {
+    // 16 位 PCM 的满幅是 32767：用 ±1.0 → ±32767 才是对称的，-32768 会听成爆音。
+    const float samples[] = { 0.0f, 1.0f, -1.0f, 0.5f, -0.5f, 2.0f, -2.0f, 0.000001f };
+    std::int16_t converted[8] = {};
+    ConvertFloatToPcm16(samples, 8, converted);
+
+    CheckEqual(converted[0], 0, "zero stays zero");
+    CheckEqual(converted[1], 32767, "full scale positive clamps to 32767");
+    CheckEqual(converted[2], -32767, "full scale negative clamps to -32767");
+    CheckEqual(converted[3], 16384, "half scale rounds to 16384");
+    CheckEqual(converted[4], -16384, "negative half scale");
+    CheckEqual(converted[5], 32767, "over range positive is clamped");
+    CheckEqual(converted[6], -32767, "over range negative is clamped");
+    CheckEqual(converted[7], 0, "a tiny positive sample rounds to zero");
+
+    // 空指针与 0 样本都不该崩：调用方在音频泵里会直接用这两个参数。
+    ConvertFloatToPcm16(nullptr, 8, converted);
+    ConvertFloatToPcm16(samples, 0, nullptr);
+    CheckEqual(converted[0], 0, "null destination leaves the buffer alone");
+}
+
 }
 
 int main() {
@@ -281,6 +303,7 @@ int main() {
     TestResample();
     TestBlockPadding();
     TestTimeConversion();
+    TestPcmConversion();
 
     if (failures != 0) {
         std::printf("AUDIO_POLICY_TESTS=FAILED %d/%d\n", failures, checks);

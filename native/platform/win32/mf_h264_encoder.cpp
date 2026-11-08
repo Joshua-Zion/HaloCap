@@ -6,6 +6,7 @@
 #include <windows.h>
 
 #include <cstdio>
+#include <cstring>
 
 namespace halocap::platform::win32 {
 
@@ -230,6 +231,13 @@ bool MfH264Encoder::OpenVideo(const core::VideoEncoderConfig& config,
     accepted_ = 0;
     rejected_ = 0;
     lastTimeUs_ = -1;
+    audioFramesWritten_ = 0;
+    audioBlocksWritten_ = 0;
+    lastAudioTimeUs_ = -1;
+    // 配置是一次性的：这一次 OpenVideo 消费掉它，下一次要不要音频由调用方重新说。
+    const bool wantAudio = audioRequested_;
+    audioRequested_ = false;
+    audioStreamActive_ = false;
 
     if (!converter_.EnsureTargets(config.widthPx, config.heightPx)) {
         lastHr_ = converter_.LastHr();
@@ -300,6 +308,30 @@ bool MfH264Encoder::OpenVideo(const core::VideoEncoderConfig& config,
     if (inputTypeVariant_ < 0) {
         errorKind_ = KindFor(lastHr_);
         return false;
+    }
+
+    // 第二条流：AAC。两条流必须在 BeginWriting 之前都加好。
+    if (wantAudio) {
+        Microsoft::WRL::ComPtr<IMFMediaType> audioOutput;
+        if (!BuildAudioOutputType(&audioOutput)) {
+            return false;
+        }
+        lastHr_ = writer->AddStream(audioOutput.Get(), &audioStreamIndex_);
+        if (FAILED(lastHr_)) {
+            errorKind_ = KindFor(lastHr_);
+            return false;
+        }
+
+        Microsoft::WRL::ComPtr<IMFMediaType> audioInput;
+        if (!BuildAudioInputType(&audioInput)) {
+            return false;
+        }
+        lastHr_ = writer->SetInputMediaType(audioStreamIndex_, audioInput.Get(), nullptr);
+        if (FAILED(lastHr_)) {
+            errorKind_ = KindFor(lastHr_);
+            return false;
+        }
+        audioStreamActive_ = true;
     }
 
     lastHr_ = writer->BeginWriting();
@@ -417,9 +449,174 @@ bool MfH264Encoder::Close(core::EncoderStats& outStats) {
     outStats.mediaTimeUs = lastTimeUs_ < 0 ? 0 : lastTimeUs_;
     outStats.hardwareRequested = config_.requestHardware;
     outStats.hardwareEncoded = hardwareObserved_;
+    outStats.audioFrames = audioFramesWritten_;
+    outStats.audioBlocks = audioBlocksWritten_;
     outStats.outputBytes = ok ? FileBytes(ToWide(lastPathUtf8_)) : -1;
 
+    audioStreamActive_ = false;
     return ok;
+}
+
+bool MfH264Encoder::ConfigureAudio(const core::AudioEncoderConfig& config) {
+    if (writing_) {
+        lastHr_ = MF_E_INVALIDREQUEST;
+        errorKind_ = "invalid";
+        return false;
+    }
+
+    // 管线里只有 48 kHz 立体声这一种形状（RemixToStereo 之后），别的形状走不到这里。
+    if (config.sampleRateHz != 48000 || config.channelCount != 2 ||
+        config.bitrateBitsPerSec <= 0) {
+        lastHr_ = E_INVALIDARG;
+        errorKind_ = "invalid";
+        return false;
+    }
+
+    audioConfig_ = config;
+    audioRequested_ = true;
+    lastHr_ = S_OK;
+    errorKind_ = "ok";
+    return true;
+}
+
+bool MfH264Encoder::BuildAudioOutputType(IMFMediaType** outType) {
+    Microsoft::WRL::ComPtr<IMFMediaType> type;
+    lastHr_ = MFCreateMediaType(&type);
+    if (SUCCEEDED(lastHr_)) {
+        lastHr_ = type->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio);
+    }
+    if (SUCCEEDED(lastHr_)) {
+        lastHr_ = type->SetGUID(MF_MT_SUBTYPE, MFAudioFormat_AAC);
+    }
+    if (SUCCEEDED(lastHr_)) {
+        lastHr_ = type->SetUINT32(MF_MT_AUDIO_NUM_CHANNELS, 2);
+    }
+    if (SUCCEEDED(lastHr_)) {
+        lastHr_ = type->SetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, 48000);
+    }
+    if (SUCCEEDED(lastHr_)) {
+        lastHr_ = type->SetUINT32(MF_MT_AUDIO_BITS_PER_SAMPLE, 16);
+    }
+    if (SUCCEEDED(lastHr_)) {
+        lastHr_ = type->SetUINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND,
+                                  static_cast<UINT32>(audioConfig_.bitrateBitsPerSec / 8));
+    }
+    if (SUCCEEDED(lastHr_)) {
+        // 0x29 = AAC-LC；payload type 0 = raw AAC（MP4 要的就是这个）。
+        lastHr_ = type->SetUINT32(MF_MT_AAC_AUDIO_PROFILE_LEVEL_INDICATION, 0x29);
+    }
+    if (SUCCEEDED(lastHr_)) {
+        lastHr_ = type->SetUINT32(MF_MT_AAC_PAYLOAD_TYPE, 0);
+    }
+
+    if (FAILED(lastHr_)) {
+        errorKind_ = KindFor(lastHr_);
+        return false;
+    }
+
+    *outType = type.Detach();
+    return true;
+}
+
+bool MfH264Encoder::BuildAudioInputType(IMFMediaType** outType) {
+    Microsoft::WRL::ComPtr<IMFMediaType> type;
+    lastHr_ = MFCreateMediaType(&type);
+    if (SUCCEEDED(lastHr_)) {
+        lastHr_ = type->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Audio);
+    }
+    if (SUCCEEDED(lastHr_)) {
+        lastHr_ = type->SetGUID(MF_MT_SUBTYPE, MFAudioFormat_PCM);
+    }
+    if (SUCCEEDED(lastHr_)) {
+        lastHr_ = type->SetUINT32(MF_MT_AUDIO_NUM_CHANNELS, 2);
+    }
+    if (SUCCEEDED(lastHr_)) {
+        lastHr_ = type->SetUINT32(MF_MT_AUDIO_SAMPLES_PER_SECOND, 48000);
+    }
+    if (SUCCEEDED(lastHr_)) {
+        lastHr_ = type->SetUINT32(MF_MT_AUDIO_BITS_PER_SAMPLE, 16);
+    }
+    if (SUCCEEDED(lastHr_)) {
+        // 2 声道 × 16 位 = 4 字节一帧。
+        lastHr_ = type->SetUINT32(MF_MT_AUDIO_BLOCK_ALIGNMENT, 4);
+    }
+    if (SUCCEEDED(lastHr_)) {
+        lastHr_ = type->SetUINT32(MF_MT_AUDIO_AVG_BYTES_PER_SECOND, 48000u * 4u);
+    }
+
+    if (FAILED(lastHr_)) {
+        errorKind_ = KindFor(lastHr_);
+        return false;
+    }
+
+    *outType = type.Detach();
+    return true;
+}
+
+bool MfH264Encoder::SubmitAudio(const core::AudioFrame& frame) {
+    if (!writing_ || !writer_ || !audioStreamActive_) {
+        lastHr_ = MF_E_INVALIDREQUEST;
+        errorKind_ = "invalid";
+        return false;
+    }
+
+    if (frame.samples == nullptr || frame.frameCount <= 0) {
+        lastHr_ = E_INVALIDARG;
+        errorKind_ = "invalid";
+        return false;
+    }
+
+    if (frame.timeUs < lastAudioTimeUs_) {
+        lastHr_ = E_INVALIDARG;
+        errorKind_ = "invalid";
+        return false;
+    }
+
+    const DWORD bytes = static_cast<DWORD>(frame.frameCount) * 2 * 2;
+
+    Microsoft::WRL::ComPtr<IMFMediaBuffer> buffer;
+    lastHr_ = MFCreateMemoryBuffer(bytes, &buffer);
+    if (SUCCEEDED(lastHr_)) {
+        BYTE* destination = nullptr;
+        lastHr_ = buffer->Lock(&destination, nullptr, nullptr);
+        if (SUCCEEDED(lastHr_)) {
+            std::memcpy(destination, frame.samples, bytes);
+            buffer->Unlock();
+        }
+    }
+    if (SUCCEEDED(lastHr_)) {
+        lastHr_ = buffer->SetCurrentLength(bytes);
+    }
+
+    Microsoft::WRL::ComPtr<IMFSample> sample;
+    if (SUCCEEDED(lastHr_)) {
+        lastHr_ = MFCreateSample(&sample);
+    }
+    if (SUCCEEDED(lastHr_)) {
+        lastHr_ = sample->AddBuffer(buffer.Get());
+    }
+    if (SUCCEEDED(lastHr_)) {
+        lastHr_ = sample->SetSampleTime(core::ToReferenceTime100ns(frame.timeUs));
+    }
+    if (SUCCEEDED(lastHr_)) {
+        const std::int64_t durationUs =
+            static_cast<std::int64_t>(frame.frameCount) * 1000000 / 48000;
+        lastHr_ = sample->SetSampleDuration(core::ToReferenceTime100ns(durationUs));
+    }
+    if (SUCCEEDED(lastHr_)) {
+        lastHr_ = writer_->WriteSample(audioStreamIndex_, sample.Get());
+    }
+
+    if (FAILED(lastHr_)) {
+        errorKind_ = KindFor(lastHr_);
+        return false;
+    }
+
+    lastAudioTimeUs_ = frame.timeUs;
+    ++audioBlocksWritten_;
+    audioFramesWritten_ += frame.frameCount;
+    errorKind_ = "ok";
+    return true;
 }
 
 void MfH264Encoder::ObserveChosenEncoder() {

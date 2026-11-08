@@ -13,9 +13,11 @@
 #include "dxgi_desktop_duplication.h"
 #include "mf_h264_encoder.h"
 #include "recording_session.h"
+#include "wasapi_audio_source.h"
 
 #include <windows.h>
 
+#include <mfreadwrite.h>
 #include <psapi.h>
 
 #include <cstdint>
@@ -139,6 +141,36 @@ std::string AbsolutePath(const std::string& utf8Path) {
     return WideToUtf8(buffer);
 }
 
+// 编码器说「写完了」不等于文件里有那条流。用源读取器把音轨与时长读回来，
+// 这是「MP4 里真的有 AAC」唯一不靠猜的判据。
+bool ProbeFile(const std::wstring& path, bool& hasVideo, bool& hasAudio, std::int64_t& durationMs) {
+    hasVideo = false;
+    hasAudio = false;
+    durationMs = 0;
+
+    Microsoft::WRL::ComPtr<IMFSourceReader> reader;
+    if (FAILED(MFCreateSourceReaderFromURL(path.c_str(), nullptr, &reader))) {
+        return false;
+    }
+
+    Microsoft::WRL::ComPtr<IMFMediaType> videoType;
+    hasVideo = SUCCEEDED(reader->GetNativeMediaType(
+        static_cast<DWORD>(MF_SOURCE_READER_FIRST_VIDEO_STREAM), 0, &videoType));
+
+    Microsoft::WRL::ComPtr<IMFMediaType> audioType;
+    hasAudio = SUCCEEDED(reader->GetNativeMediaType(
+        static_cast<DWORD>(MF_SOURCE_READER_FIRST_AUDIO_STREAM), 0, &audioType));
+
+    PROPVARIANT duration{};
+    if (SUCCEEDED(reader->GetPresentationAttribute(static_cast<DWORD>(MF_SOURCE_READER_MEDIASOURCE),
+                                                   MF_PD_DURATION, &duration)) &&
+        duration.vt == VT_UI8) {
+        durationMs = static_cast<std::int64_t>(duration.uhVal.QuadPart / 10000);
+    }
+    PropVariantClear(&duration);
+    return true;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -153,6 +185,8 @@ int main(int argc, char** argv) {
     const std::string outputPath = argc > 3 ? argv[3] : "record-probe.mp4";
     // 第 4 个参数写 static 就不搬方块：用来验证静态桌面的保活帧（否则文件会因 0 样本而坏）。
     const bool staticDesktop = argc > 4 && std::string_view(argv[4]) == "static";
+    // 第 5 个参数写 noaudio 就只录视频（对照，也方便没有音频设备的机器）。
+    const bool noAudio = argc > 5 && std::string_view(argv[5]) == "noaudio";
 
     if (!MfH264Encoder::StartupFoundation()) {
         std::printf("MFSTARTUP=FAILED\n");
@@ -187,8 +221,14 @@ int main(int argc, char** argv) {
     options.outputIndex = outputIndex;
     options.targetFps = 30;
     options.outputPathUtf8 = AbsolutePath(outputPath);
+    options.audioEnabled = !noAudio;
 
-    core::RecordingSession session(capture, encoder);
+    // 两路都开：系统声音（回环）+ 麦克风。任何一路打不开都不影响录制，只少一路声音。
+    halocap::platform::win32::WasapiAudioSource systemAudio(
+        core::AudioSourceKind::SystemLoopback);
+    halocap::platform::win32::WasapiAudioSource microphone(core::AudioSourceKind::Microphone);
+
+    core::RecordingSession session(capture, encoder, &systemAudio, &microphone);
 
     bool started = false;
     int attempts = 0;
@@ -266,12 +306,29 @@ int main(int argc, char** argv) {
     std::printf("RECORD_RATIO=%.4f\n", stats.SubmitRatio(options.targetFps));
     std::printf("RECORD_HARDWARE_REQUESTED=%d\n", stats.hardwareRequested ? 1 : 0);
     std::printf("RECORD_HARDWARE_ENCODED=%d\n", stats.hardwareEncoded ? 1 : 0);
+    std::printf("AUDIO_ACTIVE=%d\n", stats.audioActive ? 1 : 0);
+    std::printf("AUDIO_PACKETS=%lld\n", static_cast<long long>(stats.audioPackets));
+    std::printf("AUDIO_FRAMES=%lld\n", static_cast<long long>(stats.audioFrames));
+    std::printf("AUDIO_BLOCKS=%lld\n", static_cast<long long>(stats.audioBlocks));
+    std::printf("AUDIO_SILENCE_FRAMES=%lld\n", static_cast<long long>(stats.audioSilenceFrames));
+    std::printf("AUDIO_GAP_FRAMES=%lld\n", static_cast<long long>(stats.audioGapFrames));
+    std::printf("AUDIO_LATE_FRAMES=%lld\n", static_cast<long long>(stats.audioLateFrames));
+
+    bool hasVideo = false;
+    bool hasAudioTrack = false;
+    std::int64_t fileDurationMs = 0;
+    const bool probed = ProbeFile(Utf8ToWide(options.outputPathUtf8), hasVideo, hasAudioTrack,
+                                  fileDurationMs);
     std::printf("RECORD_BYTES=%lld\n", static_cast<long long>(bytes));
+    std::printf("FILE_PROBED=%d FILE_VIDEO_TRACK=%d FILE_AUDIO_TRACK=%d FILE_DURATION_MS=%lld\n",
+                probed ? 1 : 0, hasVideo ? 1 : 0, hasAudioTrack ? 1 : 0,
+                static_cast<long long>(fileDurationMs));
     std::printf("RECORD_PRIVATE_MB=%.1f\n", PrivateMemoryMb());
     std::printf("RECORD_STOP_OK=%d\n", stopped ? 1 : 0);
 
-    std::printf("RECORD_PROBE=%s\n",
-                (alive && stopped && stats.framesSubmitted > 0 && bytes > 0) ? "OK" : "FAILED");
+    const bool ok = alive && stopped && stats.framesSubmitted > 0 && bytes > 0 &&
+                    hasVideo && (!options.audioEnabled || hasAudioTrack);
+    std::printf("RECORD_PROBE=%s\n", ok ? "OK" : "FAILED");
     MfH264Encoder::ShutdownFoundation();
-    return (alive && stopped && stats.framesSubmitted > 0 && bytes > 0) ? 0 : 1;
+    return ok ? 0 : 1;
 }

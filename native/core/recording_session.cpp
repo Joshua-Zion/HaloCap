@@ -1,10 +1,17 @@
 #include "recording_session.h"
 
+#include <algorithm>
 #include <string_view>
 
 namespace halocap::core {
 
 namespace {
+
+constexpr std::int32_t kAudioSampleRate = 48000;
+
+// 音频待提交队列的上限（3 秒）。超过它说明时间轴对不上（设备时间戳跳了），
+// 这一包就丢掉并计入 late，而不是让内存一路涨。
+constexpr std::int64_t kAudioMaxPendingFrames = kAudioSampleRate * 3;
 
 bool IsKind(const char* kind, const char* wanted) {
     return kind != nullptr && std::string_view(kind) == wanted;
@@ -23,8 +30,9 @@ double RecordingStats::SubmitRatio(int targetFps) const {
     return static_cast<double>(framesSubmitted) / expected;
 }
 
-RecordingSession::RecordingSession(ICaptureSource& capture, IEncoder& encoder)
-    : capture_(capture), encoder_(encoder) {}
+RecordingSession::RecordingSession(ICaptureSource& capture, IEncoder& encoder,
+                                   IAudioSource* systemAudio, IAudioSource* microphone)
+    : capture_(capture), encoder_(encoder), systemAudio_(systemAudio), microphone_(microphone) {}
 
 RecordingSession::~RecordingSession() { CloseOnDestroy(); }
 
@@ -43,6 +51,11 @@ bool RecordingSession::Start(const RecordingOptions& options, std::int64_t wallU
     stats_ = RecordingStats{};
     stats_.hardwareRequested = options.requestHardware;
     path_ = options.outputPathUtf8;
+    audioConfigured_ = false;
+    audioPending_.clear();
+    audioReadFrames_ = 0;
+    audioFramesSubmitted_ = 0;
+
     if (path_.empty()) {
         SetError("invalid");
         return false;
@@ -70,6 +83,33 @@ bool RecordingSession::Start(const RecordingOptions& options, std::int64_t wallU
         return false;
     }
 
+    // 音频要先于 OpenVideo：sink writer 的两条流要一起 AddStream 再 BeginWriting。
+    if (options.audioEnabled) {
+        bool anyOpened = false;
+        if (systemAudio_ != nullptr && systemAudio_->Open()) {
+            systemFormat_ = systemAudio_->Format();
+            anyOpened = true;
+        }
+        if (microphone_ != nullptr && microphone_->Open()) {
+            microphoneFormat_ = microphone_->Format();
+            anyOpened = true;
+        }
+
+        if (anyOpened) {
+            AudioEncoderConfig audioConfig;
+            audioConfig.sampleRateHz = kAudioSampleRate;
+            audioConfig.channelCount = 2;
+            audioConfig.bitrateBitsPerSec = options.audioBitrateBitsPerSec;
+            if (encoder_.ConfigureAudio(audioConfig)) {
+                audioConfigured_ = true;
+                stats_.audioActive = true;
+            } else {
+                // 编码器不接收第二条流（或这一路开不起来）：降级成纯视频，录制继续。
+                CloseAudio();
+            }
+        }
+    }
+
     VideoEncoderConfig config;
     config.widthPx = widthPx;
     config.heightPx = heightPx;
@@ -80,6 +120,7 @@ bool RecordingSession::Start(const RecordingOptions& options, std::int64_t wallU
     if (!encoder_.OpenVideo(config, path_)) {
         capture_.Close();
         captureOpen_ = false;
+        CloseAudio();
         SetError(encoder_.LastErrorKind(), encoder_.LastErrorCode());
         return false;
     }
@@ -101,6 +142,14 @@ bool RecordingSession::Pump(std::int64_t wallUs) {
 
     stats_.wallTimeUs = wallUs > startWallUs_ ? wallUs - startWallUs_ : 0;
 
+    const bool videoOk = PumpVideo(wallUs);
+    if (audioConfigured_) {
+        PumpAudio(wallUs);
+    }
+    return videoOk;
+}
+
+bool RecordingSession::PumpVideo(std::int64_t wallUs) {
     // 暂停期间不产生样本，但采集照常排掉：桌面复制会把变化累积到下一次 WaitForUpdate，
     // 不排的话恢复后拿到的第一帧带着「暂停期间」的时间戳与脏矩形，会被当成一帧旧画面提交。
     // 排掉的帧不计入 wakeups/contentFrames——那不是这次录制的有效内容。
@@ -187,6 +236,204 @@ bool RecordingSession::SubmitFrame(std::int64_t mediaUs, ImageHandle texture) {
     return true;
 }
 
+// ---- 音频 ----
+
+std::int64_t RecordingSession::AvailableAudioFrames() const {
+    const std::int64_t total = static_cast<std::int64_t>(audioPending_.size() / 2);
+    return total > audioReadFrames_ ? total - audioReadFrames_ : 0;
+}
+
+std::int64_t RecordingSession::QueuedAudioUs() const {
+    return FramesToUs(audioFramesSubmitted_ + AvailableAudioFrames(), kAudioSampleRate);
+}
+
+void RecordingSession::EnsurePendingFrames(std::int64_t frames) {
+    if (frames <= 0) {
+        return;
+    }
+    const std::size_t samples = static_cast<std::size_t>(frames) * 2;
+    if (audioPending_.size() < samples) {
+        // 补的是静音：0 就是静音，不需要另外填。
+        audioPending_.resize(samples, 0.0f);
+    }
+}
+
+void RecordingSession::AppendSilenceFrames(std::int64_t frames) {
+    if (frames <= 0) {
+        return;
+    }
+    EnsurePendingFrames(static_cast<std::int64_t>(audioPending_.size() / 2) + frames);
+}
+
+void RecordingSession::DiscardAudioPackets(IAudioSource* source) {
+    if (source == nullptr) {
+        return;
+    }
+    // 暂停时把设备里的包排掉，恢复后就不会拿一段旧音频当第一块。
+    for (int guard = 0; guard < 8; ++guard) {
+        AudioChunk chunk;
+        if (!source->WaitForPacket(0, chunk)) {
+            break;
+        }
+        ++stats_.audioPackets;
+        source->ReleasePacket();
+    }
+}
+
+void RecordingSession::DrainAudioSource(IAudioSource* source, const AudioFormat& format, float gain) {
+    if (source == nullptr) {
+        return;
+    }
+
+    // 一次最多取 8 包：音频不能把视频泵饿死。
+    for (int guard = 0; guard < 8; ++guard) {
+        AudioChunk chunk;
+        if (!source->WaitForPacket(0, chunk)) {
+            break;
+        }
+
+        audioGotPacket_ = true;
+        ++stats_.audioPackets;
+
+        // 一包正常是 480 帧（10 ms）；异常大的包直接还掉，别让它把队列顶爆。
+        if (chunk.frameCount <= 0 || chunk.samples == nullptr || chunk.frameCount > kAudioSampleRate) {
+            source->ReleasePacket();
+            continue;
+        }
+
+        audioScratch_.resize(static_cast<std::size_t>(chunk.frameCount) * 2);
+        RemixToStereo(audioScratch_.data(), chunk.samples, chunk.frameCount, format.channelCount);
+
+        const float* stereo = audioScratch_.data();
+        std::int32_t frames = chunk.frameCount;
+
+        // 端点不是 48 kHz 时用线性重采样（音质是近似，验收靠听；1.x 也是这条退路）。
+        if (format.sampleRateHz > 0 && format.sampleRateHz != kAudioSampleRate) {
+            const double ratio = static_cast<double>(kAudioSampleRate) / format.sampleRateHz;
+            frames = std::max<std::int32_t>(1, ResampledFrameCount(chunk.frameCount, ratio));
+            audioResample_.resize(static_cast<std::size_t>(frames) * 2);
+            ResampleLinear(stereo, chunk.frameCount, 2, ratio, audioResample_.data(), frames);
+            stereo = audioResample_.data();
+        }
+
+        // 这一包的第一个样本该落在的绝对帧位置（相对录制起点）。
+        const std::int64_t chunkUs = clock_.MediaTimeUs(chunk.timestampUs);
+        std::int64_t offset = UsToFrames(chunkUs, kAudioSampleRate) - audioFramesSubmitted_;
+
+        if (offset < 0) {
+            // 设备时间戳比队列末端还早：丢掉这一包前面的部分，别把时间轴往回写。
+            const std::int64_t skip = std::min<std::int64_t>(-offset, frames);
+            stereo += skip * 2;
+            frames -= static_cast<std::int32_t>(skip);
+            stats_.audioLateFrames += skip;
+            offset = 0;
+        }
+
+        if (frames > 0) {
+            if (offset + frames > kAudioMaxPendingFrames) {
+                // 时间轴跳得太远（设备换了/时间戳坏了）：这一包不要了。
+                stats_.audioLateFrames += frames;
+            } else {
+                EnsurePendingFrames(offset + frames);
+                MixInto(audioPending_.data() + static_cast<std::size_t>(offset) * 2, stereo, frames, gain);
+            }
+        }
+
+        source->ReleasePacket();
+    }
+}
+
+void RecordingSession::FlushAudioBlocks(bool padLastBlock) {
+    if (!audioConfigured_) {
+        return;
+    }
+
+    if (padLastBlock && AvailableAudioFrames() > 0) {
+        const std::int32_t remainder =
+            static_cast<std::int32_t>(AvailableAudioFrames() % kAacFrameCount);
+        if (remainder != 0) {
+            AppendSilenceFrames(kAacFrameCount - remainder);
+        }
+    }
+
+    audioPcm_.resize(static_cast<std::size_t>(kAacFrameCount) * 2);
+    while (AvailableAudioFrames() >= kAacFrameCount) {
+        ConvertFloatToPcm16(audioPending_.data() + static_cast<std::size_t>(audioReadFrames_) * 2,
+                            kAacFrameCount * 2, audioPcm_.data());
+
+        AudioFrame frame;
+        frame.samples = audioPcm_.data();
+        frame.frameCount = kAacFrameCount;
+        frame.timeUs = FramesToUs(audioFramesSubmitted_, kAudioSampleRate);
+
+        if (!encoder_.SubmitAudio(frame)) {
+            ++stats_.audioRejectedBlocks;
+            break;
+        }
+
+        audioFramesSubmitted_ += kAacFrameCount;
+        audioReadFrames_ += kAacFrameCount;
+        stats_.audioFrames += kAacFrameCount;
+        ++stats_.audioBlocks;
+    }
+
+    // 每秒整理一次：帧循环里不做大搬移，但也别让 vector 一直往前长。
+    if (audioReadFrames_ >= kAudioSampleRate) {
+        audioPending_.erase(audioPending_.begin(),
+                            audioPending_.begin() + static_cast<std::ptrdiff_t>(audioReadFrames_) * 2);
+        audioReadFrames_ = 0;
+    }
+}
+
+void RecordingSession::PumpAudio(std::int64_t wallUs) {
+    if (!audioConfigured_) {
+        return;
+    }
+
+    if (clock_.Paused()) {
+        // 暂停时静音不动时间轴：只把设备里的包排掉。
+        DiscardAudioPackets(systemAudio_);
+        DiscardAudioPackets(microphone_);
+        return;
+    }
+
+    audioGotPacket_ = false;
+    DrainAudioSource(systemAudio_, systemFormat_, options_.systemAudioGain);
+    DrainAudioSource(microphone_, microphoneFormat_, options_.microphoneGain);
+
+    // 回环保活：桌面静音时回环一个包都不出（§5.1 实测），只能按墙钟补静音。
+    // 有包时不补——包的设备时间戳比墙钟更准，用它对齐。
+    if (!audioGotPacket_) {
+        const std::int64_t queuedUs = QueuedAudioUs();
+        const std::int64_t wallMediaUs = clock_.MediaTimeUs(wallUs);
+        if (wallMediaUs > queuedUs + 100'000) {
+            const std::int64_t fillUs = std::min(wallMediaUs - queuedUs, options_.audioSilenceLimitUs);
+            const std::int64_t frames = UsToFrames(fillUs, kAudioSampleRate);
+            if (frames > 0) {
+                AppendSilenceFrames(frames);
+                stats_.audioSilenceFrames += frames;
+            }
+        }
+    }
+
+    FlushAudioBlocks(false);
+}
+
+void RecordingSession::CloseAudio() {
+    if (systemAudio_ != nullptr) {
+        systemAudio_->Close();
+    }
+    if (microphone_ != nullptr) {
+        microphone_->Close();
+    }
+    audioConfigured_ = false;
+    audioPending_.clear();
+    audioReadFrames_ = 0;
+    audioFramesSubmitted_ = 0;
+}
+
+// ---- 状态切换 ----
+
 bool RecordingSession::Pause(std::int64_t wallUs) {
     if (!recording_) {
         SetError("state");
@@ -220,6 +467,12 @@ bool RecordingSession::Stop(std::int64_t wallUs, RecordingStats& outStats) {
     if (captureOpen_) {
         capture_.Close();
         captureOpen_ = false;
+    }
+
+    // 音频必须在编码器收尾之前写完：最后一块补静音凑到 1024。
+    if (audioConfigured_) {
+        FlushAudioBlocks(true);
+        CloseAudio();
     }
 
     bool ok = true;
@@ -257,6 +510,10 @@ void RecordingSession::CloseOnDestroy() {
     if (captureOpen_) {
         capture_.Close();
         captureOpen_ = false;
+    }
+    if (audioConfigured_) {
+        FlushAudioBlocks(true);
+        CloseAudio();
     }
     if (encoderOpen_) {
         EncoderStats ignored;

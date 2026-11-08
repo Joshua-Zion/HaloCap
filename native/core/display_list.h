@@ -38,6 +38,19 @@ struct Segment {
     float thickness = 1.0f;
 };
 
+// 椭圆（描边/填充）：1.x 的矩形/椭圆标注与序号圆都在这里。加进列表而不是用折线模拟，
+// 是因为 D2D 的 DrawEllipse 是原生抗锯齿椭圆，32 段折线在 4K 上仍能看出多边形。
+struct FillEllipse {
+    Rect rect;
+    Color color;
+};
+
+struct StrokeEllipse {
+    Rect rect;
+    Color color;
+    float thickness = 1.0f;
+};
+
 struct Blit {
     ImageHandle image = 0;
     Rect source;
@@ -47,7 +60,7 @@ struct Blit {
 
 // 折线（Path）与字形 run（GlyphRun）尚未进入显示列表：前者要等几何缓存策略，
 // 后者要等 IFontRasterizer 的图集。放进列表却画不出来比不放更糟。
-using Item = std::variant<FillRect, StrokeRect, Segment, Blit>;
+using Item = std::variant<FillRect, StrokeRect, FillEllipse, StrokeEllipse, Segment, Blit>;
 
 // core 只产显示列表，向量顺序即图层顺序，不触碰任何渲染 API（§3.3 规则一）。
 class FramePlan {

@@ -1,8 +1,8 @@
-﻿# 2.0 原生实现（开发中）
+# 2.0 原生实现（开发中）
 
 本目录属于 `2.0` 分支。设计依据见 [../docs/2.0-native-plan.md](../docs/2.0-native-plan.md)，分支约定见其 §10，工具链与构建前提见计划文档的「S1 的工具链」。
 
-当前状态：**S1 完成，S2 完成**——八个 seam 全部落地，十二套测试全绿；[`app/`](app/main.cpp) 把设置、日志、托盘、热键与覆盖层组装成 `HaloCap.exe`，托盘「录屏」与录制热键现在真的开录（`--record-seconds` 无人值守实测 61 帧）；[`record_probe`](tools/record_probe/main.cpp) 跑通桌面复制 → 常驻纹理 → NV12 → 音频 AAC → MP4（5.3 秒 151 帧、编码器拒收 0、音轨与时长都对）；[`wgc_probe`](tools/wgc_probe/main.cpp) 跑通窗口录制；4K30 合成源实测峰值 **230.8 MB**（目标 ≤ 350 MB）。只剩「音画同步 < 50 ms」这一条验收要一段可辨识声画事件的样本再解码比对。
+当前状态：**S1 / S2 完成，S3 的模型与导出完成、交互层未完成**——十五套测试全绿；`HaloCap.exe` 有设置、日志、托盘、热键、覆盖层与录制（托盘「录屏」/`Ctrl+Alt+R`、`--record-seconds` 自检）；桌面复制与 WGC 两条采集、AAC 音频与 4K30（峰值 230.8 MB）都跑通；S3 这边九种标注工具、选区状态机、马赛克、撤销/重做、PNG 与剪贴板导出都已落地，`screenshot_probe` 实测选区打开 **1.8 ms**、峰值 **81.5 MB**。还没做的是工具栏、覆盖层上的鼠标编辑、文字 IME、贴图窗口，以及把截图热键接进 app。
 
 一处环境阻塞要写清：本机现在对**任何**程序都拒绝 `DuplicateOutput`（`E_ACCESSDENIED`；今天早些时候还能跑出吞吐数字的 spike 2 工具现在同样被拒），所以 `ICaptureSource` 的端到端脏矩形量级数字还没拿到。拷贝逻辑本身不依赖复制权，已经单独验过（`rect_copy_test`）。
 
@@ -33,6 +33,9 @@ native/
     tray_menu.h         托盘与圆盘共用：AppAction 四项、菜单项/可用性/勾选规则、
                         提示文字与 63 个 UTF-16 码元的截断
     recording_session.h 录制编排：采集帧 → 时钟 → 帧闸门 → 编码提交；暂停/停止与统计口径
+    annotation.h        S3 标注模型：九种工具、样式、命中测试、快照式撤销/重做、显示列表生成
+    selection.h         选区状态机：拖动、八个把手、移动、夹边界、Esc 取消
+    mosaic.h            马赛克：块对齐、块平均降采样（每格一个像素）
     frame_scheduler.h   帧节奏与丢帧口径：BeginFrame / EndFrame / Stats，时钟由调用方注入微秒
   platform/win32/
     d2d_render_backend.h/.cpp      Direct2D 1.1（ID2D1Device + ID2D1DeviceContext）+ 合成链呈现
@@ -47,6 +50,7 @@ native/
     win32_capability.h/.cpp            ICapability：RtlGetVersion + WGC 探测 + 私有内存 + 卷剩余空间
     win32_tray.h/.cpp                  托盘：Shell_NotifyIcon + 标准 HMENU + CreateIconIndirect 画的「光圈」
     win32_wgc_capture.h/.cpp           窗口录制：Windows.Graphics.Capture + 常驻纹理（奇数尺寸按偶数裁）
+    image_export.h/.cpp                导出：WIC 写 PNG、CF_DIB 写剪贴板（调用方需 CoInitializeEx）
   tools/frame_cost/     覆盖层帧成本测量（与 spike 3 同口径，离屏、不上屏）
   tools/surface_probe/  上屏链路验证：A/B 抓屏证「看得见」+ 60 fps 排帧数丢帧
   tools/capture_probe/  采集链路统计：应有/实取、仅鼠标唤醒、脏像素之比、每帧 CPU 与内存
@@ -55,11 +59,12 @@ native/
   tools/input_probe/    输入链路验证：热键投递、两个钩子链量拦截是否真生效、IME 断开恢复、错误分类
   tools/store_probe/    设置链路验证：真实路径、原子替换、日志分份、只读导入 1.x 设置、能力读数
   tools/tray_probe/     托盘验证：HMENU 与 core 模型逐项比对、点击/命令两条消息路径、图标与气泡
+  tools/screenshot_probe/ S3 端到端：复制 → 选区 → 九种标注 → 离屏合成 → PNG/剪贴板 + 逐像素验证
   tools/record_probe/   S2 端到端：真复制 + 真编码 + RecordingSession，量帧数/拒收/字节/内存；
                         也支持 synthetic:WxH（合成源，用来量 4K30 峰值）与 static/noaudio
   tools/wgc_probe/      窗口录制端到端：自建窗口 → WGC → 常驻纹理 → MP4
   tools/rect_copy_test/ 脏矩形拷贝的功能验证（进 CTest，不碰屏幕也不需要复制权）
-  tests/      core 的单测（无第三方框架，十二个可执行 + CTest）
+  tests/      core 的单测（无第三方框架，十五个可执行 + CTest）
   app/        组装根：DPI → 能力 → 设置 → 日志 → 托盘 → 热键 → 覆盖层 → 消息循环，
               `--selftest` 量空闲内存并给出退出码
   build.cmd   vcvars → cmake configure → build → ctest
@@ -283,3 +288,31 @@ native> build\app\HaloCap.exe --record-seconds 3     无人值守：录 3 秒后
 输出落在设置的录制目录（空则 `视频\Captures`），文件名 `HaloCap_yyyy-MM-dd_HH-mm-ss.mp4`；录制中托盘菜单变「停止录制 / 暂停录制」、图标切红点，结束弹一条「已保存：路径」。实测 2.5 秒 61 帧、文件 63 KB、退出码 0。录制对象在 Start 时建、Stop 时拆，所以 idle 内存不受影响。
 
 **一条必须记住的构建坑**：给 `ICaptureSource` 加 `OpenWindow` 改的是**虚表**。增量构建之后 app 会在 `DesktopBounds()` 处 AV（Windows 事件日志是「出错模块 unknown、偏移 0」，典型的空指针虚调用），而探针有时还能跑——那是旧 obj 与新头文件混着。删掉 `native/build` 全量重建即恢复；以后改任何 seam 的虚函数集合都照这个来。
+
+## S3 的模型与导出（screenshot_probe）
+
+```
+native> build\tools\screenshot_probe\screenshot_probe.exe                      900x600@100,100
+native> build\tools\screenshot_probe\screenshot_probe.exe out.png 1280x720@0,0
+```
+
+它不画 UI，而是把 S3 的「领域 + 导出」整条链跑一遍：桌面复制 → 选区 → 九种标注 → 离屏合成 → 整帧回读 → 逐像素断言 → PNG 与剪贴板。马赛克那一步在探针里先画一层棋盘格，再从回读像素取块平均，验证「像素化它下面的内容」。
+
+本机实测（900×600 @ 100,100）：
+
+| 项 | 值 |
+| --- | --- |
+| 选区打开（复制权 + 第一帧 + 目标就绪） | **1.8 ms**（S3 目标 ≤ 150 ms） |
+| 合成 + 回读 | 2.6–3.8 ms |
+| 私有内存峰值 | **81.5 MB**（S3 目标 ≤ 120 MB） |
+| 关闭采集、释放回读缓冲后 | 77.3 MB |
+| 输出 | 21,947 字节 PNG，九种标注逐像素验证通过 |
+| 剪贴板 | `CF_DIB`，尺寸与选区一致 |
+
+三件记在实现旁边的事：
+
+1. **显示列表加了椭圆图元**：1.x 的椭圆/序号圆是原生椭圆，折线模拟在 4K 上能看出多边形；D2D 的 `FillEllipse`/`DrawEllipse` 本来就是抗锯齿的。
+2. **撤销用整份快照**：一次截图的标注是几十条量级，快照比逐操作反演可靠——橡皮删除、序号回退、将来的移动/缩放都不用各写一套。
+3. **导出用 `WriteSource` 而不是 `WritePixels`**：PNG 编码器会换像素格式，`WriteSource` 会替我们转换；另外 WIC 走 COM，调用方要先 `CoInitializeEx`。
+
+还没做的（S3 剩下的交互层）：覆盖层的每帧脏区重绘、工具栏、鼠标键盘编辑循环、文字的 IME 输入、贴图窗口与光晕，以及把截图热键接进 app。

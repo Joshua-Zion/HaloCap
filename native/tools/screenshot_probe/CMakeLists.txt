@@ -1,0 +1,2 @@
+add_executable(screenshot_probe main.cpp)
+target_link_libraries(screenshot_probe PRIVATE halocap_platform_win32)

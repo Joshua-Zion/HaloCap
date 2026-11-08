@@ -11,6 +11,7 @@ add_library(halocap_platform_win32 STATIC
     win32_capability.cpp
     win32_tray.cpp
     win32_wgc_capture.cpp
+    image_export.cpp
 )
 
 target_include_directories(halocap_platform_win32 PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
@@ -23,4 +24,4 @@ target_include_directories(halocap_platform_win32 PUBLIC ${CMAKE_CURRENT_SOURCE_
 target_link_libraries(halocap_platform_win32 PUBLIC
     halocap_core
     d3d11 dxgi d2d1 dwrite dcomp user32 shell32 psapi
-    mfplat mf mfreadwrite mfuuid ole32 imm32 windowsapp runtimeobject)
+    mfplat mf mfreadwrite mfuuid ole32 imm32 windowsapp runtimeobject windowscodecs)

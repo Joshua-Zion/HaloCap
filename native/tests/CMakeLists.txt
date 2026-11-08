@@ -42,6 +42,18 @@ add_executable(recording_session_tests recording_session_tests.cpp)
 target_link_libraries(recording_session_tests PRIVATE halocap_core)
 add_test(NAME recording_session_tests COMMAND recording_session_tests)
 
+add_executable(annotation_tests annotation_tests.cpp)
+target_link_libraries(annotation_tests PRIVATE halocap_core)
+add_test(NAME annotation_tests COMMAND annotation_tests)
+
+add_executable(selection_tests selection_tests.cpp)
+target_link_libraries(selection_tests PRIVATE halocap_core)
+add_test(NAME selection_tests COMMAND selection_tests)
+
+add_executable(mosaic_tests mosaic_tests.cpp)
+target_link_libraries(mosaic_tests PRIVATE halocap_core)
+add_test(NAME mosaic_tests COMMAND mosaic_tests)
+
 # §3.3 规则三的链接期兜底：core 不许链接任何库（含系统导入库）。
 # include 扫描只挡住头文件，真正调用了 Win32 函数会在这里挂掉。
 foreach(_prop LINK_LIBRARIES INTERFACE_LINK_LIBRARIES)

@@ -31,6 +31,12 @@ Rect BoundsOf(const Item& item) {
                 const float half = specific.thickness * 0.5f;
                 return Rect{ specific.rect.left - half, specific.rect.top - half,
                              specific.rect.right + half, specific.rect.bottom + half };
+            } else if constexpr (std::is_same_v<T, FillEllipse>) {
+                return specific.rect;
+            } else if constexpr (std::is_same_v<T, StrokeEllipse>) {
+                const float half = specific.thickness * 0.5f;
+                return Rect{ specific.rect.left - half, specific.rect.top - half,
+                             specific.rect.right + half, specific.rect.bottom + half };
             } else if constexpr (std::is_same_v<T, Blit>) {
                 return specific.destination;
             } else {

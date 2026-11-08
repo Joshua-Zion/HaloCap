@@ -49,6 +49,9 @@ public:
     // 数一下目标上不透明的像素，验证文本这类「有东西才该有数」的输出。
     bool CountInkedPixels(int* count);
 
+    // 整帧回读（导出用）：BGRA、行距 = width*4、不透明。只读离屏目标。
+    bool ReadPixels(std::vector<std::uint8_t>& bgra, int& width, int& height);
+
     // 平台内部共享：字体栅格器要往自己的图集纹理里画，画完由这里换成显示列表能引用的句柄。
     ID2D1DeviceContext* Dc() const { return dc_.Get(); }
     ID3D11Device* Device() const { return device_.Get(); }

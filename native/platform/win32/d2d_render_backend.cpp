@@ -11,6 +11,13 @@ namespace {
 
 constexpr float kDpi = 96.0f;
 
+D2D1_ELLIPSE ToEllipse(const core::Rect& rect) {
+    const float cx = (rect.left + rect.right) * 0.5f;
+    const float cy = (rect.top + rect.bottom) * 0.5f;
+    return D2D1::Ellipse(D2D1::Point2F(cx, cy), (rect.right - rect.left) * 0.5f,
+                         (rect.bottom - rect.top) * 0.5f);
+}
+
 D2D1_RECT_F ToD2D(const core::Rect& rect) {
     return D2D1_RECT_F{ rect.left, rect.top, rect.right, rect.bottom };
 }
@@ -295,6 +302,12 @@ void D2dRenderBackend::Render(const core::FramePlan& plan, core::IntRect clip) {
                 } else if constexpr (std::is_same_v<T, core::StrokeRect>) {
                     const D2D1_RECT_F rect = ToD2D(specific.rect);
                     dc_->DrawRectangle(&rect, BrushFor(specific.color), specific.thickness, nullptr);
+                } else if constexpr (std::is_same_v<T, core::FillEllipse>) {
+                    const D2D1_ELLIPSE ellipse = ToEllipse(specific.rect);
+                    dc_->FillEllipse(&ellipse, BrushFor(specific.color));
+                } else if constexpr (std::is_same_v<T, core::StrokeEllipse>) {
+                    const D2D1_ELLIPSE ellipse = ToEllipse(specific.rect);
+                    dc_->DrawEllipse(&ellipse, BrushFor(specific.color), specific.thickness, nullptr);
                 } else if constexpr (std::is_same_v<T, core::Segment>) {
                     dc_->DrawLine(ToD2D(specific.from), ToD2D(specific.to),
                                   BrushFor(specific.color), specific.thickness, nullptr);
@@ -514,6 +527,41 @@ bool D2dRenderBackend::EnableCpuReadback() {
 
     lastHr_ = device_->CreateTexture2D(&desc, nullptr, &staging_);
     return SUCCEEDED(lastHr_);
+}
+
+bool D2dRenderBackend::ReadPixels(std::vector<std::uint8_t>& bgra, int& width, int& height) {
+    if (!target_ || !context_) {
+        lastHr_ = E_FAIL;
+        return false;
+    }
+
+    // staging 与目标同尺寸；Resize 之后旧 staging 已经放掉，这里重建。
+    if (!staging_ && !EnableCpuReadback()) {
+        return false;
+    }
+
+    context_->CopyResource(staging_.Get(), target_.Get());
+    context_->Flush();
+
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    lastHr_ = context_->Map(staging_.Get(), 0, D3D11_MAP_READ, 0, &mapped);
+    if (FAILED(lastHr_)) {
+        return false;
+    }
+
+    width = width_;
+    height = height_;
+    bgra.assign(static_cast<std::size_t>(width) * height * 4, 0);
+
+    const auto* bits = static_cast<const std::uint8_t*>(mapped.pData);
+    for (int y = 0; y < height; ++y) {
+        std::memcpy(bgra.data() + static_cast<std::size_t>(y) * width * 4,
+                    bits + static_cast<std::size_t>(y) * mapped.RowPitch,
+                    static_cast<std::size_t>(width) * 4);
+    }
+
+    context_->Unmap(staging_.Get(), 0);
+    return true;
 }
 
 bool D2dRenderBackend::SyncToCpu(unsigned char* centerPixelRgba) {

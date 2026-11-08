@@ -322,32 +322,36 @@ void RadialMenu::Close() {
     hovered_ = -1;
 }
 
-void RadialMenu::Render() {
-    if (bits_ == nullptr || window_ == nullptr) {
+struct RadialMenuFrameCache {
+    int size = 0;
+    std::unique_ptr<Gdiplus::Bitmap> frames[5];
+};
+
+void RadialMenu::BuildCache() {
+    cache_ = std::make_unique<RadialMenuFrameCache>();
+    cache_->size = std::max(1, static_cast<int>(std::lround(kDesign * contentScale_ * pixelScale_)));
+    BuildFrame(0);
+}
+
+void RadialMenu::BuildFrame(int index) {
+    if (cache_ == nullptr || index < 0 || index >= 5 || cache_->frames[index]) {
         return;
     }
-
-    const ULONGLONG now = GetTickCount64();
-    const float show = std::clamp((now - showStartMs_) / 160.0f, 0.0f, 1.0f);
-    const float ease = 1.0f - std::pow(1.0f - show, 3.0f);
-    const float scale = 0.93f + 0.07f * ease;
-
-    Bitmap canvas(widthPx_, heightPx_, PixelFormat32bppPARGB);
-    Graphics graphics(&canvas);
+    auto frame = std::make_unique<Gdiplus::Bitmap>(cache_->size, cache_->size,
+                                                   PixelFormat32bppPARGB);
+    Gdiplus::Graphics graphics(frame.get());
     graphics.SetSmoothingMode(SmoothingModeAntiAlias);
-    graphics.SetTextRenderingHint(TextRenderingHintAntiAlias);
+    graphics.SetTextRenderingHint(TextRenderingHintClearTypeGridFit);
+    graphics.SetPixelOffsetMode(PixelOffsetModeHalf);
     graphics.SetCompositingQuality(CompositingQualityHighQuality);
     graphics.Clear(Color(0, 0, 0, 0));
-
-    const float k = contentScale_ * pixelScale_;
-    const float pad = kPadding * pixelScale_;
-    const float offset = pad + kDesign * k * (1.0f - scale) * 0.5f;
-    Matrix transform(k * scale, 0.0f, 0.0f, k * scale, offset, offset);
+    const float k = static_cast<float>(cache_->size) / kDesign;
+    Matrix transform(k, 0.0f, 0.0f, k, 0.0f, 0.0f);
     graphics.SetTransform(&transform);
-
-    const PointF diskCenter(190.0f, 190.0f);
-
-    // 外盘投影：用一圈递减 alpha 的椭圆近似 DropShadow（30 blur / 2 depth / 0.22）。
+    DrawDesign(graphics, index - 1);
+    cache_->frames[index] = std::move(frame);
+}
+void RadialMenu::DrawDesign(Gdiplus::Graphics& graphics, int hoverIndex) {    // 外盘投影：用一圈递减 alpha 的椭圆近似 DropShadow（30 blur / 2 depth / 0.22）。
     for (int i = 0; i < 15; ++i) {
         const float t = static_cast<float>(i) / 14.0f;
         const float radius = kDiskRadius + 1.0f + i * 1.35f;
@@ -383,7 +387,7 @@ void RadialMenu::Render() {
         SolidBrush base(Color(7, 0, 0, 0));
         graphics.FillPath(&base, sector);
 
-        const float hover = std::clamp(hoverAlpha_[i], 0.0f, 1.0f);
+        const float hover = (i == hoverIndex ? 1.0f : 0.0f);
         if (hover > 0.01f) {
             SolidBrush lit(WithAlpha(kActions[i].accent, static_cast<int>(0x26 * hover)));
             graphics.FillPath(&lit, sector);
@@ -404,7 +408,7 @@ void RadialMenu::Render() {
         const float angle = i * 90.0f;
         const PointF node = DesignPoint(angle, kNodeRadius);
         const float radians = (angle - 90.0f) * 3.14159265f / 180.0f;
-        const float hover = std::clamp(hoverAlpha_[i], 0.0f, 1.0f);
+        const float hover = (i == hoverIndex ? 1.0f : 0.0f);
         const float ox = std::cos(radians) * 4.0f * hover;
         const float oy = std::sin(radians) * 4.0f * hover;
         const PointF iconCenter(node.X + ox, node.Y - 8.0f + oy);
@@ -465,16 +469,8 @@ void RadialMenu::Render() {
     Pen centerBorder(Color(20, 0, 0, 0), 1.0f);
     graphics.DrawEllipse(&centerBorder, 190.0f - 52.0f, 190.0f - 52.0f, 104.0f, 104.0f);
 
-    int active = hovered_;
-    if (active < 0) {
-        float best = 0.2f;
-        for (int i = 0; i < 4; ++i) {
-            if (hoverAlpha_[i] > best) {
-                best = hoverAlpha_[i];
-                active = i;
-            }
-        }
-    }
+    int active = hoverIndex;
+
     if (active >= 0) {
         SolidBrush dot(kActions[active].accent);
         graphics.FillEllipse(&dot, 190.0f - 3.0f, 190.0f - 20.0f, 6.0f, 6.0f);
@@ -487,7 +483,40 @@ void RadialMenu::Render() {
                          Color(255, 0x1D, 0x1D, 0x1F));
     }
 
-    // 拷贝到 DIB：GDI+ 输出预乘 BGRA，分层窗口直接吃。
+}
+
+void RadialMenu::Render() {
+    if (bits_ == nullptr || window_ == nullptr) {
+        return;
+    }
+    if (cache_ == nullptr) {
+        BuildCache();
+    }
+
+    const ULONGLONG now = GetTickCount64();
+    const float show = std::clamp((now - showStartMs_) / 160.0f, 0.0f, 1.0f);
+    const float ease = 1.0f - std::pow(1.0f - show, 3.0f);
+    float scale = 0.93f + 0.07f * ease;
+    float fade = 1.0f;
+    if (closing_) {
+        fade = std::clamp(1.0f - (now - closeStartMs_) / 120.0f, 0.0f, 1.0f);
+        scale *= 0.96f + 0.04f * fade;
+    }
+
+    Bitmap canvas(widthPx_, heightPx_, PixelFormat32bppPARGB);
+    Graphics graphics(&canvas);
+    graphics.SetInterpolationMode(InterpolationModeHighQualityBicubic);
+    graphics.SetPixelOffsetMode(PixelOffsetModeHalf);
+    graphics.Clear(Color(0, 0, 0, 0));
+
+    const int frameIndex = hovered_ >= 0 ? hovered_ + 1 : 0;
+    BuildFrame(frameIndex);
+    Bitmap* frame = cache_->frames[frameIndex].get();
+    const float drawSize = cache_->size * scale;
+    const float left = (widthPx_ - drawSize) * 0.5f;
+    const float top = (heightPx_ - drawSize) * 0.5f;
+    graphics.DrawImage(frame, RectF(left, top, drawSize, drawSize));
+
     const Rect lockRect(0, 0, widthPx_, heightPx_);
     BitmapData data{};
     if (canvas.LockBits(&lockRect, ImageLockModeRead, PixelFormat32bppPARGB, &data) == Ok) {
@@ -508,36 +537,33 @@ void RadialMenu::Render() {
     POINT source{ 0, 0 };
     BLENDFUNCTION blend{};
     blend.BlendOp = AC_SRC_OVER;
-    blend.SourceConstantAlpha = static_cast<BYTE>(std::lround(255.0f * std::min(1.0f, show * 1.15f)));
+    blend.SourceConstantAlpha = static_cast<BYTE>(std::lround(255.0f * std::min(1.0f, show * 1.15f) * fade));
     blend.AlphaFormat = AC_SRC_ALPHA;
     UpdateLayeredWindow(static_cast<HWND>(window_), screen, &destination, &windowSize, memory_,
                         &source, 0, &blend, ULW_ALPHA);
     ReleaseDC(nullptr, screen);
 }
-
 void RadialMenu::Tick() {
     const ULONGLONG now = GetTickCount64();
-    const float show = std::clamp((now - showStartMs_) / 160.0f, 0.0f, 1.0f);
-
-    bool animating = show < 1.0f;
-    for (int i = 0; i < 4; ++i) {
-        const float target = (i == hovered_) ? 1.0f : 0.0f;
-        const float step = 16.0f / 130.0f;
-        if (hoverAlpha_[i] < target) {
-            hoverAlpha_[i] = std::min(target, hoverAlpha_[i] + step);
-            animating = true;
-        } else if (hoverAlpha_[i] > target) {
-            hoverAlpha_[i] = std::max(target, hoverAlpha_[i] - step);
-            animating = true;
+    if (closing_) {
+        Render();
+        if (now - closeStartMs_ >= 120) {
+            const SelectHandler handler = onSelect_;
+            const int index = pendingAction_;
+            pendingAction_ = -1;
+            Close();
+            if (index >= 0 && handler) {
+                handler(kActions[index].action);
+            }
         }
+        return;
     }
-
+    const float show = std::clamp((now - showStartMs_) / 160.0f, 0.0f, 1.0f);
     Render();
-    if (!animating) {
+    if (show >= 1.0f) {
         KillTimer(static_cast<HWND>(window_), 1);
     }
 }
-
 void RadialMenu::UpdateHover(POINT screenPoint) {
     if (dragging_) {
         return;
@@ -552,7 +578,7 @@ void RadialMenu::UpdateHover(POINT screenPoint) {
     if (distance < deadPx || distance > diskPx) {
         if (hovered_ != -1) {
             hovered_ = -1;
-            SetTimer(static_cast<HWND>(window_), 1, 16, nullptr);
+            Render();
         }
         return;
     }
@@ -564,12 +590,17 @@ void RadialMenu::UpdateHover(POINT screenPoint) {
     const int index = static_cast<int>(std::floor((angle + 45.0f) / 90.0f)) % 4;
     if (index != hovered_) {
         hovered_ = index;
-        SetTimer(static_cast<HWND>(window_), 1, 16, nullptr);
+        Render();
     }
 }
 
 void RadialMenu::Select(int index) {
-    if (index < 0 || index >= 4) {
+    if (index < 0 || index >= 4 || closing_) {
+        return;
+    }
+    if (kActions[index].action == core::AppAction::Pin) {
+        // 1.x：贴图没有选区要立即让出屏幕，保留 120 ms 淡出。
+        StartHide(index);
         return;
     }
     const SelectHandler handler = onSelect_;
@@ -580,11 +611,21 @@ void RadialMenu::Select(int index) {
     }
 }
 
+void RadialMenu::StartHide(int pendingAction) {
+    if (closing_) {
+        return;
+    }
+    closing_ = true;
+    pendingAction_ = pendingAction;
+    closeStartMs_ = GetTickCount64();
+    SetTimer(static_cast<HWND>(window_), 1, 16, nullptr);
+}
+
 void RadialMenu::StartDrag(POINT screenPoint) {
     dragging_ = true;
     dragOffset_ = POINT{ centerScreen_.x - screenPoint.x, centerScreen_.y - screenPoint.y };
     hovered_ = -1;
-    SetTimer(static_cast<HWND>(window_), 1, 16, nullptr);
+    Render();
 }
 
 void RadialMenu::DragTo(POINT screenPoint) {
@@ -627,7 +668,7 @@ LRESULT CALLBACK RadialMenu::MouseHook(int code, WPARAM wParam, LPARAM lParam) {
             const int index = static_cast<int>(std::floor((angle + 45.0f) / 90.0f)) % 4;
             g_active->Select(index);
         } else {
-            g_active->Close();
+            g_active->StartHide(-1);
         }
         return 1;
     }
@@ -636,7 +677,7 @@ LRESULT CALLBACK RadialMenu::MouseHook(int code, WPARAM wParam, LPARAM lParam) {
         return 1;
     case WM_RBUTTONDOWN:
     case WM_MBUTTONDOWN:
-        g_active->Close();
+        g_active->StartHide(-1);
         return 1;
     default:
         return 1;
@@ -652,7 +693,7 @@ LRESULT CALLBACK RadialMenu::KeyHook(int code, WPARAM wParam, LPARAM lParam) {
     }
     const DWORD key = reinterpret_cast<const KBDLLHOOKSTRUCT*>(lParam)->vkCode;
     if (key == VK_ESCAPE) {
-        g_active->Close();
+        g_active->StartHide(-1);
         return 1;
     }
     if (key >= '1' && key <= '4') {

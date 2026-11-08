@@ -120,6 +120,7 @@ struct Options {
 
     // 非空 = 无人值守的设置页自检：打开六页设置 → 抓图 → 退出。
     std::wstring settingsSelftestPath;
+    std::wstring settingsClickSelftestPath;
 
     // 非空 = 无人值守的贴图自检：往剪贴板写颜色文本 → 贴图 → 抓图 → 退出。
     std::wstring pinSelftestPath;
@@ -344,6 +345,8 @@ Options ParseOptions(int argc, char** argv) {
             options.pinSelftestPath = Utf8ToWide(argv[++i]);
         } else if (argument == "--radial-selftest" && i + 1 < argc) {
             options.radialSelftestPath = Utf8ToWide(argv[++i]);
+        } else if (argument == "--settings-click-selftest" && i + 1 < argc) {
+            options.settingsClickSelftestPath = Utf8ToWide(argv[++i]);
         } else if (argument == "--settings-page" && i + 1 < argc) {
             options.settingsSelftestPage = std::atoi(argv[++i]);
         } else if (argument == "--window-picker-selftest" && i + 1 < argc) {
@@ -1447,6 +1450,55 @@ int Run(const Options& options) {
         running = false;
     }
 
+    bool settingsClickOk = true;
+    if (!options.settingsClickSelftestPath.empty()) {
+        settingsClickOk = false;
+        core::AppSettings captured;
+        bool saved = false;
+        auto testWindow = std::make_unique<halocap::app::SettingsWindow>();
+        const bool opened = testWindow->Create(
+            nullptr, settings, facts, ResolveOcrModelDirectory(),
+            [&](const core::AppSettings& updated) {
+                captured = updated;
+                saved = true;
+                return true;
+            });
+        if (opened) {
+            Sleep(200);
+            const auto click = [&](int x, int y) {
+                const LPARAM point = MAKELPARAM(x, y);
+                SendMessageW(testWindow->Handle(), WM_LBUTTONDOWN, MK_LBUTTON, point);
+                SendMessageW(testWindow->Handle(), WM_LBUTTONUP, 0, point);
+            };
+            click(734, 211);   // 通用页「开机自启」开关（组标签下方第一行）
+            const std::int64_t clickStart = QpcNowUs();
+            click(100, 135);   // 切到「快捷键」页
+            const double clickMs = static_cast<double>(QpcNowUs() - clickStart) / 1000.0;
+            Sleep(120);
+
+            halocap::platform::win32::DesktopImage desktop;
+            const bool proof =
+                halocap::platform::win32::GrabPrimaryDesktop(desktop) &&
+                halocap::platform::win32::SaveBgraPng(options.settingsClickSelftestPath,
+                                                      desktop.bgra.data(), desktop.width,
+                                                      desktop.height, desktop.width * 4);
+            click(730, 572);   // 保存
+            Sleep(120);
+
+            AddFlag(report, "APP_SETTINGS_CLICK_WINDOW", true);
+            AddFlag(report, "APP_SETTINGS_CLICK_PROOF", proof);
+            AddFlag(report, "APP_SETTINGS_CLICK_SAVED", saved);
+            AddFlag(report, "APP_SETTINGS_CLICK_TOGGLED", captured.autoStart != settings.autoStart);
+            AddInt(report, "APP_SETTINGS_CLICK_RENDER_MS",
+                   static_cast<long long>(std::lround(clickMs)));
+            settingsClickOk = proof && saved && captured.autoStart != settings.autoStart;
+            testWindow.reset();
+        }
+        log.Info(settingsClickOk ? "settings click selftest: ok"
+                                 : "settings click selftest: failed");
+        running = false;
+    }
+
     bool settingsSelftestOk = true;
     if (!options.settingsSelftestPath.empty()) {
         settingsSelftestOk = false;
@@ -1807,6 +1859,7 @@ int Run(const Options& options) {
     AddFlag(report, "APP_SCREENSHOT_SELFTEST", screenshotSelftestOk);
     AddFlag(report, "APP_OCR_SELFTEST", ocrSelftestOk);
     AddFlag(report, "APP_SETTINGS_SELFTEST", settingsSelftestOk);
+    AddFlag(report, "APP_SETTINGS_CLICK_SELFTEST", settingsClickOk);
     AddFlag(report, "APP_PIN_SELFTEST", pinSelftestOk);
     AddFlag(report, "APP_RADIAL_SELFTEST", radialSelftestOk);
     AddFlag(report, "APP_WINDOW_PICKER_SELFTEST", windowPickerSelftestOk);

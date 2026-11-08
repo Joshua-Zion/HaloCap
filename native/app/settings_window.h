@@ -4,12 +4,15 @@
 #include "settings.h"
 
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 #include <string_view>
 #include <windows.h>
 
 namespace halocap::app {
+
+struct SettingsBackgroundCache;
 
 // 1.x 设置窗：820×620 DIP，18 边距外投影、18 圆角；标题栏 50、侧栏 218、
 // 内容 #F7F7F9、白卡片 12 圆角；开关 44×24、分段控件、快捷键字段、底部保存/取消。
@@ -91,6 +94,8 @@ private:
     int captureIndex_ = -1;
     HHOOK keyHook_ = nullptr;
     std::vector<Hotspot> hotspots_;
+    std::unique_ptr<SettingsBackgroundCache> backgroundCache_;
+    void BuildBackgroundCache();
     bool dragging_ = false;
     POINT dragOrigin_{};
     RECT dragWindow_{};

@@ -4,9 +4,16 @@
 #include "tray_menu.h"
 
 #include <functional>
+#include <memory>
 #include <windows.h>
 
+namespace Gdiplus {
+class Graphics;
+}
+
 namespace halocap::app {
+
+struct RadialMenuFrameCache;
 
 // 1.x 的光圈：380×380 设计画布，白色径向盘 + 四个 90° 扇区 + 中心 104 圆盘，
 // 四个动作在半径 110 处，悬停时扇区着色、图标外移 4 DIP，中心标题变成动作名。
@@ -41,6 +48,7 @@ private:
     void Tick();
     void UpdateHover(POINT screenPoint);
     void Select(int index);
+    void StartHide(int pendingAction);
     void StartDrag(POINT screenPoint);
     void DragTo(POINT screenPoint);
 
@@ -62,7 +70,14 @@ private:
     POINT dragOffset_{};
     unsigned long long showStartMs_ = 0;
     bool closing_ = false;
+    unsigned long long closeStartMs_ = 0;
+    int pendingAction_ = -1;
     SelectHandler onSelect_;
+    std::unique_ptr<RadialMenuFrameCache> cache_;
+
+    void BuildCache();
+    void BuildFrame(int index);
+    void DrawDesign(Gdiplus::Graphics& graphics, int hoverIndex);
     HHOOK mouseHook_ = nullptr;
     HHOOK keyHook_ = nullptr;
 };

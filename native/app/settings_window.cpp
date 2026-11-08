@@ -89,14 +89,14 @@ bool EnsureGdiplus() {
 
 struct Fonts {
     Font title{ L"Microsoft YaHei UI", 21.0f, FontStyleBold, UnitPixel };
-    Font subtitle{ L"Microsoft YaHei UI", 11.5f, FontStyleRegular, UnitPixel };
+    Font subtitle{ L"Microsoft YaHei UI", 12.0f, FontStyleRegular, UnitPixel };
     Font group{ L"Microsoft YaHei UI", 11.0f, FontStyleBold, UnitPixel };
-    Font setting{ L"Microsoft YaHei UI", 12.5f, FontStyleRegular, UnitPixel };
-    Font settingBold{ L"Microsoft YaHei UI", 12.5f, FontStyleBold, UnitPixel };
-    Font desc{ L"Microsoft YaHei UI", 10.5f, FontStyleRegular, UnitPixel };
-    Font nav{ L"Microsoft YaHei UI", 12.5f, FontStyleRegular, UnitPixel };
-    Font navBold{ L"Microsoft YaHei UI", 12.5f, FontStyleBold, UnitPixel };
-    Font field{ L"Microsoft YaHei UI", 11.5f, FontStyleRegular, UnitPixel };
+    Font setting{ L"Microsoft YaHei UI", 13.0f, FontStyleRegular, UnitPixel };
+    Font settingBold{ L"Microsoft YaHei UI", 13.0f, FontStyleBold, UnitPixel };
+    Font desc{ L"Microsoft YaHei UI", 11.0f, FontStyleRegular, UnitPixel };
+    Font nav{ L"Microsoft YaHei UI", 13.0f, FontStyleRegular, UnitPixel };
+    Font navBold{ L"Microsoft YaHei UI", 13.0f, FontStyleBold, UnitPixel };
+    Font field{ L"Microsoft YaHei UI", 12.0f, FontStyleRegular, UnitPixel };
     Font glyph{ L"Segoe MDL2 Assets", 13.0f, FontStyleRegular, UnitPixel };
     Font button{ L"Microsoft YaHei UI", 12.0f, FontStyleRegular, UnitPixel };
     Font buttonBold{ L"Microsoft YaHei UI", 12.0f, FontStyleBold, UnitPixel };
@@ -352,6 +352,10 @@ void CopyTextToClipboard(const std::wstring& text) {
 }
 
 }  // namespace
+
+struct SettingsBackgroundCache {
+    std::unique_ptr<Gdiplus::Bitmap> image;
+};
 
 SettingsWindow::SettingsWindow() = default;
 
@@ -744,6 +748,101 @@ void SettingsWindow::Click(int id) {
     Render();
 }
 
+void SettingsWindow::BuildBackgroundCache() {
+    backgroundCache_ = std::make_unique<SettingsBackgroundCache>();
+    auto image = std::make_unique<Gdiplus::Bitmap>(widthPx_, heightPx_, PixelFormat32bppPARGB);
+    Gdiplus::Graphics g(image.get());
+    g.SetSmoothingMode(SmoothingModeAntiAlias);
+    g.SetTextRenderingHint(TextRenderingHintClearTypeGridFit);
+    g.SetPixelOffsetMode(PixelOffsetModeHalf);
+    g.Clear(Color(0, 0, 0, 0));
+    Matrix backgroundTransform(scale_, 0.0f, 0.0f, scale_, 0.0f, 0.0f);
+    g.SetTransform(&backgroundTransform);
+
+    const Color textPrimary(255, 0x1D, 0x1D, 0x1F);
+    const Color textTertiary(255, 0x8E, 0x8E, 0x93);
+    const Color accent(255, 0x00, 0x7A, 0xFF);
+    const Color sidebar(255, 0xED, 0xED, 0xF1);
+    const Color content(255, 0xF7, 0xF7, 0xF9);
+    const Color hairline(20, 0, 0, 0);
+    const RectF frame(kMargin, kMargin, kWindowW - 2 * kMargin, kWindowH - 2 * kMargin);
+    Fonts* fonts = GetFonts();
+
+    // 阴影按 1/3 分辨率烘焙再拉伸：14 层全窗填充会把单次重绘拖到 ~250 ms。
+    const float shadowScale = 1.0f / 3.0f;
+    const int shadowWidth = std::max(1, static_cast<int>(std::lround(widthPx_ * shadowScale)));
+    const int shadowHeight = std::max(1, static_cast<int>(std::lround(heightPx_ * shadowScale)));
+    {
+        Gdiplus::Bitmap shadow(shadowWidth, shadowHeight, PixelFormat32bppPARGB);
+        Gdiplus::Graphics sg(&shadow);
+        sg.SetSmoothingMode(SmoothingModeNone);
+        sg.SetPixelOffsetMode(PixelOffsetModeHalf);
+        sg.Clear(Color(0, 0, 0, 0));
+        Matrix shadowTransform(shadowScale * scale_, 0.0f, 0.0f, shadowScale * scale_, 0.0f, 0.0f);
+        sg.SetTransform(&shadowTransform);
+        for (int i = 0; i < 14; ++i) {
+            const float t = static_cast<float>(i) / 13.0f;
+            const float expand = 1.0f + i * 0.9f;
+            const int alpha = static_cast<int>(30.0f * (1.0f - t) * (1.0f - t));
+            FillRoundRect(sg,
+                          RectF(frame.X - expand, frame.Y - expand + 4.0f,
+                                frame.Width + expand * 2.0f, frame.Height + expand * 2.0f),
+                          kRadius + expand, Color(static_cast<BYTE>(alpha), 0, 0, 0));
+        }
+        g.SetInterpolationMode(InterpolationModeHighQualityBicubic);
+        g.DrawImage(&shadow, RectF(0.0f, 0.0f, kWindowW, kWindowH));
+    }
+
+    FillRoundRect(g, frame, kRadius, Color(255, 255, 255, 255));
+    FillRoundRect(g, frame, kRadius, content);
+    StrokeRoundRect(g, frame, kRadius, Color(38, 0, 0, 0));
+
+    GraphicsPath topBand;
+    topBand.AddArc(frame.X, frame.Y, kRadius * 2, kRadius * 2, 180.0f, 90.0f);
+    topBand.AddArc(frame.X + frame.Width - kRadius * 2, frame.Y, kRadius * 2, kRadius * 2, 270.0f,
+                   90.0f);
+    topBand.AddLine(frame.X + frame.Width, frame.Y + kTitleBar, frame.X, frame.Y + kTitleBar);
+    topBand.CloseFigure();
+    SolidBrush bandBrush(sidebar);
+    g.FillPath(&bandBrush, &topBand);
+
+    GraphicsPath sidebarPath;
+    sidebarPath.AddLine(frame.X, frame.Y + kTitleBar, frame.X + kSidebar, frame.Y + kTitleBar);
+    sidebarPath.AddLine(frame.X + kSidebar, frame.Y + kTitleBar, frame.X + kSidebar,
+                        frame.Y + frame.Height - kRadius);
+    sidebarPath.AddArc(frame.X + frame.Width - kRadius * 2, frame.Y + frame.Height - kRadius * 2,
+                       kRadius * 2, kRadius * 2, 90.0f, 90.0f);
+    sidebarPath.AddLine(frame.X + kRadius, frame.Y + frame.Height, frame.X,
+                        frame.Y + frame.Height - kRadius);
+    sidebarPath.AddArc(frame.X, frame.Y + frame.Height - kRadius * 2, kRadius * 2, kRadius * 2,
+                       180.0f, 90.0f);
+    sidebarPath.CloseFigure();
+    g.SetClip(RectF(frame.X, frame.Y, kSidebar, frame.Height));
+    g.FillPath(&bandBrush, &sidebarPath);
+    g.ResetClip();
+
+    Pen sidebarBorder(Color(15, 0, 0, 0), 1.0f);
+    g.DrawLine(&sidebarBorder, frame.X + kSidebar, frame.Y + kTitleBar, frame.X + kSidebar,
+               frame.Y + frame.Height);
+    Pen hairlinePen(hairline, 1.0f);
+    g.DrawLine(&hairlinePen, frame.X + kSidebar, frame.Y + kTitleBar, frame.X + frame.Width,
+               frame.Y + kTitleBar);
+
+    const float logoX = frame.X + 20.0f;
+    const float logoY = frame.Y + (kTitleBar - 18.0f) * 0.5f;
+    Pen logoOuter(Color(34, 0, 0, 0), 1.0f);
+    g.DrawEllipse(&logoOuter, logoX, logoY, 18.0f, 18.0f);
+    Pen logoInner(accent, 1.3f);
+    g.DrawEllipse(&logoInner, logoX + 3.0f, logoY + 3.0f, 12.0f, 12.0f);
+    SolidBrush gold(Color(255, 0xF5, 0xB9, 0x63));
+    g.FillEllipse(&gold, logoX + 7.5f, logoY + 7.5f, 3.0f, 3.0f);
+    DrawText(g, L"HaloCap", &fonts->settingBold, RectF(logoX + 27.0f, logoY, 70.0f, 18.0f),
+             textPrimary);
+    DrawText(g, L"光圈", &fonts->desc, RectF(logoX + 96.0f, logoY + 1.0f, 40.0f, 16.0f),
+             textTertiary);
+
+    backgroundCache_->image = std::move(image);
+}
 void SettingsWindow::Render() {
     if (bits_ == nullptr || window_ == nullptr) {
         return;
@@ -754,7 +853,8 @@ void SettingsWindow::Render() {
     Bitmap canvas(widthPx_, heightPx_, PixelFormat32bppPARGB);
     Graphics g(&canvas);
     g.SetSmoothingMode(SmoothingModeAntiAlias);
-    g.SetTextRenderingHint(TextRenderingHintAntiAlias);
+    g.SetTextRenderingHint(TextRenderingHintClearTypeGridFit);
+    g.SetPixelOffsetMode(PixelOffsetModeHalf);
     g.SetCompositingQuality(CompositingQualityHighQuality);
     g.Clear(Color(0, 0, 0, 0));
     Matrix transform(scale_, 0.0f, 0.0f, scale_, 0.0f, 0.0f);
@@ -772,91 +872,12 @@ void SettingsWindow::Render() {
 
     const RectF frame(kMargin, kMargin, kWindowW - 2 * kMargin, kWindowH - 2 * kMargin);
 
-    // 投影（32 blur / 8 depth / 0.28）。
-    for (int i = 0; i < 22; ++i) {
-        const float t = static_cast<float>(i) / 21.0f;
-        const float expand = 1.0f + i * 0.9f;
-        const int alpha = static_cast<int>(30.0f * (1.0f - t) * (1.0f - t));
-        FillRoundRect(g, RectF(frame.X - expand, frame.Y - expand + 4.0f,
-                               frame.Width + expand * 2.0f, frame.Height + expand * 2.0f),
-                      kRadius + expand, Color(static_cast<BYTE>(alpha), 0, 0, 0));
+    if (backgroundCache_ == nullptr) {
+        BuildBackgroundCache();
     }
-
-    FillRoundRect(g, frame, kRadius, Color(255, 255, 255, 255));
-    FillRoundRect(g, frame, kRadius, content);
-    StrokeRoundRect(g, frame, kRadius, Color(38, 0, 0, 0));
-
-    // 标题栏 50：左侧与侧栏同色，右上角关闭。
-    GraphicsPath topBand;
-    topBand.AddArc(frame.X, frame.Y, kRadius * 2, kRadius * 2, 180.0f, 90.0f);
-    topBand.AddArc(frame.X + frame.Width - kRadius * 2, frame.Y, kRadius * 2, kRadius * 2, 270.0f,
-                   90.0f);
-    topBand.AddLine(frame.X + frame.Width, frame.Y + kTitleBar, frame.X,
-                    frame.Y + kTitleBar);
-    topBand.CloseFigure();
-    SolidBrush bandBrush(sidebar);
-    g.FillPath(&bandBrush, &topBand);
-
-    // 侧栏
-    GraphicsPath sidebarPath;
-    sidebarPath.AddLine(frame.X, frame.Y + kTitleBar, frame.X + kSidebar,
-                        frame.Y + kTitleBar);
-    sidebarPath.AddLine(frame.X + kSidebar, frame.Y + kTitleBar, frame.X + kSidebar,
-                        frame.Y + frame.Height - kRadius);
-    sidebarPath.AddArc(frame.X + frame.Width - kRadius * 2, frame.Y + frame.Height - kRadius * 2,
-                       kRadius * 2, kRadius * 2, 90.0f, 90.0f);
-    sidebarPath.AddLine(frame.X + kRadius, frame.Y + frame.Height, frame.X,
-                        frame.Y + frame.Height - kRadius);
-    sidebarPath.AddArc(frame.X, frame.Y + frame.Height - kRadius * 2, kRadius * 2,
-                       kRadius * 2, 180.0f, 90.0f);
-    sidebarPath.CloseFigure();
-    // 侧栏只画到内容区起点，避免盖住右侧内容。
-    g.SetClip(RectF(frame.X, frame.Y, kSidebar, frame.Height));
-    g.FillPath(&bandBrush, &sidebarPath);
-    g.ResetClip();
-
-    Pen sidebarBorder(Color(15, 0, 0, 0), 1.0f);
-    g.DrawLine(&sidebarBorder, frame.X + kSidebar, frame.Y + kTitleBar, frame.X + kSidebar,
-               frame.Y + frame.Height);
-    Pen hairlinePen(hairline, 1.0f);
-    g.DrawLine(&hairlinePen, frame.X + kSidebar, frame.Y + kTitleBar, frame.X + frame.Width,
-               frame.Y + kTitleBar);
-
-    // 左上角 logo：18 圆环 + 内环 + 金点；HaloCap + 光圈。
-    const float logoX = frame.X + 20.0f;
-    const float logoY = frame.Y + (kTitleBar - 18.0f) * 0.5f;
-    Pen logoOuter(Color(34, 0, 0, 0), 1.0f);
-    g.DrawEllipse(&logoOuter, logoX, logoY, 18.0f, 18.0f);
-    Pen logoInner(accent, 1.3f);
-    g.DrawEllipse(&logoInner, logoX + 3.0f, logoY + 3.0f, 12.0f, 12.0f);
-    SolidBrush gold(Color(255, 0xF5, 0xB9, 0x63));
-    g.FillEllipse(&gold, logoX + 7.5f, logoY + 7.5f, 3.0f, 3.0f);
-    DrawText(g, L"HaloCap", &fonts->settingBold,
-             RectF(logoX + 27.0f, logoY, 70.0f, 18.0f), textPrimary);
-    DrawText(g, L"光圈", &fonts->desc, RectF(logoX + 96.0f, logoY + 1.0f, 40.0f, 16.0f),
-             textTertiary);
-
-    // 关闭按钮。
-    const RECT closeRect{ static_cast<LONG>((frame.X + frame.Width - 14.0f - 28.0f) ),
-                          static_cast<LONG>((frame.Y + (kTitleBar - 28.0f) * 0.5f)),
-                          static_cast<LONG>((frame.X + frame.Width - 14.0f)),
-                          static_cast<LONG>((frame.Y + (kTitleBar + 28.0f) * 0.5f)) };
-    AddHotspot(closeRect, kIdClose);
-    if (hoverId_ == kIdClose) {
-        FillRoundRect(g, RectF(static_cast<float>(closeRect.left),
-                               static_cast<float>(closeRect.top), 28.0f, 28.0f),
-                      7.0f, Color(20, 0, 0, 0));
+    if (backgroundCache_ != nullptr && backgroundCache_->image) {
+        g.DrawImage(backgroundCache_->image.get(), RectF(0.0f, 0.0f, kWindowW, kWindowH));
     }
-    {
-        Pen closePen(textSecondary, 1.4f);
-        closePen.SetStartCap(LineCapRound);
-        closePen.SetEndCap(LineCapRound);
-        const float cx = (closeRect.left + closeRect.right) * 0.5f;
-        const float cy = (closeRect.top + closeRect.bottom) * 0.5f;
-        g.DrawLine(&closePen, cx - 5.5f, cy - 5.5f, cx + 5.5f, cy + 5.5f);
-        g.DrawLine(&closePen, cx + 5.5f, cy - 5.5f, cx - 5.5f, cy + 5.5f);
-    }
-
     // 侧栏导航。
     const wchar_t* navTitles[6] = { L"通用", L"快捷键", L"截图与贴图", L"文字识别", L"录屏",
                                     L"关于" };
@@ -1392,7 +1413,11 @@ LRESULT SettingsWindow::Handle(HWND window, UINT message, WPARAM wParam, LPARAM 
         if (id != hoverId_) {
             hoverId_ = id;
             SetCursor(LoadCursorW(nullptr, id != kIdNone ? IDC_HAND : IDC_ARROW));
-            Render();
+            // 只有导航/关闭有 hover 视觉；悬停其它控件不重绘整窗，避免鼠标划过时卡顿。
+            if (id == kIdClose || (id >= kIdNavBase && id < kIdNavBase + 6) ||
+                hoverId_ == kIdClose || (hoverId_ >= kIdNavBase && hoverId_ < kIdNavBase + 6)) {
+                Render();
+            }
         }
         return 0;
     }

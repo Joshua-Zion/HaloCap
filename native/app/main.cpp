@@ -34,6 +34,7 @@
 #include "ocr_worker.h"
 #include "ort_ocr_engine.h"
 #include "pin_window.h"
+#include "radial_menu.h"
 #include "screenshot_overlay.h"
 #include "settings_window.h"
 #include "update.h"
@@ -114,6 +115,9 @@ struct Options {
 
     // 非空 = 无人值守的贴图自检：往剪贴板写颜色文本 → 贴图 → 抓图 → 退出。
     std::wstring pinSelftestPath;
+
+    // 非空 = 无人值守的圆盘自检：打开圆盘 → 抓图 → 退出。
+    std::wstring radialSelftestPath;
 
     // 交付：--version 打印版本；--check-update 读一份清单并比较版本。
     bool version = false;
@@ -316,6 +320,8 @@ Options ParseOptions(int argc, char** argv) {
             options.settingsSelftestPath = Utf8ToWide(argv[++i]);
         } else if (argument == "--pin-selftest" && i + 1 < argc) {
             options.pinSelftestPath = Utf8ToWide(argv[++i]);
+        } else if (argument == "--radial-selftest" && i + 1 < argc) {
+            options.radialSelftestPath = Utf8ToWide(argv[++i]);
         } else if (argument == "--version") {
             options.version = true;
         } else if (argument == "--check-update" && i + 1 < argc) {
@@ -342,6 +348,7 @@ void PrintUsage() {
         "  --ocr-selftest PATH         open the OCR overlay, recognise the selection, exit\n"
         "  --settings-selftest PATH    open the six settings pages, capture, exit\n"
         "  --pin-selftest PATH         pin the clipboard content, capture, exit\n"
+        "  --radial-selftest PATH      open the radial menu, capture, exit\n"
         "  --version                   print the delivery version and exit\n"
         "  --check-update PATH         compare this build with an update manifest\n"
         "  --settings-selftest PATH    open the settings pages, capture, exit\n"
@@ -858,6 +865,7 @@ int Run(const Options& options) {
     // OCR：推理放在一次性的 worker 子进程里，主进程不加载 ORT。
     std::unique_ptr<halocap::app::OcrResultWindow> ocrWindow;
     std::unique_ptr<halocap::app::SettingsWindow> settingsWindow;
+    std::unique_ptr<halocap::app::RadialMenu> radialMenu;
     double ocrRecognizeMs = 0.0;
     std::string ocrWorkerEngine = "pp";
 
@@ -1129,6 +1137,34 @@ int Run(const Options& options) {
                  " (behaviour lands in S4)");
     };
 
+    const auto openRadial = [&]() {
+        if (radialMenu != nullptr && radialMenu->Active()) {
+            return;
+        }
+        radialMenu = std::make_unique<halocap::app::RadialMenu>();
+        const bool opened = radialMenu->Open([&](core::AppAction action) {
+            switch (action) {
+            case core::AppAction::Screenshot:
+                openScreenshot();
+                break;
+            case core::AppAction::Ocr:
+                openOcr();
+                break;
+            case core::AppAction::Record:
+                toggleRecording();
+                break;
+            case core::AppAction::Pin:
+                pinClipboard();
+                break;
+            default:
+                break;
+            }
+        });
+        if (!opened) {
+            radialMenu.reset();
+            log.Error("radial: open failed");
+        }
+    };
     bool screenshotSelftestOk = true;
     if (!options.screenshotSelftestPath.empty()) {
         const std::int64_t openStartUs = QpcNowUs();
@@ -1329,6 +1365,30 @@ int Run(const Options& options) {
         running = false;
     }
 
+    bool radialSelftestOk = true;
+    if (!options.radialSelftestPath.empty()) {
+        radialSelftestOk = false;
+        openRadial();
+        Sleep(400);
+
+        const bool opened = radialMenu != nullptr && radialMenu->Active();
+        halocap::platform::win32::DesktopImage desktop;
+        const bool proof =
+            halocap::platform::win32::GrabPrimaryDesktop(desktop) &&
+            halocap::platform::win32::SaveBgraPng(options.radialSelftestPath, desktop.bgra.data(),
+                                                  desktop.width, desktop.height,
+                                                  desktop.width * 4);
+        if (radialMenu != nullptr) {
+            radialMenu->Close();
+        }
+
+        AddFlag(report, "APP_RADIAL_WINDOW", opened);
+        AddFlag(report, "APP_RADIAL_PROOF", proof);
+        radialSelftestOk = opened && proof;
+        log.Info(radialSelftestOk ? "radial selftest: ok" : "radial selftest: failed");
+        running = false;
+    }
+
     while (running) {
         MSG message{};
         while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
@@ -1355,6 +1415,10 @@ int Run(const Options& options) {
                 pinClipboard();
                 continue;
             }
+            if (token == kTokenRadial) {
+                openRadial();
+                continue;
+            }
             log.Info("action: hotkey token=" + std::to_string(token));
         }
 
@@ -1368,7 +1432,7 @@ int Run(const Options& options) {
         }
         case Win32Tray::Click::Left:
             ++actions;
-            log.Info("action: left click (radial menu lands in S3)");
+            openRadial();
             break;
         case Win32Tray::Click::None:
             break;
@@ -1385,6 +1449,9 @@ int Run(const Options& options) {
         }
         if (settingsWindow != nullptr && !settingsWindow->Valid()) {
             settingsWindow.reset();
+        }
+        if (radialMenu != nullptr && !radialMenu->Active()) {
+            radialMenu.reset();
         }
         // 截图覆盖层：会话自己的窗口消息由上面的 PeekMessage 派发，这里只推进渲染。
         if (screenshotOverlay != nullptr) {
@@ -1511,7 +1578,9 @@ int Run(const Options& options) {
     AddFlag(report, "APP_OCR_SELFTEST", ocrSelftestOk);
     AddFlag(report, "APP_SETTINGS_SELFTEST", settingsSelftestOk);
     AddFlag(report, "APP_PIN_SELFTEST", pinSelftestOk);
-    ok = ok && screenshotSelftestOk && ocrSelftestOk && settingsSelftestOk && pinSelftestOk;
+    AddFlag(report, "APP_RADIAL_SELFTEST", radialSelftestOk);
+    ok = ok && screenshotSelftestOk && ocrSelftestOk && settingsSelftestOk && pinSelftestOk &&
+         radialSelftestOk;
 
     std::printf("%s", report.c_str());
     if (!options.reportPath.empty()) {

@@ -510,12 +510,53 @@ void RadialMenu::Render() {
     graphics.Clear(Color(0, 0, 0, 0));
 
     const int frameIndex = hovered_ >= 0 ? hovered_ + 1 : 0;
-    BuildFrame(frameIndex);
-    Bitmap* frame = cache_->frames[frameIndex].get();
+    BuildFrame(0);
+    Bitmap* neutral = cache_->frames[0].get();
     const float drawSize = cache_->size * scale;
     const float left = (widthPx_ - drawSize) * 0.5f;
     const float top = (heightPx_ - drawSize) * 0.5f;
-    graphics.DrawImage(frame, RectF(left, top, drawSize, drawSize));
+    const RectF frameDestination(left, top, drawSize, drawSize);
+    graphics.DrawImage(neutral, frameDestination);
+
+    if (hovered_ >= 0) {
+        BuildFrame(hovered_ + 1);
+        Bitmap* hover = cache_->frames[hovered_ + 1].get();
+        const float alpha = std::clamp(hoverAlpha_[hovered_], 0.0f, 1.0f);
+        if (alpha > 0.01f) {
+            const float k = drawSize / kDesign;
+            const float centerX = left + drawSize * 0.5f;
+            const float centerY = top + drawSize * 0.5f;
+            const float centerRadius = 52.0f * k;
+            GraphicsPath centerPath;
+            centerPath.AddEllipse(centerX - centerRadius, centerY - centerRadius,
+                                  centerRadius * 2.0f, centerRadius * 2.0f);
+            Gdiplus::Region centerRegion(&centerPath);
+            Gdiplus::Region outerRegion(Rect(static_cast<INT>(left), static_cast<INT>(top),
+                                             static_cast<INT>(drawSize),
+                                             static_cast<INT>(drawSize)));
+            outerRegion.Exclude(&centerRegion);
+
+            // 扇区/图标：130 ms 淡入，中心标题不参与淡入（与 1.x 一致，避免文字重影）。
+            graphics.SetClip(&outerRegion);
+            if (alpha < 0.99f) {
+                ColorMatrix matrix = {};
+                matrix.m[0][0] = 1.0f;
+                matrix.m[1][1] = 1.0f;
+                matrix.m[2][2] = 1.0f;
+                matrix.m[3][3] = alpha;
+                ImageAttributes attributes;
+                attributes.SetColorMatrix(&matrix);
+                graphics.DrawImage(hover, frameDestination, 0.0f, 0.0f,
+                                   static_cast<float>(cache_->size),
+                                   static_cast<float>(cache_->size), UnitPixel, &attributes);
+            } else {
+                graphics.DrawImage(hover, frameDestination);
+            }
+            graphics.SetClip(&centerRegion);
+            graphics.DrawImage(hover, frameDestination);
+            graphics.ResetClip();
+        }
+    }
 
     const Rect lockRect(0, 0, widthPx_, heightPx_);
     BitmapData data{};
@@ -558,9 +599,23 @@ void RadialMenu::Tick() {
         }
         return;
     }
+
+    bool settled = true;
+    for (int i = 0; i < 4; ++i) {
+        const float target = (i == hovered_) ? 1.0f : 0.0f;
+        const float step = 16.0f / 130.0f;
+        if (hoverAlpha_[i] < target) {
+            hoverAlpha_[i] = std::min(target, hoverAlpha_[i] + step);
+            settled = false;
+        } else if (hoverAlpha_[i] > target) {
+            hoverAlpha_[i] = std::max(target, hoverAlpha_[i] - step);
+            settled = false;
+        }
+    }
+
     const float show = std::clamp((now - showStartMs_) / 160.0f, 0.0f, 1.0f);
     Render();
-    if (show >= 1.0f) {
+    if (show >= 1.0f && settled) {
         KillTimer(static_cast<HWND>(window_), 1);
     }
 }
@@ -578,7 +633,7 @@ void RadialMenu::UpdateHover(POINT screenPoint) {
     if (distance < deadPx || distance > diskPx) {
         if (hovered_ != -1) {
             hovered_ = -1;
-            Render();
+            SetTimer(static_cast<HWND>(window_), 1, 16, nullptr);
         }
         return;
     }
@@ -590,7 +645,7 @@ void RadialMenu::UpdateHover(POINT screenPoint) {
     const int index = static_cast<int>(std::floor((angle + 45.0f) / 90.0f)) % 4;
     if (index != hovered_) {
         hovered_ = index;
-        Render();
+        SetTimer(static_cast<HWND>(window_), 1, 16, nullptr);
     }
 }
 
@@ -625,7 +680,7 @@ void RadialMenu::StartDrag(POINT screenPoint) {
     dragging_ = true;
     dragOffset_ = POINT{ centerScreen_.x - screenPoint.x, centerScreen_.y - screenPoint.y };
     hovered_ = -1;
-    Render();
+    SetTimer(static_cast<HWND>(window_), 1, 16, nullptr);
 }
 
 void RadialMenu::DragTo(POINT screenPoint) {

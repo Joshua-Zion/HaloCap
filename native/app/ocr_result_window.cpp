@@ -98,11 +98,18 @@ bool OcrResultWindow::Create(void* owner, const std::uint8_t* bgra, int width, i
     copyButton_ = CreateWindowExW(0, L"BUTTON", L"复制全部",
                                   WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 10, 10, window_,
                                   reinterpret_cast<HMENU>(4), GetModuleHandleW(nullptr), nullptr);
+    previousButton_ = CreateWindowExW(0, L"BUTTON", L"上一处",
+                                      WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 10, 10,
+                                      window_, reinterpret_cast<HMENU>(5),
+                                      GetModuleHandleW(nullptr), nullptr);
+    nextButton_ = CreateWindowExW(0, L"BUTTON", L"下一处",
+                                  WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 0, 0, 10, 10, window_,
+                                  reinterpret_cast<HMENU>(6), GetModuleHandleW(nullptr), nullptr);
     hint_ = CreateWindowExW(0, L"STATIC", L"左侧为识别区域，框出的每一段即为右侧的一行",
                             WS_CHILD | WS_VISIBLE | SS_LEFT, 0, 0, 10, 10, window_, nullptr,
                             GetModuleHandleW(nullptr), nullptr);
 
-    for (HWND control : { text_, search_, findButton_, copyButton_, hint_ }) {
+    for (HWND control : { text_, search_, findButton_, copyButton_, previousButton_, nextButton_, hint_ }) {
         SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
     }
 
@@ -208,6 +215,10 @@ LRESULT OcrResultWindow::Handle(HWND window, UINT message, WPARAM wParam, LPARAM
             FindNext();
         } else if (LOWORD(wParam) == 4) {
             CopyAll();
+        } else if (LOWORD(wParam) == 5) {
+            StepMatch(-1);
+        } else if (LOWORD(wParam) == 6) {
+            StepMatch(1);
         }
         return 0;
 
@@ -254,9 +265,11 @@ void OcrResultWindow::Layout() {
     const int top = kPreviewMargin;
 
     SetWindowPos(hint_, nullptr, right, top, rightWidth, 24, SWP_NOZORDER);
-    SetWindowPos(copyButton_, nullptr, right, top + 30, 96, 28, SWP_NOZORDER);
-    SetWindowPos(findButton_, nullptr, right + 100, top + 30, 64, 28, SWP_NOZORDER);
-    SetWindowPos(search_, nullptr, right + 100 + 68, top + 32, rightWidth - 168, 24,
+    SetWindowPos(copyButton_, nullptr, right, top + 30, 92, 28, SWP_NOZORDER);
+    SetWindowPos(findButton_, nullptr, right + 98, top + 30, 60, 28, SWP_NOZORDER);
+    SetWindowPos(previousButton_, nullptr, right + 162, top + 30, 64, 28, SWP_NOZORDER);
+    SetWindowPos(nextButton_, nullptr, right + 230, top + 30, 64, 28, SWP_NOZORDER);
+    SetWindowPos(search_, nullptr, right + 300, top + 32, std::max(80, rightWidth - 300), 24,
                  SWP_NOZORDER);
     SetWindowPos(text_, nullptr, right, top + 68, rightWidth, height - top - 68 - kPreviewMargin,
                  SWP_NOZORDER);
@@ -320,6 +333,28 @@ void OcrResultWindow::Paint() {
     SelectObject(dc, oldPen);
     DeleteObject(pen);
 
+    // 搜索命中：全部命中画绿色，当前命中画强调蓝。
+    if (!matches_.empty()) {
+        HPEN matchPen = CreatePen(PS_SOLID, 2, RGB(46, 204, 113));
+        HPEN accentPen = CreatePen(PS_SOLID, 2, RGB(0, 122, 255));
+        for (std::size_t i = 0; i < matches_.size() && i < result_.lines.size(); ++i) {
+            const std::size_t lineIndex = matches_[i];
+            if (lineIndex >= result_.lines.size()) {
+                continue;
+            }
+            const core::ocr::OcrLine& line = result_.lines[lineIndex];
+            HGDIOBJ old = SelectObject(dc, i == matchIndex_ ? accentPen : matchPen);
+            const int left = offsetX + static_cast<int>(line.box.left * scale);
+            const int top2 = offsetY + static_cast<int>(line.box.top * scale);
+            const int right = offsetX + static_cast<int>(line.box.right * scale);
+            const int bottom = offsetY + static_cast<int>(line.box.bottom * scale);
+            Rectangle(dc, left, top2, right, bottom);
+            SelectObject(dc, old);
+        }
+        DeleteObject(matchPen);
+        DeleteObject(accentPen);
+    }
+
     EndPaint(window_, &paint);
 }
 
@@ -351,6 +386,39 @@ void OcrResultWindow::CopyAll() {
     CloseClipboard();
 }
 
+void OcrResultWindow::SelectMatch(std::size_t index) {
+    if (matches_.empty() || index >= matches_.size() || text_ == nullptr) {
+        return;
+    }
+    const std::size_t lineIndex = matches_[index];
+    // UTF-8 → UTF-16：逐行累加换算，行间补一个换行。
+    std::size_t charOffset = 0;
+    for (std::size_t i = 0; i < lineIndex && i < result_.lines.size(); ++i) {
+        const std::string& text = result_.lines[i].text;
+        charOffset += static_cast<std::size_t>(MultiByteToWideChar(
+                          CP_UTF8, 0, text.c_str(), static_cast<int>(text.size()), nullptr, 0)) +
+                      1;
+    }
+    const std::string& lineText = result_.lines[lineIndex].text;
+    const std::size_t charLength = static_cast<std::size_t>(MultiByteToWideChar(
+        CP_UTF8, 0, lineText.c_str(), static_cast<int>(lineText.size()), nullptr, 0));
+    SendMessageW(text_, EM_SETSEL, charOffset, charOffset + charLength);
+    SendMessageW(text_, EM_SCROLLCARET, 0, 0);
+    InvalidateRect(window_, nullptr, FALSE);
+}
+
+void OcrResultWindow::StepMatch(int direction) {
+    if (matches_.empty()) {
+        return;
+    }
+    if (direction < 0) {
+        matchIndex_ = matchIndex_ == 0 ? matches_.size() - 1 : matchIndex_ - 1;
+    } else {
+        matchIndex_ = (matchIndex_ + 1) % matches_.size();
+    }
+    SelectMatch(matchIndex_);
+}
+
 void OcrResultWindow::FindNext() {
     if (search_ == nullptr || text_ == nullptr) {
         return;
@@ -358,24 +426,31 @@ void OcrResultWindow::FindNext() {
 
     wchar_t buffer[256] = {};
     GetWindowTextW(search_, buffer, 256);
-    const std::wstring query = Lower(buffer);
-    if (query.empty() || wideText_.empty()) {
+    const std::wstring query = buffer;
+    if (query.empty() || result_.lines.empty()) {
+        matches_.clear();
         return;
     }
 
-    const std::wstring haystack = Lower(wideText_);
-    std::size_t position = haystack.find(query, searchStart_);
-    if (position == std::wstring::npos) {
-        position = haystack.find(query, 0);
-    }
-    if (position == std::wstring::npos) {
+    const int utf8Length =
+        WideCharToMultiByte(CP_UTF8, 0, query.c_str(), static_cast<int>(query.size()), nullptr, 0,
+                            nullptr, nullptr);
+    std::string queryUtf8(static_cast<std::size_t>(utf8Length), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, query.c_str(), static_cast<int>(query.size()),
+                        queryUtf8.data(), utf8Length, nullptr, nullptr);
+
+    matches_ = core::ocr::FindMatchingLines(result_, queryUtf8);
+    if (matches_.empty()) {
+        matchIndex_ = 0;
+        SetFocus(text_);
         return;
     }
-
-    searchStart_ = position + query.size();
-    SendMessageW(text_, EM_SETSEL, position, position + query.size());
-    SendMessageW(text_, EM_SCROLLCARET, 0, 0);
-    SetFocus(text_);
+    if (query != lastQuery_) {
+        lastQuery_ = query;
+        matchIndex_ = 0;
+    } else {
+        matchIndex_ = (matchIndex_ + 1) % matches_.size();
+    }
+    SelectMatch(matchIndex_);
 }
-
 }

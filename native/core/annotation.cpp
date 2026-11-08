@@ -472,6 +472,37 @@ void AnnotationDocument::Cancel() {
     drawing_ = false;
 }
 
+bool AnnotationDocument::MoveAnnotation(std::size_t index, Point delta) {
+    if (index >= items_.size()) {
+        return false;
+    }
+    Annotation& annotation = items_[index];
+    for (Point& point : annotation.points) {
+        point.x += delta.x;
+        point.y += delta.y;
+    }
+    annotation.textBounds.left += delta.x;
+    annotation.textBounds.right += delta.x;
+    annotation.textBounds.top += delta.y;
+    annotation.textBounds.bottom += delta.y;
+    return true;
+}
+
+bool AnnotationDocument::RemoveAnnotation(std::size_t index) {
+    if (index >= items_.size()) {
+        return false;
+    }
+    items_.erase(items_.begin() + static_cast<std::ptrdiff_t>(index));
+    Snapshot();
+    return true;
+}
+
+void AnnotationDocument::CommitAnnotationChange() {
+    if (!items_.empty()) {
+        Snapshot();
+    }
+}
+
 int AnnotationDocument::EraseAt(Point point, float radius) {
     const int removed = core::EraseAt(items_, point, radius);
     if (removed > 0) {

@@ -36,6 +36,8 @@ private:
     void Paint();
     void CopyAll();
     void FindNext();
+    void StepMatch(int direction);
+    void SelectMatch(std::size_t index);
 
     HWND window_ = nullptr;
     HWND text_ = nullptr;
@@ -43,6 +45,8 @@ private:
     HWND findButton_ = nullptr;
     HWND copyButton_ = nullptr;
     HWND hint_ = nullptr;
+    HWND previousButton_ = nullptr;
+    HWND nextButton_ = nullptr;
     HFONT font_ = nullptr;
     HBRUSH background_ = nullptr;
     HBRUSH cardBrush_ = nullptr;
@@ -56,6 +60,9 @@ private:
     core::ocr::OcrResult result_;
     std::wstring wideText_;
     std::size_t searchStart_ = 0;
+    std::vector<std::size_t> matches_;
+    std::size_t matchIndex_ = 0;
+    std::wstring lastQuery_;
 
     RECT preview_{};
 };

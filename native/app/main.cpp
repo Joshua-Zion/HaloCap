@@ -1191,7 +1191,6 @@ int Run(const Options& options) {
             const bool saved = screenshotOverlay->SaveSelection(&savedPath);
             const bool pinned = screenshotOverlay->PinSelection();
             screenshotOverlay->Close();
-
             // 贴图证明图：覆盖层关掉之后再抓，窗口与光晕才是可见的。
             Sleep(150);
             const bool pinProof =

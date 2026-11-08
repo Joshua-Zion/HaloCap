@@ -89,16 +89,18 @@ private:
 
     enum class Action : std::int32_t {
         None = 0,
-        ToolPen, ToolRectangle, ToolEllipse, ToolArrow, ToolText, ToolHighlighter, ToolMosaic,
-        ToolStep, ToolEraser,
+        ToolSelect, ToolPen, ToolRectangle, ToolEllipse, ToolArrow, ToolText, ToolHighlighter,
+        ToolMosaic, ToolStep, ToolEraser,
         Color,
         Undo, Redo, Copy, Save, Pin, CloseOverlay,
+        FillOn, FillOff, ThicknessDown, ThicknessUp, TextSizeDown, TextSizeUp, Bold, Italic,
+        MosaicDown, MosaicUp, ArrowEnd, ArrowBoth, ArrowNone,
     };
 
     enum class ToolbarIcon : std::int32_t {
         None = 0,
         Pen, Rectangle, Ellipse, Arrow, Text, Highlighter, Mosaic, Step, Eraser,
-        Undo, Redo, Copy, Save, Pin, Close,
+        Undo, Redo, Copy, Save, Pin, Close, Select,
         Separator,
     };
 
@@ -124,7 +126,12 @@ private:
     void OnLeftButtonUp(POINT point);
     void SetTool(core::AnnotationTool tool);
     void HandleToolbar(const ToolbarButton& button);
+    void HandleOption(Action action);
     void LayoutToolbar();
+    void LayoutOptionBar();
+    void RenderOptionBar(core::FramePlan& plan);
+    void RenderMagnifier(core::FramePlan& plan);
+    void RenderSizeBadge(core::FramePlan& plan);
     void Render();
     void RenderToolbar(core::FramePlan& plan);
     void RenderSelection(core::FramePlan& plan);
@@ -177,6 +184,22 @@ private:
     // 工具栏
     std::vector<ToolbarButton> toolbar_;
     RECT toolbarBounds_{};
+
+    struct OptionButton {
+        RECT rect{};
+        Action action = Action::None;
+        bool active = false;
+        std::string text;
+    };
+    std::vector<OptionButton> optionButtons_;
+    RECT optionBounds_{};
+
+    bool selectMode_ = false;
+    int selectedAnnotation_ = -1;
+    bool movingAnnotation_ = false;
+    POINT lastMouse_{};
+    bool mouseInside_ = false;
+    int hoveredToolbar_ = -1;
 
     // 文字输入弹窗
     HWND editorWindow_ = nullptr;

@@ -49,6 +49,9 @@ constexpr UINT kMsgCopy = WM_APP + 4;
 constexpr UINT kMsgSave = WM_APP + 5;
 constexpr UINT kMsgTool = WM_APP + 6;
 constexpr UINT kMsgFullScreen = WM_APP + 7;
+constexpr UINT kMsgDelete = WM_APP + 8;
+constexpr UINT kMsgSelect = WM_APP + 9;
+constexpr UINT kMsgFill = WM_APP + 10;
 
 constexpr int kToolbarToolWidth = 34;
 constexpr int kToolbarColorWidth = 22;
@@ -295,6 +298,21 @@ LRESULT ScreenshotOverlay::HandleMessage(HWND window, UINT message, WPARAM wPara
         SetCursor(LoadCursorW(nullptr, IDC_CROSS));
         return TRUE;
 
+    case WM_MOUSEWHEEL: {
+        const int delta = GET_WHEEL_DELTA_WPARAM(wParam);
+        if ((GetKeyState(VK_CONTROL) & 0x8000) != 0) {
+            if (tool_ == AnnotationTool::Pen) {
+                style_.thickness =
+                    std::clamp(style_.thickness + (delta > 0 ? 1.0f : -1.0f), 1.0f, 24.0f);
+            } else if (tool_ == AnnotationTool::Highlighter) {
+                style_.thickness =
+                    std::clamp(style_.thickness + (delta > 0 ? 2.0f : -2.0f), 6.0f, 40.0f);
+            }
+            dirty_ = true;
+        }
+        return 0;
+    }
+
     case WM_MOUSEMOVE: {
         POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
         OnMouseMove(ToScreen(point, windowX_, windowY_));
@@ -319,7 +337,33 @@ LRESULT ScreenshotOverlay::HandleMessage(HWND window, UINT message, WPARAM wPara
     }
 
     case kMsgEscape:
-        Close();
+        if (selectedAnnotation_ >= 0) {
+            selectedAnnotation_ = -1;
+            dirty_ = true;
+        } else {
+            Close();
+        }
+        return 0;
+
+    case kMsgDelete:
+        if (selectedAnnotation_ >= 0 &&
+            document_.RemoveAnnotation(static_cast<std::size_t>(selectedAnnotation_))) {
+            selectedAnnotation_ = -1;
+            dirty_ = true;
+        }
+        return 0;
+
+    case kMsgSelect:
+        selectMode_ = true;
+        selectedAnnotation_ = -1;
+        dirty_ = true;
+        return 0;
+
+    case kMsgFill:
+        if (tool_ == AnnotationTool::Rectangle || tool_ == AnnotationTool::Ellipse) {
+            style_.filled = !style_.filled;
+            dirty_ = true;
+        }
         return 0;
 
     case kMsgUndo:
@@ -351,6 +395,8 @@ LRESULT ScreenshotOverlay::HandleMessage(HWND window, UINT message, WPARAM wPara
 
     case kMsgTool:
         if (!selection_.Bounds().IsEmpty() && wParam < std::size(kTools)) {
+            selectMode_ = false;
+            selectedAnnotation_ = -1;
             SetTool(kTools[wParam]);
         }
         return 0;
@@ -371,6 +417,47 @@ LRESULT ScreenshotOverlay::HandleMessage(HWND window, UINT message, WPARAM wPara
 }
 
 void ScreenshotOverlay::OnMouseMove(POINT point) {
+    lastMouse_ = point;
+    mouseInside_ = true;
+
+    int hovered = -1;
+    for (std::size_t i = 0; i < toolbar_.size(); ++i) {
+        const RECT& rect = toolbar_[i].rect;
+        if (point.x >= rect.left && point.x < rect.right && point.y >= rect.top &&
+            point.y < rect.bottom) {
+            hovered = static_cast<int>(i);
+            break;
+        }
+    }
+    if (hovered != hoveredToolbar_) {
+        hoveredToolbar_ = hovered;
+        dirty_ = true;
+    }
+
+    if (movingAnnotation_) {
+        if (selectedAnnotation_ >= 0) {
+            const float dx = static_cast<float>(point.x - moveOrigin_.x);
+            const float dy = static_cast<float>(point.y - moveOrigin_.y);
+            if (dx != 0.0f || dy != 0.0f) {
+                document_.MoveAnnotation(static_cast<std::size_t>(selectedAnnotation_),
+                                         core::Point{ dx, dy });
+                moveOrigin_ = point;
+                dirty_ = true;
+            }
+        }
+        return;
+    }
+    if (movingSelection_) {
+        const float dx = static_cast<float>(point.x - lastPoint_.x);
+        const float dy = static_cast<float>(point.y - lastPoint_.y);
+        if (dx != 0.0f || dy != 0.0f) {
+            selection_.MoveBy(core::Point{ dx, dy });
+            lastPoint_ = point;
+            dirty_ = true;
+        }
+        return;
+    }
+
     if (selecting_) {
         const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
         selection_.Update(Point{ static_cast<float>(point.x), static_cast<float>(point.y) }, shift);
@@ -408,6 +495,20 @@ void ScreenshotOverlay::OnMouseMove(POINT point) {
 }
 
 void ScreenshotOverlay::OnLeftButtonDown(POINT point) {
+    // 选项栏在当前工具下展开时优先命中。
+    if (optionBounds_.right > optionBounds_.left && point.x >= optionBounds_.left &&
+        point.x < optionBounds_.right && point.y >= optionBounds_.top &&
+        point.y < optionBounds_.bottom) {
+        for (const OptionButton& option : optionButtons_) {
+            if (point.x >= option.rect.left && point.x < option.rect.right &&
+                point.y >= option.rect.top && point.y < option.rect.bottom) {
+                HandleOption(option.action);
+                return;
+            }
+        }
+        return;
+    }
+
     // 工具栏优先：它在选区之上，点按钮不能落成标注。
     if (point.x >= toolbarBounds_.left && point.x < toolbarBounds_.right &&
         point.y >= toolbarBounds_.top && point.y < toolbarBounds_.bottom) {
@@ -436,6 +537,32 @@ void ScreenshotOverlay::OnLeftButtonDown(POINT point) {
     if (handle != core::SelectionHandle::None && handle != core::SelectionHandle::Move) {
         resizing_ = true;
         resizeHandle_ = handle;
+        return;
+    }
+
+    if (selectMode_) {
+        const core::Rect bounds = selection_.Bounds();
+        if (!bounds.Contains(screen)) {
+            selectedAnnotation_ = -1;
+            dirty_ = true;
+            return;
+        }
+        const core::Point local{ screen.x - bounds.left, screen.y - bounds.top };
+        selectedAnnotation_ = -1;
+        for (int index = static_cast<int>(document_.Items().size()) - 1; index >= 0; --index) {
+            if (core::HitTest(document_.Items()[static_cast<std::size_t>(index)], local, 3.0f)) {
+                selectedAnnotation_ = index;
+                break;
+            }
+        }
+        if (selectedAnnotation_ >= 0) {
+            movingAnnotation_ = true;
+            moveOrigin_ = point;
+        } else {
+            movingSelection_ = true;
+            lastPoint_ = point;
+        }
+        dirty_ = true;
         return;
     }
 
@@ -486,6 +613,19 @@ void ScreenshotOverlay::OnLeftButtonUp(POINT point) {
         return;
     }
 
+    if (movingSelection_) {
+        movingSelection_ = false;
+        dirty_ = true;
+        return;
+    }
+
+    if (movingAnnotation_) {
+        movingAnnotation_ = false;
+        document_.CommitAnnotationChange();
+        dirty_ = true;
+        return;
+    }
+
     if (drawing_) {
         const AnnotationTool tool = document_.Active().tool;
         if (tool != AnnotationTool::Eraser) {
@@ -512,6 +652,11 @@ void ScreenshotOverlay::HandleToolbar(const ToolbarButton& button) {
     const bool hasSelection = !selection_.Bounds().IsEmpty();
 
     switch (button.action) {
+    case Action::ToolSelect:
+        selectMode_ = true;
+        selectedAnnotation_ = -1;
+        break;
+
     case Action::ToolPen:
     case Action::ToolRectangle:
     case Action::ToolEllipse:
@@ -522,6 +667,8 @@ void ScreenshotOverlay::HandleToolbar(const ToolbarButton& button) {
     case Action::ToolStep:
     case Action::ToolEraser:
         if (hasSelection) {
+            selectMode_ = false;
+            selectedAnnotation_ = -1;
             SetTool(kTools[button.toolIndex]);
         }
         break;
@@ -573,6 +720,301 @@ void ScreenshotOverlay::HandleToolbar(const ToolbarButton& button) {
 
 // ---- 工具栏布局与绘制 ----
 
+void ScreenshotOverlay::HandleOption(Action action) {
+    switch (action) {
+    case Action::FillOn:
+        style_.filled = true;
+        break;
+    case Action::FillOff:
+        style_.filled = false;
+        break;
+    case Action::ThicknessDown:
+        style_.thickness = std::max(1.0f, style_.thickness - 1.0f);
+        break;
+    case Action::ThicknessUp:
+        style_.thickness = std::min(24.0f, style_.thickness + 1.0f);
+        break;
+    case Action::TextSizeDown:
+        style_.textSize = std::max(10.0f, style_.textSize - 2.0f);
+        break;
+    case Action::TextSizeUp:
+        style_.textSize = std::min(48.0f, style_.textSize + 2.0f);
+        break;
+    case Action::Bold:
+        style_.bold = !style_.bold;
+        break;
+    case Action::Italic:
+        style_.italic = !style_.italic;
+        break;
+    case Action::MosaicDown:
+        style_.mosaicBlockPx = std::max(6, style_.mosaicBlockPx - 2);
+        break;
+    case Action::MosaicUp:
+        style_.mosaicBlockPx = std::min(30, style_.mosaicBlockPx + 2);
+        break;
+    case Action::ArrowEnd:
+        style_.arrowHead = core::ArrowHeadMode::End;
+        break;
+    case Action::ArrowBoth:
+        style_.arrowHead = core::ArrowHeadMode::Both;
+        break;
+    case Action::ArrowNone:
+        style_.arrowHead = core::ArrowHeadMode::None;
+        break;
+    default:
+        break;
+    }
+    dirty_ = true;
+}
+
+void ScreenshotOverlay::LayoutOptionBar() {
+    optionButtons_.clear();
+    optionBounds_ = RECT{};
+
+    if (selectMode_) {
+        return;
+    }
+
+    const auto addOption = [&](Action action, const std::string& text, int width, bool active) {
+        OptionButton button;
+        button.action = action;
+        button.text = text;
+        button.active = active;
+        button.rect = RECT{ 0, 0, width, 32 };
+        optionButtons_.push_back(button);
+    };
+
+    switch (tool_) {
+    case core::AnnotationTool::Rectangle:
+    case core::AnnotationTool::Ellipse:
+        addOption(Action::FillOff, "空心", 48, !style_.filled);
+        addOption(Action::FillOn, "实心", 48, style_.filled);
+        break;
+    case core::AnnotationTool::Pen:
+    case core::AnnotationTool::Highlighter:
+        addOption(Action::ThicknessDown, "-", 28, false);
+        addOption(Action::None, std::to_string(static_cast<int>(std::lround(style_.thickness))),
+                  34, false);
+        addOption(Action::ThicknessUp, "+", 28, false);
+        break;
+    case core::AnnotationTool::Text:
+        addOption(Action::TextSizeDown, "-", 28, false);
+        addOption(Action::None, std::to_string(static_cast<int>(std::lround(style_.textSize))), 34,
+                  false);
+        addOption(Action::TextSizeUp, "+", 28, false);
+        addOption(Action::Bold, "B", 28, style_.bold);
+        addOption(Action::Italic, "I", 28, style_.italic);
+        break;
+    case core::AnnotationTool::Mosaic:
+        addOption(Action::MosaicDown, "-", 28, false);
+        addOption(Action::None, std::to_string(style_.mosaicBlockPx), 34, false);
+        addOption(Action::MosaicUp, "+", 28, false);
+        break;
+    case core::AnnotationTool::Arrow:
+        addOption(Action::ArrowEnd, "→", 34, style_.arrowHead == core::ArrowHeadMode::End);
+        addOption(Action::ArrowBoth, "↔", 34, style_.arrowHead == core::ArrowHeadMode::Both);
+        addOption(Action::ArrowNone, "—", 34, style_.arrowHead == core::ArrowHeadMode::None);
+        break;
+    default:
+        break;
+    }
+
+    if (optionButtons_.empty()) {
+        return;
+    }
+
+    int width = kToolbarPadding * 2;
+    for (const OptionButton& option : optionButtons_) {
+        width += option.rect.right;
+    }
+    width += (static_cast<int>(optionButtons_.size()) - 1) * 4;
+
+    int x = static_cast<std::int32_t>(toolbarBounds_.left);
+    int y = static_cast<std::int32_t>(toolbarBounds_.bottom) + 4;
+    if (y + 40 > screenHeight_) {
+        y = static_cast<std::int32_t>(toolbarBounds_.top) - 40;
+    }
+    x = std::clamp(x, 4, std::max(4, screenWidth_ - width - 4));
+    y = std::clamp(y, 4, std::max(4, screenHeight_ - 40));
+
+    int cursor = x + kToolbarPadding;
+    for (OptionButton& option : optionButtons_) {
+        option.rect = RECT{ cursor, y + 4, cursor + option.rect.right, y + 36 };
+        cursor += option.rect.right + 4;
+    }
+    optionBounds_ = RECT{ x, y, x + width, y + 40 };
+}
+
+void ScreenshotOverlay::RenderOptionBar(core::FramePlan& plan) {
+    if (optionButtons_.empty() || rasterizer_ == nullptr) {
+        return;
+    }
+    const float ox = static_cast<float>(windowX_);
+    const float oy = static_cast<float>(windowY_);
+    const Rect background{ static_cast<float>(optionBounds_.left) - ox,
+                           static_cast<float>(optionBounds_.top) - oy,
+                           static_cast<float>(optionBounds_.right) - ox,
+                           static_cast<float>(optionBounds_.bottom) - oy };
+    plan.Add(core::FillRoundedRect{ background, 10.0f, Color{ 0.98f, 0.976f, 0.984f, 0.98f } });
+    plan.Add(core::StrokeRoundedRect{ background, 10.0f, Color{ 0.0f, 0.0f, 0.0f, 0.13f }, 1.0f });
+
+    for (const OptionButton& option : optionButtons_) {
+        const Rect rect{ static_cast<float>(option.rect.left) - ox,
+                         static_cast<float>(option.rect.top) - oy,
+                         static_cast<float>(option.rect.right) - ox,
+                         static_cast<float>(option.rect.bottom) - oy };
+        if (option.active) {
+            plan.Add(core::FillRoundedRect{ rect, 7.0f, Color{ 0.184f, 0.486f, 0.965f, 1.0f } });
+        } else if (option.action != Action::None) {
+            plan.Add(core::FillRoundedRect{ rect, 7.0f, Color{ 0.0f, 0.0f, 0.0f, 0.04f } });
+        }
+
+        if (option.text.empty()) {
+            continue;
+        }
+        const bool valueOnly = option.action == Action::None;
+        const core::FontSpec spec{ options_.fontFamily, valueOnly ? 400 : 600, 12.0f,
+                                   option.active ? Color{ 1.0f, 1.0f, 1.0f, 1.0f }
+                                                 : Color{ 0.235f, 0.259f, 0.314f, 1.0f } };
+        const core::TextCell measured =
+            rasterizer_->LayOut(option.text, spec, core::Point{ 0.0f, 0.0f });
+        if (measured.atlas == 0) {
+            continue;
+        }
+        const float textWidth = measured.destination.Width();
+        const float textHeight = measured.destination.Height();
+        const core::TextCell cell = rasterizer_->LayOut(
+            option.text, spec, core::Point{ rect.left + (rect.Width() - textWidth) * 0.5f,
+                                            rect.top + (rect.Height() - textHeight) * 0.5f });
+        if (cell.atlas != 0) {
+            plan.Add(cell.ToBlit());
+        }
+    }
+}
+
+void ScreenshotOverlay::RenderSizeBadge(core::FramePlan& plan) {
+    if (!selecting_ || rasterizer_ == nullptr || selection_.Bounds().IsEmpty()) {
+        return;
+    }
+    const core::Rect selection = selection_.Bounds();
+    const std::string text = std::to_string(static_cast<int>(selection.Width())) + " × " +
+                             std::to_string(static_cast<int>(selection.Height()));
+    const core::FontSpec spec{ options_.fontFamily, 400, 11.0f,
+                               Color{ 0.235f, 0.259f, 0.314f, 1.0f } };
+    const core::TextCell measured = rasterizer_->LayOut(text, spec, core::Point{ 0.0f, 0.0f });
+    if (measured.atlas == 0) {
+        return;
+    }
+    const float ox = static_cast<float>(windowX_);
+    const float oy = static_cast<float>(windowY_);
+    const float width = measured.destination.Width() + 16.0f;
+    const float left = selection.left - ox;
+    float top = selection.top - oy - 28.0f;
+    if (top < 4.0f) {
+        top = selection.top - oy + 8.0f;
+    }
+    plan.Add(core::FillRoundedRect{ core::Rect{ left, top, left + width, top + 24.0f }, 6.0f,
+                                    Color{ 1.0f, 1.0f, 1.0f, 0.96f } });
+    plan.Add(core::StrokeRoundedRect{ core::Rect{ left, top, left + width, top + 24.0f }, 6.0f,
+                                      Color{ 0.0f, 0.0f, 0.0f, 0.12f }, 1.0f });
+    const core::TextCell cell =
+        rasterizer_->LayOut(text, spec, core::Point{ left + 8.0f, top + 5.0f });
+    if (cell.atlas != 0) {
+        plan.Add(cell.ToBlit());
+    }
+}
+
+void ScreenshotOverlay::RenderMagnifier(core::FramePlan& plan) {
+    if (!mouseInside_ || rasterizer_ == nullptr || baseBgra_.empty() ||
+        selection_.Bounds().IsEmpty()) {
+        return;
+    }
+    if (lastMouse_.x >= toolbarBounds_.left && lastMouse_.x < toolbarBounds_.right &&
+        lastMouse_.y >= toolbarBounds_.top && lastMouse_.y < toolbarBounds_.bottom) {
+        return;
+    }
+    if (optionBounds_.right > optionBounds_.left && lastMouse_.x >= optionBounds_.left &&
+        lastMouse_.x < optionBounds_.right && lastMouse_.y >= optionBounds_.top &&
+        lastMouse_.y < optionBounds_.bottom) {
+        return;
+    }
+
+    constexpr int kImage = 128;
+    constexpr int kCardWidth = 136;
+    constexpr int kCardHeight = 172;
+    int x = static_cast<int>(lastMouse_.x) + 20;
+    int y = static_cast<int>(lastMouse_.y) + 20;
+    x = std::clamp(x, 4, screenWidth_ - kCardWidth - 4);
+    y = std::clamp(y, 4, screenHeight_ - kCardHeight - 4);
+
+    const float ox = static_cast<float>(windowX_);
+    const float oy = static_cast<float>(windowY_);
+    const core::Rect card{ static_cast<float>(x) - ox, static_cast<float>(y) - oy,
+                           static_cast<float>(x + kCardWidth) - ox,
+                           static_cast<float>(y + kCardHeight) - oy };
+    plan.Add(core::FillRoundedRect{ card, 10.0f, Color{ 1.0f, 1.0f, 1.0f, 0.98f } });
+    plan.Add(core::StrokeRoundedRect{ card, 10.0f, Color{ 0.0f, 0.0f, 0.0f, 0.14f }, 1.0f });
+
+    const float sampleX = lastMouse_.x - windowX_;
+    const float sampleY = lastMouse_.y - windowY_;
+    const core::Rect source{ sampleX - 8.0f, sampleY - 8.0f, sampleX + 8.0f, sampleY + 8.0f };
+    const core::Rect destination{ static_cast<float>(x + 4) - ox, static_cast<float>(y + 4) - oy,
+                                  static_cast<float>(x + 4 + kImage) - ox,
+                                  static_cast<float>(y + 4 + kImage) - oy };
+    plan.Add(core::Blit{ capturedHandle_, source, destination, 1.0f });
+
+    // 中心像素的十字与颜色环。
+    const float centerX = (destination.left + destination.right) * 0.5f;
+    const float centerY = (destination.top + destination.bottom) * 0.5f;
+    plan.Add(core::StrokeRect{ core::Rect{ centerX - 8.0f, centerY - 8.0f, centerX + 8.0f,
+                                           centerY + 8.0f },
+                               Color{ 1.0f, 1.0f, 1.0f, 0.9f }, 1.0f });
+    plan.Add(core::StrokeRect{ core::Rect{ centerX - 9.0f, centerY - 9.0f, centerX + 9.0f,
+                                           centerY + 9.0f },
+                               Color{ 0.0f, 0.0f, 0.0f, 0.7f }, 1.0f });
+
+    std::uint8_t r = 0;
+    std::uint8_t g = 0;
+    std::uint8_t b = 0;
+    const int px = static_cast<int>(sampleX);
+    const int py = static_cast<int>(sampleY);
+    if (px >= 0 && py >= 0 && px < screenWidth_ && py < screenHeight_) {
+        const std::size_t index = (static_cast<std::size_t>(py) * screenWidth_ + px) * 4;
+        b = baseBgra_[index + 0];
+        g = baseBgra_[index + 1];
+        r = baseBgra_[index + 2];
+    }
+
+    char hex[16] = {};
+    std::snprintf(hex, sizeof(hex), "#%02X%02X%02X", r, g, b);
+    char coordinates[32] = {};
+    std::snprintf(coordinates, sizeof(coordinates), "%d, %d", px, py);
+
+    const float footerY = static_cast<float>(y + 140) - oy;
+    plan.Add(core::FillEllipse{ core::Rect{ static_cast<float>(x + 10) - ox, footerY + 1.0f,
+                                            static_cast<float>(x + 22) - ox, footerY + 13.0f },
+                                Color{ r / 255.0f, g / 255.0f, b / 255.0f, 1.0f } });
+    plan.Add(core::StrokeEllipse{ core::Rect{ static_cast<float>(x + 10) - ox, footerY + 1.0f,
+                                              static_cast<float>(x + 22) - ox, footerY + 13.0f },
+                                  Color{ 0.0f, 0.0f, 0.0f, 0.2f }, 1.0f });
+
+    const core::FontSpec hexSpec{ options_.fontFamily, 600, 11.0f,
+                                  Color{ 0.15f, 0.17f, 0.21f, 1.0f } };
+    const core::FontSpec coordSpec{ options_.fontFamily, 400, 10.0f,
+                                    Color{ 0.42f, 0.45f, 0.50f, 1.0f } };
+    const core::TextCell hexCell =
+        rasterizer_->LayOut(hex, hexSpec, core::Point{ static_cast<float>(x + 28) - ox,
+                                                       footerY });
+    if (hexCell.atlas != 0) {
+        plan.Add(hexCell.ToBlit());
+    }
+    const core::TextCell coordCell =
+        rasterizer_->LayOut(coordinates, coordSpec,
+                            core::Point{ static_cast<float>(x + 28) - ox, footerY + 15.0f });
+    if (coordCell.atlas != 0) {
+        plan.Add(coordCell.ToBlit());
+    }
+}
 void ScreenshotOverlay::LayoutToolbar() {
     toolbar_.clear();
 
@@ -581,10 +1023,10 @@ void ScreenshotOverlay::LayoutToolbar() {
     const int actionCount = static_cast<int>(std::size(kActionLabels));
 
     int width = kToolbarPadding * 2;
-    width += toolCount * kToolbarToolWidth;
+    width += (toolCount + 1) * kToolbarToolWidth;
     width += colorCount * kToolbarColorWidth;
     width += actionCount * kToolbarToolWidth;
-    width += (toolCount + colorCount + actionCount - 1) * kToolbarGap;
+    width += (toolCount + 1 + colorCount + actionCount + 2 - 1) * kToolbarGap;
 
     const Rect selection = selection_.Bounds();
     int x = 0;
@@ -626,9 +1068,13 @@ void ScreenshotOverlay::LayoutToolbar() {
         ToolbarIcon::Arrow,     ToolbarIcon::Text,      ToolbarIcon::Highlighter,
         ToolbarIcon::Mosaic,    ToolbarIcon::Step,      ToolbarIcon::Eraser,
     };
+    addButton(Action::ToolSelect, 0, -1, "", kToolbarToolWidth, true, selectMode_,
+              ToolbarIcon::Select);
+
     for (int i = 0; i < toolCount; ++i) {
         addButton(static_cast<Action>(static_cast<int>(Action::ToolPen) + i), 0, i, "",
-                  kToolbarToolWidth, !selection.IsEmpty(), kTools[i] == tool_, toolIcons[i]);
+                  kToolbarToolWidth, !selection.IsEmpty(), !selectMode_ && kTools[i] == tool_,
+                  toolIcons[i]);
     }
 
     addButton(Action::None, 0, -1, "", 1, false, false, ToolbarIcon::Separator);
@@ -915,6 +1361,7 @@ void ScreenshotOverlay::Render() {
     }
 
     LayoutToolbar();
+    LayoutOptionBar();
 
     core::FramePlan plan;
     plan.Add(core::Blit{ capturedHandle_,
@@ -937,7 +1384,10 @@ void ScreenshotOverlay::Render() {
     }
 
     RenderToolbar(plan);
+    RenderOptionBar(plan);
     RenderHint(plan);
+    RenderSizeBadge(plan);
+    RenderMagnifier(plan);
 
     backend_->WaitForFrameSlot();
     backend_->Render(plan, IntRect{});
@@ -1175,6 +1625,12 @@ LRESULT CALLBACK ScreenshotOverlay::KeyHook(int code, WPARAM wParam, LPARAM lPar
         message = kMsgCopy;
     } else if (control && key == 'S') {
         message = kMsgSave;
+    } else if (!control && key == 'V') {
+        message = kMsgSelect;
+    } else if (!control && key == 'F') {
+        message = kMsgFill;
+    } else if (key == VK_DELETE) {
+        message = kMsgDelete;
     } else if (key == VK_SPACE) {
         message = kMsgFullScreen;
     } else if (key >= '1' && key <= '9') {

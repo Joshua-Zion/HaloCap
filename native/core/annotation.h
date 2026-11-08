@@ -144,6 +144,11 @@ public:
     // 橡皮：删掉命中的标注并落一次快照。返回删掉的数量。
     int EraseAt(Point point, float radius);
 
+    // 选择/移动：拖动过程中只改数据，松手时 CommitAnnotationChange 落一次快照。
+    bool MoveAnnotation(std::size_t index, Point delta);
+    bool RemoveAnnotation(std::size_t index);
+    void CommitAnnotationChange();
+
     bool Undo();
     bool Redo();
     bool CanUndo() const { return cursor_ > 0; }

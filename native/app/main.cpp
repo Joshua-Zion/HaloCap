@@ -127,6 +127,7 @@ struct Options {
     // 非空 = 无人值守的圆盘自检：打开圆盘 → 抓图 → 退出。
     std::wstring radialSelftestPath;
     std::wstring windowPickerSelftestPath;
+    int settingsSelftestPage = -1;
 
     // 交付：--version 打印版本；--check-update 读一份清单并比较版本。
     bool version = false;
@@ -343,6 +344,8 @@ Options ParseOptions(int argc, char** argv) {
             options.pinSelftestPath = Utf8ToWide(argv[++i]);
         } else if (argument == "--radial-selftest" && i + 1 < argc) {
             options.radialSelftestPath = Utf8ToWide(argv[++i]);
+        } else if (argument == "--settings-page" && i + 1 < argc) {
+            options.settingsSelftestPage = std::atoi(argv[++i]);
         } else if (argument == "--window-picker-selftest" && i + 1 < argc) {
             options.windowPickerSelftestPath = Utf8ToWide(argv[++i]);
         } else if (argument == "--version") {
@@ -973,6 +976,7 @@ int Run(const Options& options) {
     // OCR：推理放在一次性的 worker 子进程里，主进程不加载 ORT。
     std::unique_ptr<halocap::app::OcrResultWindow> ocrWindow;
     std::unique_ptr<halocap::app::SettingsWindow> settingsWindow;
+    int settingsPageOverride = options.settingsSelftestPage;
     std::unique_ptr<halocap::app::RadialMenu> radialMenu;
     double ocrRecognizeMs = 0.0;
     std::string ocrWorkerEngine = "pp";
@@ -1293,7 +1297,7 @@ int Run(const Options& options) {
             default:
                 break;
             }
-        });
+        }, settings.menuSize);
         if (!opened) {
             radialMenu.reset();
             log.Error("radial: open failed");
@@ -1447,6 +1451,9 @@ int Run(const Options& options) {
     if (!options.settingsSelftestPath.empty()) {
         settingsSelftestOk = false;
         openSettings();
+        if (settingsWindow != nullptr && settingsWindow->Valid() && options.settingsSelftestPage >= 0) {
+            settingsWindow->ShowPageForTest(options.settingsSelftestPage);
+        }
         Sleep(350);
 
         const bool opened = settingsWindow != nullptr && settingsWindow->Valid();
@@ -1542,10 +1549,32 @@ int Run(const Options& options) {
     bool radialSelftestOk = true;
     if (!options.radialSelftestPath.empty()) {
         radialSelftestOk = false;
+        SetCursorPos(960, 540);
         openRadial();
-        Sleep(400);
+        const ULONGLONG radialStart = GetTickCount64();
+        while (GetTickCount64() - radialStart < 500) {
+            MSG radialMessage{};
+            while (PeekMessageW(&radialMessage, nullptr, 0, 0, PM_REMOVE)) {
+                TranslateMessage(&radialMessage);
+                DispatchMessageW(&radialMessage);
+            }
+            Sleep(10);
+        }
 
         const bool opened = radialMenu != nullptr && radialMenu->Active();
+        if (opened) {
+            SetCursorPos(960 + 120, 540);
+            SendMessageW(static_cast<HWND>(radialMenu->HandleForTest()), WM_MOUSEMOVE, 0, 0);
+            const ULONGLONG hoverStart = GetTickCount64();
+            while (GetTickCount64() - hoverStart < 260) {
+                MSG hoverMessage{};
+                while (PeekMessageW(&hoverMessage, nullptr, 0, 0, PM_REMOVE)) {
+                    TranslateMessage(&hoverMessage);
+                    DispatchMessageW(&hoverMessage);
+                }
+                Sleep(10);
+            }
+        }
         halocap::platform::win32::DesktopImage desktop;
         const bool proof =
             halocap::platform::win32::GrabPrimaryDesktop(desktop) &&
@@ -1620,6 +1649,10 @@ int Run(const Options& options) {
         // OCR 结果窗口关闭后释放；引擎空闲 60 秒后卸载，回到空闲内存预算内。
         if (ocrWindow != nullptr && !ocrWindow->Valid()) {
             ocrWindow.reset();
+        }
+        if (settingsWindow != nullptr && settingsPageOverride >= 0) {
+            settingsWindow->ShowPageForTest(settingsPageOverride);
+            settingsPageOverride = -1;
         }
         if (settingsWindow != nullptr && !settingsWindow->Valid()) {
             settingsWindow.reset();

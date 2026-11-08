@@ -1,29 +1,114 @@
 ﻿#include "settings_window.h"
 
 #include <dwmapi.h>
+#include <shellapi.h>
+#include <shellscalingapi.h>
+#include <shobjidl.h>
 #include <windowsx.h>
 
+#include <objbase.h>
+#include <gdiplus.h>
+
 #include <algorithm>
-#include <cstdio>
-#include <cstdlib>
+#include <cmath>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <memory>
 #include <sstream>
-#include <string>
+#include <vector>
 
 #include "update.h"
 #include "version.h"
 #include "win32_update_fetch.h"
+#include "win32_autostart.h"
 
 namespace halocap::app {
 
 namespace {
 
+using namespace Gdiplus;
+
 constexpr wchar_t kClassName[] = L"HaloCapSettings";
-constexpr int kListWidth = 190;
-constexpr int kTitleBar = 38;
-constexpr int kPageTitleShift = 26;
+constexpr float kWindowW = 820.0f;
+constexpr float kWindowH = 620.0f;
+constexpr float kMargin = 18.0f;
+constexpr float kTitleBar = 50.0f;
+constexpr float kSidebar = 218.0f;
+constexpr float kFooter = 60.0f;
+constexpr float kRadius = 18.0f;
+constexpr float kContentX = kMargin + kSidebar;
+
+// 控件/导航的点击 id。
+enum : int {
+    kIdNone = 0,
+    kIdClose = 10,
+    kIdSave = 11,
+    kIdCancel = 12,
+    kIdNavBase = 20,
+    kIdToggleAutoStart = 30,
+    kIdToggleConvertFiles = 31,
+    kIdTogglePinGlow = 32,
+    kIdToggleAutoCopy = 33,
+    kIdTogglePinOcr = 34,
+    kIdToggleSystemAudio = 35,
+    kIdToggleMicrophone = 36,
+    kIdToggleRecordCursor = 37,
+    kIdSegmentBase = 100,
+    kIdHotkeyBase = 200,
+    kIdDirectory = 210,
+    kIdUpdate = 211,
+    kIdCopySummary = 212,
+};
+
+// 分段控件的组号（id = kIdSegmentBase + group * 10 + option）。
+enum : int {
+    kGroupMenuSize = 0,
+    kGroupScreenshotFormat = 1,
+    kGroupOcrEngine = 2,
+    kGroupResolution = 3,
+    kGroupFrameRate = 4,
+    kGroupQuality = 5,
+    kGroupRange = 6,
+    kGroupCountdown = 7,
+};
+
+SettingsWindow* g_hotkeyOwner = nullptr;
+HHOOK g_hotkeyHook = nullptr;
+
+bool EnsureGdiplus() {
+    static ULONG_PTR token = 0;
+    if (token == 0) {
+        GdiplusStartupInput input;
+        if (GdiplusStartup(&token, &input, nullptr) != Ok) {
+            return false;
+        }
+    }
+    return true;
+}
+
+struct Fonts {
+    Font title{ L"Microsoft YaHei UI", 21.0f, FontStyleBold, UnitPixel };
+    Font subtitle{ L"Microsoft YaHei UI", 11.5f, FontStyleRegular, UnitPixel };
+    Font group{ L"Microsoft YaHei UI", 11.0f, FontStyleBold, UnitPixel };
+    Font setting{ L"Microsoft YaHei UI", 12.5f, FontStyleRegular, UnitPixel };
+    Font settingBold{ L"Microsoft YaHei UI", 12.5f, FontStyleBold, UnitPixel };
+    Font desc{ L"Microsoft YaHei UI", 10.5f, FontStyleRegular, UnitPixel };
+    Font nav{ L"Microsoft YaHei UI", 12.5f, FontStyleRegular, UnitPixel };
+    Font navBold{ L"Microsoft YaHei UI", 12.5f, FontStyleBold, UnitPixel };
+    Font field{ L"Microsoft YaHei UI", 11.5f, FontStyleRegular, UnitPixel };
+    Font glyph{ L"Segoe MDL2 Assets", 13.0f, FontStyleRegular, UnitPixel };
+    Font button{ L"Microsoft YaHei UI", 12.0f, FontStyleRegular, UnitPixel };
+    Font buttonBold{ L"Microsoft YaHei UI", 12.0f, FontStyleBold, UnitPixel };
+};
+
+Fonts* GetFonts() {
+    static std::unique_ptr<Fonts> fonts;
+    if (!fonts) {
+        fonts = std::make_unique<Fonts>();
+    }
+    return fonts.get();
+}
 
 std::wstring Utf8ToWide(std::string_view text) {
     if (text.empty()) {
@@ -36,93 +121,148 @@ std::wstring Utf8ToWide(std::string_view text) {
     return wide;
 }
 
-std::string WideToUtf8(std::wstring_view text) {
+GraphicsPath* RoundRect(float x, float y, float w, float h, float radius);
+
+void DrawNavIcon(Graphics& g, int index, const PointF& center, const Color& color) {
+    Pen pen(color, 1.4f);
+    pen.SetStartCap(LineCapRound);
+    pen.SetEndCap(LineCapRound);
+    pen.SetLineJoin(LineJoinRound);
+    const float x = center.X;
+    const float y = center.Y;
+    switch (index) {
+    case 0: {   // 通用：滑杆
+        g.DrawLine(&pen, x - 8.0f, y - 5.0f, x + 8.0f, y - 5.0f);
+        g.DrawLine(&pen, x - 8.0f, y + 1.0f, x + 8.0f, y + 1.0f);
+        g.DrawLine(&pen, x - 8.0f, y + 7.0f, x + 8.0f, y + 7.0f);
+        SolidBrush knob(color);
+        g.FillEllipse(&knob, x - 1.5f, y - 7.5f, 4.0f, 5.0f);
+        g.FillEllipse(&knob, x - 5.5f, y - 1.5f, 4.0f, 5.0f);
+        g.FillEllipse(&knob, x + 1.5f, y + 4.5f, 4.0f, 5.0f);
+        break;
+    }
+    case 1: {   // 快捷键：键盘
+        GraphicsPath* body = RoundRect(x - 9.0f, y - 6.0f, 18.0f, 12.0f, 2.5f);
+        g.DrawPath(&pen, body);
+        delete body;
+        for (int i = -1; i <= 1; ++i) {
+            SolidBrush keyBrush(color);
+            g.FillRectangle(&keyBrush, x + i * 4.0f - 1.0f, y - 2.5f, 2.0f, 2.0f);
+        }
+        g.DrawLine(&pen, x - 4.0f, y + 3.0f, x + 4.0f, y + 3.0f);
+        break;
+    }
+    case 2: {   // 截图：四角
+        g.DrawLine(&pen, x - 8.0f, y - 3.0f, x - 8.0f, y - 8.0f);
+        g.DrawLine(&pen, x - 8.0f, y - 8.0f, x - 3.0f, y - 8.0f);
+        g.DrawLine(&pen, x + 8.0f, y - 3.0f, x + 8.0f, y - 8.0f);
+        g.DrawLine(&pen, x + 8.0f, y - 8.0f, x + 3.0f, y - 8.0f);
+        g.DrawLine(&pen, x - 8.0f, y + 3.0f, x - 8.0f, y + 8.0f);
+        g.DrawLine(&pen, x - 8.0f, y + 8.0f, x - 3.0f, y + 8.0f);
+        g.DrawLine(&pen, x + 8.0f, y + 3.0f, x + 8.0f, y + 8.0f);
+        g.DrawLine(&pen, x + 8.0f, y + 8.0f, x + 3.0f, y + 8.0f);
+        break;
+    }
+    case 3: {   // OCR：T
+        g.DrawRectangle(&pen, x - 8.0f, y - 7.0f, 16.0f, 14.0f);
+        g.DrawLine(&pen, x - 4.5f, y - 3.0f, x + 4.5f, y - 3.0f);
+        g.DrawLine(&pen, x, y - 3.0f, x, y + 4.0f);
+        break;
+    }
+    case 4: {   // 录屏：相机
+        GraphicsPath* body = RoundRect(x - 9.0f, y - 5.0f, 13.0f, 10.0f, 3.0f);
+        g.DrawPath(&pen, body);
+        delete body;
+        g.DrawLine(&pen, x + 4.5f, y, x + 9.0f, y - 4.0f);
+        g.DrawLine(&pen, x + 9.0f, y - 4.0f, x + 9.0f, y + 4.0f);
+        g.DrawLine(&pen, x + 9.0f, y + 4.0f, x + 4.5f, y);
+        break;
+    }
+    default: {  // 关于：信息
+        g.DrawEllipse(&pen, x - 8.0f, y - 8.0f, 16.0f, 16.0f);
+        SolidBrush infoDot(color);
+        g.FillEllipse(&infoDot, x - 1.0f, y - 4.5f, 2.0f, 2.0f);
+        g.DrawLine(&pen, x, y - 0.5f, x, y + 4.5f);
+        break;
+    }
+    }
+}
+
+std::string Utf8FromWide(std::wstring_view text) {
     if (text.empty()) {
         return {};
     }
-    const int length = WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()),
-                                           nullptr, 0, nullptr, nullptr);
-    std::string utf8(static_cast<std::size_t>(length), '\0');
-    WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), utf8.data(), length,
-                        nullptr, nullptr);
-    return utf8;
+    const int length =
+        WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0,
+                            nullptr, nullptr);
+    std::string narrow(static_cast<std::size_t>(length), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), narrow.data(),
+                        length, nullptr, nullptr);
+    return narrow;
 }
 
-std::wstring GetText(HWND control) {
-    const int length = GetWindowTextLengthW(control);
-    std::wstring text(static_cast<std::size_t>(length) + 1, L'\0');
-    GetWindowTextW(control, text.data(), length + 1);
-    text.resize(static_cast<std::size_t>(length));
-    return text;
-}
-
-}  // namespace
-
-namespace {
-
-namespace {
-
-void CopyTextToClipboard(const std::wstring& text) {
+std::wstring Ellipsize(Graphics& g, const std::wstring& text, Font* font, float maxWidth) {
     if (text.empty()) {
-        return;
+        return text;
     }
-    const std::size_t bytes = (text.size() + 1) * sizeof(wchar_t);
-    HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, bytes);
-    if (memory == nullptr) {
-        return;
+    RectF bounds;
+    g.MeasureString(text.c_str(), -1, font, PointF(0, 0), &bounds);
+    if (bounds.Width <= maxWidth) {
+        return text;
     }
-    void* target = GlobalLock(memory);
-    if (target == nullptr) {
-        GlobalFree(memory);
-        return;
+    std::wstring result = text;
+    while (!result.empty()) {
+        result.pop_back();
+        std::wstring candidate = result + L"…";
+        g.MeasureString(candidate.c_str(), -1, font, PointF(0, 0), &bounds);
+        if (bounds.Width <= maxWidth) {
+            return candidate;
+        }
     }
-    std::memcpy(target, text.c_str(), bytes);
-    GlobalUnlock(memory);
-    if (!OpenClipboard(nullptr)) {
-        GlobalFree(memory);
-        return;
-    }
-    EmptyClipboard();
-    if (SetClipboardData(CF_UNICODETEXT, memory) == nullptr) {
-        GlobalFree(memory);
-    }
-    CloseClipboard();
+    return L"…";
 }
 
-std::wstring ReadUpdateUrl() {
-    wchar_t localAppData[MAX_PATH] = {};
-    if (GetEnvironmentVariableW(L"LOCALAPPDATA", localAppData, MAX_PATH) == 0) {
-        return {};
-    }
-    const std::wstring path = std::wstring(localAppData) + L"\\HaloCap2\\update.url";
-    std::ifstream stream{ std::filesystem::path(path) };
-    if (!stream) {
-        return {};
-    }
-    std::string line;
-    std::getline(stream, line);
-    return Utf8ToWide(line);
+void DrawText(Graphics& g, const std::wstring& text, Font* font, const RectF& rect,
+              const Color& color, StringAlignment align = StringAlignmentNear,
+              StringAlignment line = StringAlignmentCenter) {
+    StringFormat format;
+    format.SetAlignment(align);
+    format.SetLineAlignment(line);
+    format.SetTrimming(StringTrimmingEllipsisCharacter);
+    SolidBrush brush(color);
+    g.DrawString(text.c_str(), -1, font, rect, &format, &brush);
 }
 
-std::string ReadLocalUpdateManifest() {
-    wchar_t localAppData[MAX_PATH] = {};
-    if (GetEnvironmentVariableW(L"LOCALAPPDATA", localAppData, MAX_PATH) == 0) {
-        return {};
-    }
-    const std::wstring path = std::wstring(localAppData) + L"\\HaloCap2\\update.json";
-    std::ifstream stream(path, std::ios::binary);
-    if (!stream) {
-        return {};
-    }
-    return std::string((std::istreambuf_iterator<char>(stream)),
-                       std::istreambuf_iterator<char>());
+GraphicsPath* RoundRect(float x, float y, float w, float h, float radius) {
+    auto* path = new GraphicsPath();
+    const float d = radius * 2.0f;
+    path->AddArc(x, y, d, d, 180.0f, 90.0f);
+    path->AddArc(x + w - d, y, d, d, 270.0f, 90.0f);
+    path->AddArc(x + w - d, y + h - d, d, d, 0.0f, 90.0f);
+    path->AddArc(x, y + h - d, d, d, 90.0f, 90.0f);
+    path->CloseFigure();
+    return path;
 }
 
-}  // namespace
+void FillRoundRect(Graphics& g, const RectF& rect, float radius, const Color& color) {
+    GraphicsPath* path = RoundRect(rect.X, rect.Y, rect.Width, rect.Height, radius);
+    SolidBrush brush(color);
+    g.FillPath(&brush, path);
+    delete path;
+}
 
-SettingsWindow* g_hotkeyOwner = nullptr;
-int g_hotkeyIndex = -1;
-HHOOK g_hotkeyHook = nullptr;
+void StrokeRoundRect(Graphics& g, const RectF& rect, float radius, const Color& color,
+                     float width = 1.0f) {
+    GraphicsPath* path = RoundRect(rect.X, rect.Y, rect.Width, rect.Height, radius);
+    Pen pen(color, width);
+    g.DrawPath(&pen, path);
+    delete path;
+}
+
+Color WithAlpha(const Color& color, int alpha) {
+    return Color(static_cast<BYTE>(std::clamp(alpha, 0, 255)), color.GetR(), color.GetG(),
+                 color.GetB());
+}
 
 core::KeySymbol KeyFromVirtualKey(DWORD vk) {
     if (vk >= 'A' && vk <= 'Z') {
@@ -155,7 +295,64 @@ core::KeySymbol KeyFromVirtualKey(DWORD vk) {
     }
 }
 
+std::string ReadUpdateUrl() {
+    wchar_t localAppData[MAX_PATH] = {};
+    if (GetEnvironmentVariableW(L"LOCALAPPDATA", localAppData, MAX_PATH) == 0) {
+        return {};
+    }
+    const std::wstring path = std::wstring(localAppData) + L"\\HaloCap2\\update.url";
+    std::ifstream stream{ std::filesystem::path(path) };
+    if (!stream) {
+        return {};
+    }
+    std::string line;
+    std::getline(stream, line);
+    return line;
+}
+
+std::string ReadLocalUpdateManifest() {
+    wchar_t localAppData[MAX_PATH] = {};
+    if (GetEnvironmentVariableW(L"LOCALAPPDATA", localAppData, MAX_PATH) == 0) {
+        return {};
+    }
+    const std::wstring path = std::wstring(localAppData) + L"\\HaloCap2\\update.json";
+    std::ifstream stream{ std::filesystem::path(path), std::ios::binary };
+    if (!stream) {
+        return {};
+    }
+    return std::string((std::istreambuf_iterator<char>(stream)),
+                       std::istreambuf_iterator<char>());
+}
+
+void CopyTextToClipboard(const std::wstring& text) {
+    if (text.empty()) {
+        return;
+    }
+    const std::size_t bytes = (text.size() + 1) * sizeof(wchar_t);
+    HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, bytes);
+    if (memory == nullptr) {
+        return;
+    }
+    void* target = GlobalLock(memory);
+    if (target == nullptr) {
+        GlobalFree(memory);
+        return;
+    }
+    std::memcpy(target, text.c_str(), bytes);
+    GlobalUnlock(memory);
+    if (!OpenClipboard(nullptr)) {
+        GlobalFree(memory);
+        return;
+    }
+    EmptyClipboard();
+    if (SetClipboardData(CF_UNICODETEXT, memory) == nullptr) {
+        GlobalFree(memory);
+    }
+    CloseClipboard();
+}
+
 }  // namespace
+
 SettingsWindow::SettingsWindow() = default;
 
 SettingsWindow::~SettingsWindow() { Close(); }
@@ -164,11 +361,10 @@ bool SettingsWindow::EnsureClass() {
     static const bool registered = [] {
         WNDCLASSEXW description{};
         description.cbSize = sizeof(description);
-        description.lpfnWndProc = &SettingsWindow::WndProc;
         description.style = CS_DROPSHADOW;
+        description.lpfnWndProc = &SettingsWindow::WndProc;
         description.hInstance = GetModuleHandleW(nullptr);
         description.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-        description.hbrBackground = nullptr;
         description.lpszClassName = kClassName;
         return RegisterClassExW(&description) != 0 ||
                GetLastError() == ERROR_CLASS_ALREADY_EXISTS;
@@ -176,420 +372,99 @@ bool SettingsWindow::EnsureClass() {
     return registered;
 }
 
-HWND SettingsWindow::AddCombo(Page page, int x, int y, int width,
-                              const std::vector<std::wstring>& items, int selected) {
-    HWND combo = CreateWindowExW(0, L"COMBOBOX", L"",
-                                 WS_CHILD | CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, x, y,
-                                 width, 220, window_, nullptr, GetModuleHandleW(nullptr), nullptr);
-    for (const std::wstring& item : items) {
-        SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(item.c_str()));
-    }
-    SendMessageW(combo, CB_SETCURSEL, std::max(0, selected), 0);
-    SendMessageW(combo, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
-    controls_.push_back({ combo, page });
-    ShowWindow(combo, SW_HIDE);
-    return combo;
-}
-
-HWND SettingsWindow::AddCheck(Page page, int x, int y, int width, const std::wstring& text,
-                              bool checked) {
-    HWND check = CreateWindowExW(0, L"BUTTON", text.c_str(),
-                                 WS_CHILD | BS_AUTOCHECKBOX | WS_TABSTOP, x, y, width, 24,
-                                 window_, nullptr, GetModuleHandleW(nullptr), nullptr);
-    SendMessageW(check, BM_SETCHECK, checked ? BST_CHECKED : BST_UNCHECKED, 0);
-    SendMessageW(check, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
-    controls_.push_back({ check, page });
-    ShowWindow(check, SW_HIDE);
-    return check;
-}
-
-HWND SettingsWindow::AddLabel(Page page, int x, int y, int width, const std::wstring& text) {
-    HWND label = CreateWindowExW(0, L"STATIC", text.c_str(), WS_CHILD | SS_LEFT, x, y, width, 22,
-                                 window_, nullptr, GetModuleHandleW(nullptr), nullptr);
-    SendMessageW(label, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
-    controls_.push_back({ label, page });
-    ShowWindow(label, SW_HIDE);
-    return label;
-}
-
-HWND SettingsWindow::AddEdit(Page page, int x, int y, int width, const std::wstring& text) {
-    HWND edit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", text.c_str(),
-                                WS_CHILD | ES_LEFT | ES_AUTOHSCROLL, x, y, width, 24, window_,
-                                nullptr, GetModuleHandleW(nullptr), nullptr);
-    SendMessageW(edit, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
-    controls_.push_back({ edit, page });
-    ShowWindow(edit, SW_HIDE);
-    return edit;
-}
-
 bool SettingsWindow::Create(void* owner, const core::AppSettings& settings,
                             const core::PlatformFacts& facts, const std::string& modelsDirectory,
                             SaveHandler onSave) {
-    if (!EnsureClass()) {
+    Close();
+    if (!EnsureClass() || !EnsureGdiplus()) {
         return false;
     }
-
     settings_ = settings;
     facts_ = facts;
     modelsDirectory_ = modelsDirectory;
     onSave_ = std::move(onSave);
     saved_ = false;
+    page_ = Page::General;
+    scroll_ = 0;
 
-    window_ = CreateWindowExW(WS_EX_TOPMOST, kClassName, L"HaloCap 设置", WS_POPUP, 0, 0, 840, 600,
-                              static_cast<HWND>(owner), nullptr, GetModuleHandleW(nullptr), this);
+    POINT cursor{};
+    GetCursorPos(&cursor);
+    const HMONITOR monitor = MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST);
+    UINT dpiX = 96;
+    UINT dpiY = 96;
+    if (FAILED(GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &dpiX, &dpiY)) || dpiX == 0) {
+        dpiX = 96;
+    }
+    scale_ = dpiX / 96.0f;
+    widthPx_ = static_cast<int>(std::lround(kWindowW * scale_));
+    heightPx_ = static_cast<int>(std::lround(kWindowH * scale_));
+
+    HDC screen = GetDC(nullptr);
+    memory_ = CreateCompatibleDC(screen);
+    BITMAPINFO info{};
+    info.bmiHeader.biSize = sizeof(info.bmiHeader);
+    info.bmiHeader.biWidth = widthPx_;
+    info.bmiHeader.biHeight = -heightPx_;
+    info.bmiHeader.biPlanes = 1;
+    info.bmiHeader.biBitCount = 32;
+    info.bmiHeader.biCompression = BI_RGB;
+    bitmap_ = CreateDIBSection(memory_, &info, DIB_RGB_COLORS, &bits_, nullptr, 0);
+    ReleaseDC(nullptr, screen);
+    if (bitmap_ == nullptr || bits_ == nullptr) {
+        Close();
+        return false;
+    }
+    SelectObject(memory_, bitmap_);
+
+    MONITORINFO monitorInfo{};
+    monitorInfo.cbSize = sizeof(monitorInfo);
+    RECT work{ 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN) };
+    if (GetMonitorInfoW(monitor, &monitorInfo)) {
+        work = monitorInfo.rcWork;
+    }
+    const int left = work.left + ((work.right - work.left) - widthPx_) / 2;
+    const int top = work.top + ((work.bottom - work.top) - heightPx_) / 2;
+
+    window_ = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW, kClassName,
+                              L"HaloCap 设置", WS_POPUP, left, top, widthPx_, heightPx_, nullptr,
+                              nullptr, GetModuleHandleW(nullptr), this);
     if (window_ == nullptr) {
+        Close();
         return false;
     }
 
-    font_ = CreateFontW(-15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
-                        OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH,
-                        L"Microsoft YaHei UI");
-    titleFont_ = CreateFontW(-18, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
-                             OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
-                             DEFAULT_PITCH, L"Microsoft YaHei UI");
-    // 1.x 设置页的浅色配色：内容底 #F7F7F9、侧栏 #EDEDF1、卡片白、强调 #007AFF。
-    background_ = CreateSolidBrush(RGB(247, 247, 249));
-    sidebarBrush_ = CreateSolidBrush(RGB(237, 237, 241));
-    cardBrush_ = CreateSolidBrush(RGB(255, 255, 255));
-    accentBrush_ = CreateSolidBrush(RGB(0, 122, 255));
-    cardBorderPen_ = CreatePen(PS_SOLID, 1, RGB(231, 231, 236));
-    fieldBorderPen_ = CreatePen(PS_SOLID, 1, RGB(217, 217, 222));
-
-    list_ = CreateWindowExW(0, L"LISTBOX", L"",
-                            WS_CHILD | WS_VISIBLE | LBS_NOTIFY | WS_VSCROLL |
-                                LBS_OWNERDRAWFIXED | LBS_HASSTRINGS,
-                            12, 12, kListWidth, 500, window_, reinterpret_cast<HMENU>(100),
-                            GetModuleHandleW(nullptr), nullptr);
-    SendMessageW(list_, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
-    SendMessageW(list_, LB_SETITEMHEIGHT, 0, 34);
-    for (const wchar_t* item : { L"截图", L"录制", L"OCR", L"快捷键", L"外观", L"关于 / 诊断" }) {
-        SendMessageW(list_, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(item));
-    }
-    SendMessageW(list_, LB_SETCURSEL, 0, 0);
-
-    saveButton_ = CreateWindowExW(0, L"BUTTON", L"保存",
-                                  WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 620, 520, 90, 34,
-                                  window_, reinterpret_cast<HMENU>(200),
-                                  GetModuleHandleW(nullptr), nullptr);
-    cancelButton_ = CreateWindowExW(0, L"BUTTON", L"取消",
-                                    WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 720, 520, 90, 34,
-                                    window_, reinterpret_cast<HMENU>(201),
-                                    GetModuleHandleW(nullptr), nullptr);
-    for (HWND button : { saveButton_, cancelButton_ }) {
-        SendMessageW(button, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
-    }
-
-    const int x = 220;
-    const int controlWidth = 380;
-    const int labelWidth = 140;
-
-    // ---- 截图 ----
-    AddLabel(Page::Screenshot, x, 20, labelWidth, L"截图格式");
-    screenshotFormat_ = AddCombo(Page::Screenshot, x, 44, controlWidth, { L"PNG", L"JPEG" },
-                                 static_cast<int>(settings_.screenshotFormat));
-    AddLabel(Page::Screenshot, x, 88, 560,
-             L"截图热键：" + Utf8ToWide(core::FormatHotkeyText(settings_.screenshotHotkey)) +
-                 L"（可在「快捷键」页修改）");
-
-    // ---- 录制 ----
-    AddLabel(Page::Recording, x, 20, labelWidth, L"分辨率");
-    recordingResolution_ = AddCombo(Page::Recording, x, 44, controlWidth,
-                                    { L"原始", L"2160p", L"1440p", L"1080p", L"720p" },
-                                    static_cast<int>(settings_.recording.resolution));
-    AddLabel(Page::Recording, x, 88, labelWidth, L"帧率");
-    recordingFrameRate_ = AddCombo(Page::Recording, x, 112, controlWidth, { L"30", L"60" },
-                                   settings_.recording.frameRate == core::RecordingFrameRate::Sixty
-                                       ? 1
-                                       : 0);
-    AddLabel(Page::Recording, x, 156, labelWidth, L"质量");
-    recordingQuality_ = AddCombo(Page::Recording, x, 180, controlWidth, { L"高", L"均衡", L"紧凑" },
-                                 static_cast<int>(settings_.recording.quality));
-    AddLabel(Page::Recording, x, 224, labelWidth, L"范围");
-    recordingRange_ = AddCombo(Page::Recording, x, 248, controlWidth, { L"区域", L"窗口" },
-                               static_cast<int>(settings_.recording.range));
-    AddLabel(Page::Recording, x, 292, labelWidth, L"倒计时");
-    recordingCountdown_ = AddCombo(Page::Recording, x, 316, 200, { L"关", L"3 秒", L"5 秒" },
-                                   settings_.recording.countdown ==
-                                           core::RecordingCountdown::ThreeSeconds
-                                       ? 1
-                                       : (settings_.recording.countdown ==
-                                                  core::RecordingCountdown::FiveSeconds
-                                              ? 2
-                                              : 0));
-    AddLabel(Page::Recording, x, 360, labelWidth, L"音频码率");
-    recordingBitrate_ = AddCombo(Page::Recording, x, 384, 200, { L"128 kbps", L"192 kbps" },
-                                 settings_.recording.audioBitrate ==
-                                         core::RecordingAudioBitrate::K192
-                                     ? 1
-                                     : 0);
-    systemAudio_ = AddCheck(Page::Recording, x, 420, 200, L"录制系统声音", settings_.recording.systemAudio);
-    microphone_ = AddCheck(Page::Recording, x + 220, 420, 200, L"录制麦克风",
-                           settings_.recording.microphone);
-    AddLabel(Page::Recording, x, 452, labelWidth, L"保存目录");
-    recordingDirectory_ = AddEdit(Page::Recording, x, 476, controlWidth,
-                                  Utf8ToWide(settings_.recordingDirectory));
-
-    // ---- OCR ----
-    AddLabel(Page::Ocr, x, 20, labelWidth, L"识别引擎");
-    ocrEngine_ = AddCombo(Page::Ocr, x, 44, controlWidth,
-                          { L"系统 OCR（Windows.Media.Ocr）", L"PP-OCRv6 tiny（模型）" },
-                          static_cast<int>(settings_.ocr.engine));
-    ocrAutoCopy_ = AddCheck(Page::Ocr, x, 92, 300, L"识别后自动复制文本", settings_.ocr.autoCopy);
-    ocrPin_ = AddCheck(Page::Ocr, x, 122, 300, L"贴图时同时识别", settings_.ocr.pinOcrEnabled);
-    AddLabel(Page::Ocr, x, 164, 560,
-             L"模型目录：" + (modelsDirectory_.empty() ? L"未找到（设置 HALOCAP_OCR_MODELS）"
-                                                       : Utf8ToWide(modelsDirectory_)));
-
-    // ---- 快捷键 ----
-    const struct {
-        const wchar_t* name;
-        const core::HotkeySpec* spec;
-    } hotkeys[] = {
-        { L"截图", &settings_.screenshotHotkey }, { L"OCR", &settings_.ocrHotkey },
-        { L"录制", &settings_.recordHotkey },     { L"贴图", &settings_.pinHotkey },
-        { L"圆盘", &settings_.radialHotkey },
-    };
-    int hotkeyY = 20;
-    for (int i = 0; i < 5; ++i) {
-        AddLabel(Page::Hotkeys, x, hotkeyY, 56, hotkeys[i].name);
-        hotkeyValues_[i] = AddLabel(Page::Hotkeys, x + 64, hotkeyY, 210,
-                                    Utf8ToWide(core::FormatHotkeyText(*hotkeys[i].spec)));
-        HWND button = CreateWindowExW(0, L"BUTTON", L"设置",
-                                      WS_CHILD | BS_PUSHBUTTON, x + 286, hotkeyY, 64, 24,
-                                      window_, reinterpret_cast<HMENU>(300 + i),
-                                      GetModuleHandleW(nullptr), nullptr);
-        SendMessageW(button, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
-        controls_.push_back({ button, Page::Hotkeys });
-        ShowWindow(button, SW_HIDE);
-        hotkeyButtons_[i] = button;
-        hotkeyY += 34;
-    }
-    AddLabel(Page::Hotkeys, x, hotkeyY + 10, 560, L"点「设置」后按下新的组合键；Esc 取消。");
-
-    // ---- 外观 ----
-    AddLabel(Page::Appearance, x, 20, labelWidth, L"托盘菜单尺寸");
-    menuSize_ = AddCombo(Page::Appearance, x, 44, controlWidth, { L"小", L"中", L"大" },
-                         static_cast<int>(settings_.menuSize));
-    pinGlow_ = AddCheck(Page::Appearance, x, 92, 300, L"贴图窗口显示光晕", settings_.pinGlowEnabled);
-    autoStart_ = AddCheck(Page::Appearance, x, 126, 300, L"开机自动启动", settings_.autoStart);
-
-    // ---- 关于 / 诊断 ----
-    {
-        std::wstring summary;
-        summary += L"HaloCap 2.0（原生重构）\n\n";
-        summary += L"系统版本：" + std::to_wstring(facts_.osBuild) + L"（" +
-                   (core::MeetsWindowsFloor(facts_.osBuild) ? L"支持" : L"低于下限") + L"）\n";
-        summary += std::wstring(L"Windows.Graphics.Capture：") +
-                   (facts_.graphicsCaptureSupported ? L"可用" : L"不可用") + L"\n";
-        summary += L"进程私有内存：" +
-                   std::to_wstring(facts_.privateMemoryBytes / (1024 * 1024)) + L" MB\n";
-        summary += L"OCR 引擎：系统 OCR" +
-                   std::wstring(modelsDirectory_.empty() ? L"（模型未找到）" : L" + PP-OCRv6 tiny") +
-                   L"\n";
-        summary += L"模型目录：" +
-                   (modelsDirectory_.empty() ? L"未找到" : Utf8ToWide(modelsDirectory_)) + L"\n";
-        summary += L"设置：%APPDATA%\\HaloCap2\\settings.json\n";
-        summary += L"日志：%APPDATA%\\HaloCap2\\logs\n";
-
-        summaryText_ = summary;
-        HWND about = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", summary.c_str(),
-                                     WS_CHILD | ES_MULTILINE | ES_READONLY | WS_VSCROLL, x, 20,
-                                     560, 420, window_, nullptr, GetModuleHandleW(nullptr),
-                                     nullptr);
-        SendMessageW(about, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
-        controls_.push_back({ about, Page::About });
-        ShowWindow(about, SW_HIDE);
-
-        copySummaryButton_ = CreateWindowExW(0, L"BUTTON", L"复制环境摘要",
-                                             WS_CHILD | BS_PUSHBUTTON, x, 456, 140, 30,
-                                             window_, reinterpret_cast<HMENU>(7),
-                                             GetModuleHandleW(nullptr), nullptr);
-        checkUpdateButton_ = CreateWindowExW(0, L"BUTTON", L"检查更新",
-                                             WS_CHILD | BS_PUSHBUTTON, x + 152, 456, 120, 30,
-                                             window_, reinterpret_cast<HMENU>(8),
-                                             GetModuleHandleW(nullptr), nullptr);
-        for (HWND button : { copySummaryButton_, checkUpdateButton_ }) {
-            SendMessageW(button, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
-            controls_.push_back({ button, Page::About });
-            ShowWindow(button, SW_HIDE);
-        }
-    }
-
-    // 1.x 是无边框窗：把已建好的控件整体下移一个自绘标题栏的高度。
-    HWND shifted[] = { list_, saveButton_, cancelButton_ };
-    for (HWND control : shifted) {
-        RECT rect{};
-        GetWindowRect(control, &rect);
-        MapWindowPoints(HWND_DESKTOP, window_, reinterpret_cast<POINT*>(&rect), 2);
-        SetWindowPos(control, nullptr, rect.left, rect.top + kTitleBar, rect.right - rect.left,
-                     rect.bottom - rect.top, SWP_NOZORDER);
-    }
-    for (const PageControl& control : controls_) {
-        RECT rect{};
-        GetWindowRect(control.handle, &rect);
-        MapWindowPoints(HWND_DESKTOP, window_, reinterpret_cast<POINT*>(&rect), 2);
-        SetWindowPos(control.handle, nullptr, rect.left, rect.top + kTitleBar + kPageTitleShift,
-                     rect.right - rect.left, rect.bottom - rect.top, SWP_NOZORDER);
-    }
-
-    HWND closeButton = CreateWindowExW(0, L"BUTTON", L"",
-                                       WS_CHILD | WS_VISIBLE | BS_OWNERDRAW, 840 - 44, 7, 30, 24,
-                                       window_, reinterpret_cast<HMENU>(202),
-                                       GetModuleHandleW(nullptr), nullptr);
-    SendMessageW(closeButton, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
-
-    const int screenWidth = GetSystemMetrics(SM_CXSCREEN);
-    const int screenHeight = GetSystemMetrics(SM_CYSCREEN);
-    SetWindowPos(window_, HWND_TOPMOST, (screenWidth - 840) / 2, (screenHeight - 600) / 2, 840,
-                 600, SWP_NOZORDER);
-    const DWORD cornerPreference = 2;   // DWMWCP_ROUND
-    DwmSetWindowAttribute(window_, 33 /* DWMWA_WINDOW_CORNER_PREFERENCE */, &cornerPreference,
-                          sizeof(cornerPreference));
-
-    ShowPage(Page::Screenshot);
     ShowWindow(window_, SW_SHOW);
-    UpdateWindow(window_);
+    Render();
     return true;
 }
 
-void SettingsWindow::ShowPage(Page page) {
-    current_ = page;
-    currentPage_ = page;
-    for (const PageControl& control : controls_) {
-        ShowWindow(control.handle, control.page == page ? SW_SHOW : SW_HIDE);
-    }
-    InvalidateRect(window_, nullptr, TRUE);
+void SettingsWindow::ShowPageForTest(int index) {
+    page_ = static_cast<Page>(std::clamp(index, 0, 5));
+    scroll_ = 0;
+    Render();
 }
 
-void SettingsWindow::Save() {
-    if (screenshotFormat_ != nullptr) {
-        const int index = static_cast<int>(SendMessageW(screenshotFormat_, CB_GETCURSEL, 0, 0));
-        settings_.screenshotFormat = index == 1 ? core::ScreenshotFormat::Jpeg
-                                                : core::ScreenshotFormat::Png;
+void SettingsWindow::Close() {
+    if (keyHook_ != nullptr) {
+        UnhookWindowsHookEx(keyHook_);
+        keyHook_ = nullptr;
     }
-    if (recordingResolution_ != nullptr) {
-        const int index = static_cast<int>(SendMessageW(recordingResolution_, CB_GETCURSEL, 0, 0));
-        settings_.recording.resolution = static_cast<core::RecordingResolution>(
-            std::clamp(index, 0, 4));
+    if (g_hotkeyOwner == this) {
+        g_hotkeyOwner = nullptr;
     }
-    if (recordingFrameRate_ != nullptr) {
-        const int index = static_cast<int>(SendMessageW(recordingFrameRate_, CB_GETCURSEL, 0, 0));
-        settings_.recording.frameRate =
-            index == 1 ? core::RecordingFrameRate::Sixty : core::RecordingFrameRate::Thirty;
-    }
-    if (recordingQuality_ != nullptr) {
-        const int index = static_cast<int>(SendMessageW(recordingQuality_, CB_GETCURSEL, 0, 0));
-        settings_.recording.quality = static_cast<core::RecordingQuality>(std::clamp(index, 0, 2));
-    }
-    if (recordingRange_ != nullptr) {
-        const int index = static_cast<int>(SendMessageW(recordingRange_, CB_GETCURSEL, 0, 0));
-        settings_.recording.range = static_cast<core::RecordingRange>(std::clamp(index, 0, 1));
-    }
-    if (recordingCountdown_ != nullptr) {
-        const int index = static_cast<int>(SendMessageW(recordingCountdown_, CB_GETCURSEL, 0, 0));
-        settings_.recording.countdown = index == 2 ? core::RecordingCountdown::FiveSeconds
-                                                   : (index == 1
-                                                          ? core::RecordingCountdown::ThreeSeconds
-                                                          : core::RecordingCountdown::Off);
-    }
-    if (recordingBitrate_ != nullptr) {
-        const int index = static_cast<int>(SendMessageW(recordingBitrate_, CB_GETCURSEL, 0, 0));
-        settings_.recording.audioBitrate = index == 1 ? core::RecordingAudioBitrate::K192
-                                                      : core::RecordingAudioBitrate::K128;
-    }
-    if (systemAudio_ != nullptr) {
-        settings_.recording.systemAudio =
-            SendMessageW(systemAudio_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-    }
-    if (microphone_ != nullptr) {
-        settings_.recording.microphone =
-            SendMessageW(microphone_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-    }
-    if (recordingDirectory_ != nullptr) {
-        settings_.recordingDirectory = WideToUtf8(GetText(recordingDirectory_));
-    }
-    if (ocrEngine_ != nullptr) {
-        const int index = static_cast<int>(SendMessageW(ocrEngine_, CB_GETCURSEL, 0, 0));
-        settings_.ocr.engine =
-            index == 1 ? core::OcrEngine::Model : core::OcrEngine::Native;
-    }
-    if (ocrAutoCopy_ != nullptr) {
-        settings_.ocr.autoCopy = SendMessageW(ocrAutoCopy_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-    }
-    if (ocrPin_ != nullptr) {
-        settings_.ocr.pinOcrEnabled =
-            SendMessageW(ocrPin_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-    }
-    if (menuSize_ != nullptr) {
-        const int index = static_cast<int>(SendMessageW(menuSize_, CB_GETCURSEL, 0, 0));
-        settings_.menuSize = static_cast<core::MenuSize>(std::clamp(index, 0, 2));
-    }
-    if (pinGlow_ != nullptr) {
-        settings_.pinGlowEnabled = SendMessageW(pinGlow_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-    }
-    if (autoStart_ != nullptr) {
-        settings_.autoStart = SendMessageW(autoStart_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-    }
-    if (recordCursor_ != nullptr) {
-        settings_.recording.recordCursor =
-            SendMessageW(recordCursor_, BM_GETCHECK, 0, 0) == BST_CHECKED;
-    }
-
-    if (onSave_ != nullptr && onSave_(settings_)) {
-        saved_ = true;
+    if (window_ != nullptr) {
         DestroyWindow(window_);
+        window_ = nullptr;
     }
-}
-
-void SettingsWindow::StartHotkeyCapture(int index) {
-    if (index < 0 || index >= 5) {
-        return;
+    if (bitmap_ != nullptr) {
+        DeleteObject(bitmap_);
+        bitmap_ = nullptr;
     }
-    if (g_hotkeyHook != nullptr) {
-        UnhookWindowsHookEx(g_hotkeyHook);
-        g_hotkeyHook = nullptr;
+    if (memory_ != nullptr) {
+        DeleteDC(memory_);
+        memory_ = nullptr;
     }
-    captureIndex_ = index;
-    g_hotkeyOwner = this;
-    g_hotkeyIndex = index;
-    if (hotkeyValues_[index] != nullptr) {
-        SetWindowTextW(hotkeyValues_[index], L"按下新的组合键…");
-    }
-    g_hotkeyHook = SetWindowsHookExW(WH_KEYBOARD_LL, &SettingsWindow::HotkeyHook,
-                                     GetModuleHandleW(nullptr), 0);
-}
-
-void SettingsWindow::FinishHotkeyCapture(const core::HotkeySpec& spec) {
-    if (captureIndex_ >= 0 && captureIndex_ < 5) {
-        switch (captureIndex_) {
-        case 0: settings_.screenshotHotkey = spec; break;
-        case 1: settings_.ocrHotkey = spec; break;
-        case 2: settings_.recordHotkey = spec; break;
-        case 3: settings_.pinHotkey = spec; break;
-        case 4: settings_.radialHotkey = spec; break;
-        default: break;
-        }
-    }
-    captureIndex_ = -1;
-    g_hotkeyOwner = nullptr;
-    g_hotkeyIndex = -1;
-    if (g_hotkeyHook != nullptr) {
-        UnhookWindowsHookEx(g_hotkeyHook);
-        g_hotkeyHook = nullptr;
-    }
-    RefreshHotkeyLabels();
-}
-
-void SettingsWindow::RefreshHotkeyLabels() {
-    const core::HotkeySpec* specs[5] = { &settings_.screenshotHotkey, &settings_.ocrHotkey,
-                                         &settings_.recordHotkey, &settings_.pinHotkey,
-                                         &settings_.radialHotkey };
-    for (int i = 0; i < 5; ++i) {
-        if (hotkeyValues_[i] != nullptr) {
-            SetWindowTextW(hotkeyValues_[i],
-                           Utf8ToWide(core::FormatHotkeyText(*specs[i])).c_str());
-        }
-    }
+    bits_ = nullptr;
 }
 
 LRESULT CALLBACK SettingsWindow::HotkeyHook(int code, WPARAM wParam, LPARAM lParam) {
@@ -599,22 +474,14 @@ LRESULT CALLBACK SettingsWindow::HotkeyHook(int code, WPARAM wParam, LPARAM lPar
     if (wParam != WM_KEYDOWN && wParam != WM_SYSKEYDOWN) {
         return CallNextHookEx(nullptr, code, wParam, lParam);
     }
-
     const DWORD vk = reinterpret_cast<const KBDLLHOOKSTRUCT*>(lParam)->vkCode;
     if (vk == VK_CONTROL || vk == VK_SHIFT || vk == VK_MENU || vk == VK_LWIN || vk == VK_RWIN) {
         return 1;
     }
     if (vk == VK_ESCAPE) {
-        g_hotkeyOwner->captureIndex_ = -1;
-        g_hotkeyOwner->RefreshHotkeyLabels();
-        g_hotkeyOwner = nullptr;
-        if (g_hotkeyHook != nullptr) {
-            UnhookWindowsHookEx(g_hotkeyHook);
-            g_hotkeyHook = nullptr;
-        }
+        g_hotkeyOwner->CancelHotkeyCapture();
         return 1;
     }
-
     core::HotkeySpec spec;
     spec.key = KeyFromVirtualKey(vk);
     if ((GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0) {
@@ -629,45 +496,863 @@ LRESULT CALLBACK SettingsWindow::HotkeyHook(int code, WPARAM wParam, LPARAM lPar
     if (((GetAsyncKeyState(VK_LWIN) | GetAsyncKeyState(VK_RWIN)) & 0x8000) != 0) {
         spec.modifiers |= core::kModWin;
     }
-
     if (spec.key == core::KeySymbol::None || !core::CheckHotkey(spec).valid) {
         Beep(800, 60);
         return 1;
     }
-
     g_hotkeyOwner->FinishHotkeyCapture(spec);
     return 1;
 }
-void SettingsWindow::Close() {
-    if (g_hotkeyHook != nullptr) {
-        UnhookWindowsHookEx(g_hotkeyHook);
-        g_hotkeyHook = nullptr;
+
+void SettingsWindow::StartHotkeyCapture(int index) {
+    if (index < 0 || index >= 5) {
+        return;
+    }
+    if (keyHook_ != nullptr) {
+        UnhookWindowsHookEx(keyHook_);
+        keyHook_ = nullptr;
+    }
+    captureIndex_ = index;
+    g_hotkeyOwner = this;
+    keyHook_ = SetWindowsHookExW(WH_KEYBOARD_LL, &SettingsWindow::HotkeyHook,
+                                 GetModuleHandleW(nullptr), 0);
+    Render();
+}
+
+void SettingsWindow::FinishHotkeyCapture(const core::HotkeySpec& spec) {
+    if (captureIndex_ >= 0 && captureIndex_ < 5) {
+        switch (captureIndex_) {
+        case 0: settings_.radialHotkey = spec; break;
+        case 1: settings_.screenshotHotkey = spec; break;
+        case 2: settings_.ocrHotkey = spec; break;
+        case 3: settings_.recordHotkey = spec; break;
+        case 4: settings_.pinHotkey = spec; break;
+        default: break;
+        }
+    }
+    CancelHotkeyCapture();
+}
+
+void SettingsWindow::CancelHotkeyCapture() {
+    captureIndex_ = -1;
+    if (keyHook_ != nullptr) {
+        UnhookWindowsHookEx(keyHook_);
+        keyHook_ = nullptr;
     }
     g_hotkeyOwner = nullptr;
-    if (window_ != nullptr) {
-        DestroyWindow(window_);
-        window_ = nullptr;
+    Render();
+}
+
+void SettingsWindow::Save() {
+    if (!onSave_) {
+        Close();
+        return;
     }
-    if (font_ != nullptr) {
-        DeleteObject(font_);
-        font_ = nullptr;
-    }
-    for (HBRUSH* brush : { &background_, &sidebarBrush_, &cardBrush_, &accentBrush_ }) {
-        if (*brush != nullptr) {
-            DeleteObject(*brush);
-            *brush = nullptr;
-        }
-    }
-    for (HPEN* pen : { &cardBorderPen_, &fieldBorderPen_ }) {
-        if (*pen != nullptr) {
-            DeleteObject(*pen);
-            *pen = nullptr;
-        }
+    if (onSave_(settings_)) {
+        saved_ = true;
+        Close();
+    } else {
+        MessageBoxW(window_, L"保存失败，详见日志。", L"HaloCap", MB_OK | MB_ICONWARNING);
     }
 }
 
-LRESULT CALLBACK SettingsWindow::WndProc(HWND window, UINT message, WPARAM wParam,
-                                         LPARAM lParam) {
+std::wstring SettingsWindow::SummaryText() const {
+    std::wostringstream stream;
+    stream << L"HaloCap " << Utf8ToWide(halocap::app::kHaloCapVersion) << L"\n";
+    stream << L"OS build: " << facts_.osBuild << L"\n";
+
+    stream << L"Models: " << Utf8ToWide(modelsDirectory_) << L"\n";
+    return stream.str();
+}
+
+void SettingsWindow::CopySummary() {
+    CopyTextToClipboard(SummaryText());
+    MessageBoxW(window_, L"环境摘要已复制到剪贴板。", L"HaloCap", MB_OK | MB_ICONINFORMATION);
+}
+
+void SettingsWindow::CheckUpdate() {
+    std::string json;
+    std::wstring source = L"本地清单";
+    const std::string url = ReadUpdateUrl();
+    if (!url.empty()) {
+        std::string networkError;
+        if (halocap::platform::win32::HttpGetUtf8(Utf8ToWide(url), &json, &networkError) &&
+            !json.empty()) {
+            source = L"网络清单";
+        } else {
+            json.clear();
+        }
+    }
+    if (json.empty()) {
+        json = ReadLocalUpdateManifest();
+    }
+    if (json.empty()) {
+        MessageBoxW(window_,
+                    L"未找到更新清单：可在 %LOCALAPPDATA%\\HaloCap2\\update.url 写清单地址，"
+                    L"或放 update.json。",
+                    L"HaloCap 更新", MB_OK | MB_ICONINFORMATION);
+        return;
+    }
+    core::UpdateManifest manifest;
+    std::string error;
+    if (!core::ParseUpdateManifest(json, &manifest, &error)) {
+        MessageBoxW(window_, L"更新清单解析失败，详见日志。", L"HaloCap 更新",
+                    MB_OK | MB_ICONWARNING);
+        return;
+    }
+    const bool newer = core::IsNewerVersion(manifest.version, halocap::app::kHaloCapVersion);
+    std::wstring message = L"当前版本：" + Utf8ToWide(halocap::app::kHaloCapVersion) +
+                           L"\n最新版本：" + Utf8ToWide(manifest.version) + L"\n\n";
+    message += newer ? L"发现新版本，可从清单中的地址下载。" : L"已经是最新版本。";
+    if (newer) {
+        message += L"\n" + Utf8ToWide(manifest.url);
+    }
+    message += L"\n来源：" + source;
+    MessageBoxW(window_, message.c_str(), L"HaloCap 更新", MB_OK | MB_ICONINFORMATION);
+}
+
+void SettingsWindow::ChooseDirectory() {
+    IFileOpenDialog* dialog = nullptr;
+    if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
+                                IID_PPV_ARGS(&dialog)))) {
+        return;
+    }
+    DWORD options = 0;
+    dialog->GetOptions(&options);
+    dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM);
+    if (SUCCEEDED(dialog->Show(window_))) {
+        IShellItem* item = nullptr;
+        if (SUCCEEDED(dialog->GetResult(&item))) {
+            PWSTR path = nullptr;
+            if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path))) {
+                settings_.recordingDirectory = std::string(Utf8FromWide(path));
+                CoTaskMemFree(path);
+            }
+            item->Release();
+        }
+    }
+    dialog->Release();
+    Render();
+}
+
+void SettingsWindow::AddHotspot(const RECT& rect, int id) {
+    hotspots_.push_back(Hotspot{ rect, id });
+}
+
+int SettingsWindow::HitTest(POINT client) const {
+    const float x = client.x / scale_;
+    const float y = client.y / scale_;
+    for (const Hotspot& spot : hotspots_) {
+        if (x >= spot.rect.left && x < spot.rect.right && y >= spot.rect.top &&
+            y < spot.rect.bottom) {
+            return spot.id;
+        }
+    }
+    return kIdNone;
+}
+
+void SettingsWindow::Click(int id) {
+    if (id >= kIdNavBase && id < kIdNavBase + 6) {
+        page_ = static_cast<Page>(id - kIdNavBase);
+        scroll_ = 0;
+        Render();
+        return;
+    }
+    if (id == kIdClose || id == kIdCancel) {
+        Close();
+        return;
+    }
+    if (id == kIdSave) {
+        Save();
+        return;
+    }
+    if (id == kIdUpdate) {
+        CheckUpdate();
+        return;
+    }
+    if (id == kIdCopySummary) {
+        CopySummary();
+        return;
+    }
+    if (id == kIdDirectory) {
+        ChooseDirectory();
+        return;
+    }
+    if (id >= kIdHotkeyBase && id < kIdHotkeyBase + 5) {
+        StartHotkeyCapture(id - kIdHotkeyBase);
+        return;
+    }
+    if (id >= kIdSegmentBase) {
+        const int group = (id - kIdSegmentBase) / 10;
+        const int option = (id - kIdSegmentBase) % 10;
+        switch (group) {
+        case kGroupMenuSize:
+            settings_.menuSize = static_cast<core::MenuSize>(option);
+            break;
+        case kGroupScreenshotFormat:
+            settings_.screenshotFormat =
+                option == 1 ? core::ScreenshotFormat::Jpeg : core::ScreenshotFormat::Png;
+            break;
+        case kGroupOcrEngine:
+            settings_.ocr.engine =
+                option == 0 ? core::OcrEngine::Native : core::OcrEngine::Model;
+            break;
+        case kGroupResolution:
+            settings_.recording.resolution = static_cast<core::RecordingResolution>(option);
+            break;
+        case kGroupFrameRate:
+            settings_.recording.frameRate = option == 1 ? core::RecordingFrameRate::Sixty
+                                                         : core::RecordingFrameRate::Thirty;
+            break;
+        case kGroupQuality:
+            settings_.recording.quality = static_cast<core::RecordingQuality>(option);
+            break;
+        case kGroupRange:
+            settings_.recording.range = static_cast<core::RecordingRange>(option);
+            break;
+        case kGroupCountdown:
+            settings_.recording.countdown = option == 0   ? core::RecordingCountdown::Off
+                                            : option == 1 ? core::RecordingCountdown::ThreeSeconds
+                                                          : core::RecordingCountdown::FiveSeconds;
+            break;
+        default:
+            break;
+        }
+        Render();
+        return;
+    }
+    switch (id) {
+    case kIdToggleAutoStart: settings_.autoStart = !settings_.autoStart; break;
+    case kIdToggleConvertFiles:
+        settings_.convertFilePathsToImages = !settings_.convertFilePathsToImages;
+        break;
+    case kIdTogglePinGlow: settings_.pinGlowEnabled = !settings_.pinGlowEnabled; break;
+    case kIdToggleAutoCopy: settings_.ocr.autoCopy = !settings_.ocr.autoCopy; break;
+    case kIdTogglePinOcr: settings_.ocr.pinOcrEnabled = !settings_.ocr.pinOcrEnabled; break;
+    case kIdToggleSystemAudio:
+        settings_.recording.systemAudio = !settings_.recording.systemAudio;
+        break;
+    case kIdToggleMicrophone:
+        settings_.recording.microphone = !settings_.recording.microphone;
+        break;
+    case kIdToggleRecordCursor:
+        settings_.recording.recordCursor = !settings_.recording.recordCursor;
+        break;
+    default:
+        return;
+    }
+    Render();
+}
+
+void SettingsWindow::Render() {
+    if (bits_ == nullptr || window_ == nullptr) {
+        return;
+    }
+    Fonts* fonts = GetFonts();
+    hotspots_.clear();
+
+    Bitmap canvas(widthPx_, heightPx_, PixelFormat32bppPARGB);
+    Graphics g(&canvas);
+    g.SetSmoothingMode(SmoothingModeAntiAlias);
+    g.SetTextRenderingHint(TextRenderingHintAntiAlias);
+    g.SetCompositingQuality(CompositingQualityHighQuality);
+    g.Clear(Color(0, 0, 0, 0));
+    Matrix transform(scale_, 0.0f, 0.0f, scale_, 0.0f, 0.0f);
+    g.SetTransform(&transform);
+
+    const Color textPrimary(255, 0x1D, 0x1D, 0x1F);
+    const Color textSecondary(255, 0x6E, 0x6E, 0x73);
+    const Color textTertiary(255, 0x8E, 0x8E, 0x93);
+    const Color accent(255, 0x00, 0x7A, 0xFF);
+    const Color sidebar(255, 0xED, 0xED, 0xF1);
+    const Color content(255, 0xF7, 0xF7, 0xF9);
+    const Color card(255, 255, 255, 255);
+    const Color cardBorder(255, 0xE7, 0xE7, 0xEC);
+    const Color hairline(20, 0, 0, 0);
+
+    const RectF frame(kMargin, kMargin, kWindowW - 2 * kMargin, kWindowH - 2 * kMargin);
+
+    // 投影（32 blur / 8 depth / 0.28）。
+    for (int i = 0; i < 22; ++i) {
+        const float t = static_cast<float>(i) / 21.0f;
+        const float expand = 1.0f + i * 0.9f;
+        const int alpha = static_cast<int>(30.0f * (1.0f - t) * (1.0f - t));
+        FillRoundRect(g, RectF(frame.X - expand, frame.Y - expand + 4.0f,
+                               frame.Width + expand * 2.0f, frame.Height + expand * 2.0f),
+                      kRadius + expand, Color(static_cast<BYTE>(alpha), 0, 0, 0));
+    }
+
+    FillRoundRect(g, frame, kRadius, Color(255, 255, 255, 255));
+    FillRoundRect(g, frame, kRadius, content);
+    StrokeRoundRect(g, frame, kRadius, Color(38, 0, 0, 0));
+
+    // 标题栏 50：左侧与侧栏同色，右上角关闭。
+    GraphicsPath topBand;
+    topBand.AddArc(frame.X, frame.Y, kRadius * 2, kRadius * 2, 180.0f, 90.0f);
+    topBand.AddArc(frame.X + frame.Width - kRadius * 2, frame.Y, kRadius * 2, kRadius * 2, 270.0f,
+                   90.0f);
+    topBand.AddLine(frame.X + frame.Width, frame.Y + kTitleBar, frame.X,
+                    frame.Y + kTitleBar);
+    topBand.CloseFigure();
+    SolidBrush bandBrush(sidebar);
+    g.FillPath(&bandBrush, &topBand);
+
+    // 侧栏
+    GraphicsPath sidebarPath;
+    sidebarPath.AddLine(frame.X, frame.Y + kTitleBar, frame.X + kSidebar,
+                        frame.Y + kTitleBar);
+    sidebarPath.AddLine(frame.X + kSidebar, frame.Y + kTitleBar, frame.X + kSidebar,
+                        frame.Y + frame.Height - kRadius);
+    sidebarPath.AddArc(frame.X + frame.Width - kRadius * 2, frame.Y + frame.Height - kRadius * 2,
+                       kRadius * 2, kRadius * 2, 90.0f, 90.0f);
+    sidebarPath.AddLine(frame.X + kRadius, frame.Y + frame.Height, frame.X,
+                        frame.Y + frame.Height - kRadius);
+    sidebarPath.AddArc(frame.X, frame.Y + frame.Height - kRadius * 2, kRadius * 2,
+                       kRadius * 2, 180.0f, 90.0f);
+    sidebarPath.CloseFigure();
+    // 侧栏只画到内容区起点，避免盖住右侧内容。
+    g.SetClip(RectF(frame.X, frame.Y, kSidebar, frame.Height));
+    g.FillPath(&bandBrush, &sidebarPath);
+    g.ResetClip();
+
+    Pen sidebarBorder(Color(15, 0, 0, 0), 1.0f);
+    g.DrawLine(&sidebarBorder, frame.X + kSidebar, frame.Y + kTitleBar, frame.X + kSidebar,
+               frame.Y + frame.Height);
+    Pen hairlinePen(hairline, 1.0f);
+    g.DrawLine(&hairlinePen, frame.X + kSidebar, frame.Y + kTitleBar, frame.X + frame.Width,
+               frame.Y + kTitleBar);
+
+    // 左上角 logo：18 圆环 + 内环 + 金点；HaloCap + 光圈。
+    const float logoX = frame.X + 20.0f;
+    const float logoY = frame.Y + (kTitleBar - 18.0f) * 0.5f;
+    Pen logoOuter(Color(34, 0, 0, 0), 1.0f);
+    g.DrawEllipse(&logoOuter, logoX, logoY, 18.0f, 18.0f);
+    Pen logoInner(accent, 1.3f);
+    g.DrawEllipse(&logoInner, logoX + 3.0f, logoY + 3.0f, 12.0f, 12.0f);
+    SolidBrush gold(Color(255, 0xF5, 0xB9, 0x63));
+    g.FillEllipse(&gold, logoX + 7.5f, logoY + 7.5f, 3.0f, 3.0f);
+    DrawText(g, L"HaloCap", &fonts->settingBold,
+             RectF(logoX + 27.0f, logoY, 70.0f, 18.0f), textPrimary);
+    DrawText(g, L"光圈", &fonts->desc, RectF(logoX + 96.0f, logoY + 1.0f, 40.0f, 16.0f),
+             textTertiary);
+
+    // 关闭按钮。
+    const RECT closeRect{ static_cast<LONG>((frame.X + frame.Width - 14.0f - 28.0f) ),
+                          static_cast<LONG>((frame.Y + (kTitleBar - 28.0f) * 0.5f)),
+                          static_cast<LONG>((frame.X + frame.Width - 14.0f)),
+                          static_cast<LONG>((frame.Y + (kTitleBar + 28.0f) * 0.5f)) };
+    AddHotspot(closeRect, kIdClose);
+    if (hoverId_ == kIdClose) {
+        FillRoundRect(g, RectF(static_cast<float>(closeRect.left),
+                               static_cast<float>(closeRect.top), 28.0f, 28.0f),
+                      7.0f, Color(20, 0, 0, 0));
+    }
+    {
+        Pen closePen(textSecondary, 1.4f);
+        closePen.SetStartCap(LineCapRound);
+        closePen.SetEndCap(LineCapRound);
+        const float cx = (closeRect.left + closeRect.right) * 0.5f;
+        const float cy = (closeRect.top + closeRect.bottom) * 0.5f;
+        g.DrawLine(&closePen, cx - 5.5f, cy - 5.5f, cx + 5.5f, cy + 5.5f);
+        g.DrawLine(&closePen, cx + 5.5f, cy - 5.5f, cx - 5.5f, cy + 5.5f);
+    }
+
+    // 侧栏导航。
+    const wchar_t* navTitles[6] = { L"通用", L"快捷键", L"截图与贴图", L"文字识别", L"录屏",
+                                    L"关于" };
+
+    float navY = frame.Y + kTitleBar + 14.0f;
+    for (int i = 0; i < 6; ++i) {
+        const RectF item(frame.X + 18.0f, navY, kSidebar - 32.0f, 34.0f);
+        AddHotspot(RECT{ static_cast<LONG>(item.X), static_cast<LONG>(item.Y),
+                         static_cast<LONG>(item.X + item.Width),
+                         static_cast<LONG>(item.Y + item.Height) },
+                   kIdNavBase + i);
+        const bool selected = static_cast<int>(page_) == i;
+        if (selected) {
+            FillRoundRect(g, item, 8.0f, Color(255, 0xE0, 0xE0, 0xE6));
+        } else if (hoverId_ == kIdNavBase + i) {
+            FillRoundRect(g, item, 8.0f, Color(10, 0, 0, 0));
+        }
+        DrawNavIcon(g, i, PointF(item.X + 20.0f, item.Y + item.Height * 0.5f),
+                    selected ? accent : Color(255, 0x8E, 0x8E, 0x93));
+        DrawText(g, navTitles[i], selected ? &fonts->navBold : &fonts->nav,
+                 RectF(item.X + 38.0f, item.Y, item.Width - 44.0f, item.Height),
+                 selected ? textPrimary : Color(255, 0x6E, 0x6E, 0x73));
+        navY += 36.0f;
+    }
+
+    // 内容区标题。
+    const wchar_t* pageTitles[6] = { L"通用", L"快捷键", L"截图与贴图", L"文字识别", L"录屏",
+                                     L"关于" };
+    const wchar_t* pageSubtitles[6] = {
+        L"启动方式、光圈大小与贴图外观",
+        L"呼出光圈与四个动作的全局按键，单键会独占该键",
+        L"图片格式与剪贴板行为",
+        L"选择识别引擎与结果偏好",
+        L"录制范围、画面与声音",
+        L"版本、更新与诊断信息",
+    };
+    const float contentLeft = frame.X + kSidebar;
+    const float headerX = contentLeft + 30.0f;
+    const float headerY = frame.Y + kTitleBar + 26.0f;
+    DrawText(g, pageTitles[static_cast<int>(page_)], &fonts->title,
+             RectF(headerX, headerY, 400.0f, 28.0f), textPrimary);
+    DrawText(g, pageSubtitles[static_cast<int>(page_)], &fonts->subtitle,
+             RectF(headerX, headerY + 31.0f, 460.0f, 18.0f), textSecondary);
+
+    const float scrollTop = headerY + 62.0f;
+    const float scrollBottom = frame.Y + frame.Height - kFooter;
+    const float scrollX = headerX;
+    const float scrollW = frame.X + frame.Width - 30.0f - scrollX;
+
+    g.SetClip(RectF(contentLeft, scrollTop - 6.0f, frame.Width - kSidebar,
+                    scrollBottom - scrollTop + 8.0f));
+
+    float y = scrollTop - scroll_;
+    const float cardPad = 16.0f;
+    const float rowTitle = 18.0f;
+
+    const auto groupLabel = [&](const wchar_t* text) {
+        DrawText(g, text, &fonts->group, RectF(scrollX + 4.0f, y, scrollW, 16.0f),
+                 Color(255, 0x86, 0x86, 0x8B));
+        y += 24.0f;
+    };
+    const auto cardStart = [&](float height) {
+        const float top = y;
+        FillRoundRect(g, RectF(scrollX, top, scrollW, height), 12.0f, card);
+        StrokeRoundRect(g, RectF(scrollX, top, scrollW, height), 12.0f, cardBorder);
+        y = top;
+        return top;
+    };
+    const auto divider = [&](float cardX, float cardW) {
+        Pen dividerPen(hairline, 1.0f);
+        g.DrawLine(&dividerPen, cardX + 16.0f, y, cardX + cardW - 16.0f, y);
+    };
+    const auto switchAt = [&](float rowX, float rowW, float rowY, float rowH, int id,
+                              bool on) {
+        const float sw = 44.0f;
+        const float sh = 24.0f;
+        const float sx = rowX + rowW - cardPad - sw;
+        const float sy = rowY + (rowH - sh) * 0.5f;
+        AddHotspot(RECT{ static_cast<LONG>(sx), static_cast<LONG>(sy),
+                         static_cast<LONG>(sx + sw), static_cast<LONG>(sy + sh) },
+                   id);
+        FillRoundRect(g, RectF(sx, sy, sw, sh), 12.0f,
+                      on ? accent : Color(255, 0xE3, 0xE3, 0xE8));
+        StrokeRoundRect(g, RectF(sx, sy, sw, sh), 12.0f,
+                        on ? accent : Color(255, 0xD5, 0xD5, 0xDB));
+        SolidBrush knob(card);
+        g.FillEllipse(&knob, on ? sx + sw - 21.0f : sx + 3.0f, sy + 3.0f, 18.0f, 18.0f);
+    };
+    const auto segmentAt = [&](float rightX, float rowY, float rowH,
+                               std::initializer_list<const wchar_t*> options, int group,
+                               int selected, float optionWidth) {
+        const int count = static_cast<int>(options.size());
+        const float totalWidth = optionWidth * count + 4.0f;
+        const float sx = rightX - totalWidth;
+        const float sy = rowY + (rowH - 30.0f) * 0.5f;
+        FillRoundRect(g, RectF(sx, sy, totalWidth, 30.0f), 8.0f, Color(255, 0xF0, 0xF0, 0xF3));
+        StrokeRoundRect(g, RectF(sx, sy, totalWidth, 30.0f), 8.0f, Color(255, 0xE2, 0xE2, 0xE7));
+        int index = 0;
+        for (const wchar_t* option : options) {
+            const float ox = sx + 2.0f + index * optionWidth;
+            const RectF optionRect(ox, sy + 2.0f, optionWidth, 26.0f);
+            AddHotspot(RECT{ static_cast<LONG>(optionRect.X), static_cast<LONG>(optionRect.Y),
+                             static_cast<LONG>(optionRect.X + optionRect.Width),
+                             static_cast<LONG>(optionRect.Y + optionRect.Height) },
+                       kIdSegmentBase + group * 10 + index);
+            if (index == selected) {
+                FillRoundRect(g, optionRect, 6.0f, Color(255, 255, 255, 255));
+                StrokeRoundRect(g, optionRect, 6.0f, Color(255, 0xDC, 0xDC, 0xE1));
+            }
+            DrawText(g, option, index == selected ? &fonts->settingBold : &fonts->setting,
+                     optionRect, index == selected ? textPrimary : textSecondary,
+                     StringAlignmentCenter);
+            ++index;
+        }
+    };
+
+    switch (page_) {
+    case Page::General: {
+        groupLabel(L"启动");
+        cardStart(62.0f);
+        switchAt(scrollX, scrollW, y, 62.0f, kIdToggleAutoStart, settings_.autoStart);
+        DrawText(g, L"开机自启", &fonts->setting, RectF(scrollX + 16.0f, y + 12.0f, 300, rowTitle),
+                 textPrimary);
+        DrawText(g, L"进入桌面后静默运行，仅驻留托盘", &fonts->desc,
+                 RectF(scrollX + 16.0f, y + 32.0f, 320, 16), textSecondary);
+        y += 62.0f;
+
+        y += 20.0f;
+        groupLabel(L"外观");
+        cardStart(62.0f);
+        segmentAt(scrollX + scrollW - cardPad, y, 62.0f, { L"小", L"中", L"大" }, kGroupMenuSize,
+                  static_cast<int>(settings_.menuSize), 44.0f);
+        DrawText(g, L"光圈尺寸", &fonts->setting,
+                 RectF(scrollX + 16.0f, y + 12.0f, 260, rowTitle), textPrimary);
+        DrawText(g, L"以光标为中心展开，默认中号", &fonts->desc,
+                 RectF(scrollX + 16.0f, y + 32.0f, 280, 16), textSecondary);
+        y += 62.0f;
+        break;
+    }
+    case Page::Hotkeys: {
+        groupLabel(L"全局快捷键");
+        cardStart(5 * 56.0f);
+        const wchar_t* names[5] = { L"呼出光圈", L"截图", L"文字识别", L"录屏", L"贴图" };
+        const core::HotkeySpec* specs[5] = { &settings_.radialHotkey, &settings_.screenshotHotkey,
+                                             &settings_.ocrHotkey, &settings_.recordHotkey,
+                                             &settings_.pinHotkey };
+        for (int i = 0; i < 5; ++i) {
+            const float rowTop = y;
+            if (i > 0) {
+                divider(scrollX, scrollW);
+            }
+            DrawText(g, names[i], &fonts->setting,
+                     RectF(scrollX + 16.0f, rowTop + 12.0f, 260, 18), textPrimary);
+            const float fieldW = 160.0f;
+            const float fieldH = 34.0f;
+            const float fieldX = scrollX + scrollW - cardPad - fieldW;
+            const float fieldY = rowTop + (56.0f - fieldH) * 0.5f;
+            const bool capturing = captureIndex_ == i;
+            FillRoundRect(g, RectF(fieldX, fieldY, fieldW, fieldH), 7.0f,
+                          Color(255, 255, 255, 255));
+            StrokeRoundRect(g, RectF(fieldX, fieldY, fieldW, fieldH), 7.0f,
+                            capturing ? accent : Color(255, 0xD9, 0xD9, 0xDE));
+            const std::wstring text =
+                capturing ? L"按下快捷键…" : Utf8ToWide(core::FormatHotkeyText(*specs[i]));
+            DrawText(g, text, &fonts->field, RectF(fieldX, fieldY, fieldW, fieldH),
+                     capturing ? accent : textPrimary, StringAlignmentCenter);
+            AddHotspot(RECT{ static_cast<LONG>(fieldX), static_cast<LONG>(fieldY),
+                             static_cast<LONG>(fieldX + fieldW),
+                             static_cast<LONG>(fieldY + fieldH) },
+                       kIdHotkeyBase + i);
+            y = rowTop + 56.0f;
+        }
+        break;
+    }
+    case Page::Capture: {
+        groupLabel(L"图片");
+        cardStart(124.0f);
+        segmentAt(scrollX + scrollW - cardPad, y, 62.0f, { L"PNG", L"JPG" },
+                  kGroupScreenshotFormat,
+                  settings_.screenshotFormat == core::ScreenshotFormat::Jpeg ? 1 : 0, 64.0f);
+        DrawText(g, L"保存格式", &fonts->setting, RectF(scrollX + 16.0f, y + 12.0f, 240, 18),
+                 textPrimary);
+        DrawText(g, L"截图与另存贴图时使用；PNG 无损，JPG 体积更小", &fonts->desc,
+                 RectF(scrollX + 16.0f, y + 32.0f, 360, 16), textSecondary);
+        y += 62.0f;
+
+        divider(scrollX, scrollW);
+        switchAt(scrollX, scrollW, y, 62.0f, kIdToggleConvertFiles,
+                 settings_.convertFilePathsToImages);
+        DrawText(g, L"图片文件转为图像", &fonts->setting,
+                 RectF(scrollX + 16.0f, y + 12.0f, 300, 18), textPrimary);
+        DrawText(g, L"复制的图片文件以图像贴出；关闭后显示文件路径", &fonts->desc,
+                 RectF(scrollX + 16.0f, y + 32.0f, 360, 16), textSecondary);
+        y += 62.0f;
+
+        y += 20.0f;
+        groupLabel(L"贴图");
+        cardStart(62.0f);
+        switchAt(scrollX, scrollW, y, 62.0f, kIdTogglePinGlow, settings_.pinGlowEnabled);
+        DrawText(g, L"贴图边缘光晕", &fonts->setting,
+                 RectF(scrollX + 16.0f, y + 12.0f, 300, 18), textPrimary);
+        DrawText(g, L"新贴图带一圈柔和光晕；也可以随时在右键菜单里切换", &fonts->desc,
+                 RectF(scrollX + 16.0f, y + 32.0f, 380, 16), textSecondary);
+        y += 62.0f;
+        break;
+    }
+    case Page::Ocr: {
+        groupLabel(L"识别");
+        cardStart(124.0f);
+        segmentAt(scrollX + scrollW - cardPad, y, 62.0f, { L"原生识别", L"模型识别" },
+                  kGroupOcrEngine, settings_.ocr.engine == core::OcrEngine::Model ? 1 : 0,
+                  100.0f);
+        DrawText(g, L"识别引擎", &fonts->setting, RectF(scrollX + 16.0f, y + 12.0f, 200, 18),
+                 textPrimary);
+        DrawText(g, L"原生轻快，模型对中英混排更稳", &fonts->desc,
+                 RectF(scrollX + 16.0f, y + 32.0f, 240, 16), textSecondary);
+        y += 62.0f;
+
+        divider(scrollX, scrollW);
+        switchAt(scrollX, scrollW, y, 62.0f, kIdToggleAutoCopy, settings_.ocr.autoCopy);
+        DrawText(g, L"自动复制", &fonts->setting, RectF(scrollX + 16.0f, y + 12.0f, 300, 18),
+                 textPrimary);
+        DrawText(g, L"识别成功后自动把全部文字复制到剪贴板", &fonts->desc,
+                 RectF(scrollX + 16.0f, y + 32.0f, 360, 16), textSecondary);
+        y += 62.0f;
+
+        y += 20.0f;
+        groupLabel(L"引擎说明");
+        cardStart(128.0f);
+        DrawText(g, L"Windows 原生", &fonts->settingBold,
+                 RectF(scrollX + 16.0f, y + 14.0f, 200, 18), textPrimary);
+        DrawText(g,
+                 L"使用 Windows 自带的离线识别引擎，速度快、占用低；中文识别需要系统中"
+                 L"安装「光学字符识别」语言组件。",
+                 &fonts->desc, RectF(scrollX + 16.0f, y + 34.0f, scrollW - 32.0f, 32),
+                 textSecondary);
+        Pen ocrDivider(hairline, 1.0f);
+        g.DrawLine(&ocrDivider, scrollX + 16.0f, y + 74.0f, scrollX + scrollW - 16.0f,
+                   y + 74.0f);
+        DrawText(g, L"PP-OCRv6 tiny", &fonts->settingBold,
+                 RectF(scrollX + 16.0f, y + 82.0f, 200, 18), textPrimary);
+        DrawText(g, L"内置约 6 MB 的检测与识别模型，首次使用会解压到本地；对中英混排和小字更稳。",
+                 &fonts->desc, RectF(scrollX + 16.0f, y + 102.0f, scrollW - 32.0f, 18),
+                 textSecondary);
+        y += 128.0f;
+
+        y += 20.0f;
+        groupLabel(L"入口");
+        cardStart(62.0f);
+        switchAt(scrollX, scrollW, y, 62.0f, kIdTogglePinOcr, settings_.ocr.pinOcrEnabled);
+        DrawText(g, L"贴图右键识别文字", &fonts->setting,
+                 RectF(scrollX + 16.0f, y + 12.0f, 320, 18), textPrimary);
+        DrawText(g, L"在贴图上右键或按 O 识别原图，识别结果不包含标注", &fonts->desc,
+                 RectF(scrollX + 16.0f, y + 32.0f, 380, 16), textSecondary);
+        y += 62.0f;
+        break;
+    }
+    case Page::Recording: {
+        groupLabel(L"画面");
+        cardStart(186.0f);
+        segmentAt(scrollX + scrollW - cardPad, y, 62.0f,
+                  { L"原始", L"2160p", L"1440p", L"1080p", L"720p" }, kGroupResolution,
+                  static_cast<int>(settings_.recording.resolution), 54.0f);
+        DrawText(g, L"输出分辨率", &fonts->setting,
+                 RectF(scrollX + 16.0f, y + 12.0f, 190, 18), textPrimary);
+        DrawText(g, L"只缩小不放大；高于选区时按原始尺寸输出", &fonts->desc,
+                 RectF(scrollX + 16.0f, y + 32.0f, 180, 16), textSecondary);
+        y += 62.0f;
+
+        divider(scrollX, scrollW);
+        segmentAt(scrollX + scrollW - cardPad, y, 62.0f, { L"30fps", L"60fps" },
+                  kGroupFrameRate,
+                  settings_.recording.frameRate == core::RecordingFrameRate::Sixty ? 1 : 0, 64.0f);
+        DrawText(g, L"帧率", &fonts->setting, RectF(scrollX + 16.0f, y + 12.0f, 240, 18),
+                 textPrimary);
+        DrawText(g, L"30fps 足够流畅，60fps 需要更强的机器", &fonts->desc,
+                 RectF(scrollX + 16.0f, y + 32.0f, 360, 16), textSecondary);
+        y += 62.0f;
+
+        divider(scrollX, scrollW);
+        segmentAt(scrollX + scrollW - cardPad, y, 62.0f, { L"高", L"均衡", L"紧凑" },
+                  kGroupQuality, static_cast<int>(settings_.recording.quality), 56.0f);
+        DrawText(g, L"画质", &fonts->setting, RectF(scrollX + 16.0f, y + 12.0f, 240, 18),
+                 textPrimary);
+        DrawText(g, L"均衡：码率随分辨率与帧率自动计算", &fonts->desc,
+                 RectF(scrollX + 16.0f, y + 32.0f, 270, 16), textSecondary);
+        y += 62.0f;
+
+        y += 20.0f;
+        groupLabel(L"控制");
+        cardStart(62.0f * 6 + 34.0f);
+        segmentAt(scrollX + scrollW - cardPad, y, 62.0f, { L"区域", L"窗口" }, kGroupRange,
+                  static_cast<int>(settings_.recording.range), 64.0f);
+        DrawText(g, L"录制范围", &fonts->setting,
+                 RectF(scrollX + 16.0f, y + 12.0f, 240, 18), textPrimary);
+        DrawText(g, L"区域：在覆盖层拖选；窗口：光标点选窗口", &fonts->desc,
+                 RectF(scrollX + 16.0f, y + 32.0f, 360, 16), textSecondary);
+        y += 62.0f;
+
+        divider(scrollX, scrollW);
+        segmentAt(scrollX + scrollW - cardPad, y, 62.0f, { L"关", L"3 秒", L"5 秒" },
+                  kGroupCountdown, static_cast<int>(settings_.recording.countdown), 54.0f);
+        DrawText(g, L"倒计时", &fonts->setting, RectF(scrollX + 16.0f, y + 12.0f, 240, 18),
+                 textPrimary);
+        DrawText(g, L"开始录制前的等待时间，Esc 可取消", &fonts->desc,
+                 RectF(scrollX + 16.0f, y + 32.0f, 270, 16), textSecondary);
+        y += 62.0f;
+
+        divider(scrollX, scrollW);
+        switchAt(scrollX, scrollW, y, 62.0f, kIdToggleSystemAudio,
+                 settings_.recording.systemAudio);
+        DrawText(g, L"系统声音", &fonts->setting, RectF(scrollX + 16.0f, y + 12.0f, 300, 18),
+                 textPrimary);
+        DrawText(g, L"录制系统正在播放的声音", &fonts->desc,
+                 RectF(scrollX + 16.0f, y + 32.0f, 320, 16), textSecondary);
+        y += 62.0f;
+
+        divider(scrollX, scrollW);
+        switchAt(scrollX, scrollW, y, 62.0f, kIdToggleMicrophone,
+                 settings_.recording.microphone);
+        DrawText(g, L"麦克风", &fonts->setting, RectF(scrollX + 16.0f, y + 12.0f, 300, 18),
+                 textPrimary);
+        DrawText(g, L"录制麦克风输入，与系统声音混音", &fonts->desc,
+                 RectF(scrollX + 16.0f, y + 32.0f, 340, 16), textSecondary);
+        y += 62.0f;
+
+        divider(scrollX, scrollW);
+        switchAt(scrollX, scrollW, y, 62.0f, kIdToggleRecordCursor,
+                 settings_.recording.recordCursor);
+        DrawText(g, L"录制光标", &fonts->setting, RectF(scrollX + 16.0f, y + 12.0f, 300, 18),
+                 textPrimary);
+        DrawText(g, L"在录制画面中显示鼠标指针", &fonts->desc,
+                 RectF(scrollX + 16.0f, y + 32.0f, 320, 16), textSecondary);
+        y += 62.0f;
+
+        divider(scrollX, scrollW);
+        {
+            const float rowTop = y;
+            const float fieldW = 300.0f;
+            const float fieldH = 34.0f;
+            const float fieldX = scrollX + scrollW - cardPad - fieldW;
+            const float fieldY = rowTop + (62.0f - fieldH) * 0.5f;
+            FillRoundRect(g, RectF(fieldX, fieldY, fieldW, fieldH), 7.0f,
+                          Color(255, 255, 255, 255));
+            StrokeRoundRect(g, RectF(fieldX, fieldY, fieldW, fieldH), 7.0f,
+                            Color(255, 0xD9, 0xD9, 0xDE));
+            std::wstring directory = Utf8ToWide(settings_.recordingDirectory);
+            if (directory.empty()) {
+                directory = L"跟随系统视频目录";
+            }
+            DrawText(g, Ellipsize(g, directory, &fonts->field, fieldW - 20.0f), &fonts->field,
+                     RectF(fieldX + 10.0f, fieldY, fieldW - 20.0f, fieldH), textPrimary);
+            AddHotspot(RECT{ static_cast<LONG>(fieldX), static_cast<LONG>(fieldY),
+                             static_cast<LONG>(fieldX + fieldW),
+                             static_cast<LONG>(fieldY + fieldH) },
+                       kIdDirectory);
+        }
+        DrawText(g, L"保存目录", &fonts->setting,
+                 RectF(scrollX + 16.0f, y + 12.0f, 240, 18), textPrimary);
+        DrawText(g, L"录制文件的保存位置", &fonts->desc,
+                 RectF(scrollX + 16.0f, y + 32.0f, 320, 16), textSecondary);
+        y += 62.0f;
+        break;
+    }
+    case Page::About: {
+        groupLabel(L"版本");
+        cardStart(96.0f);
+        DrawText(g, L"HaloCap " + Utf8ToWide(halocap::app::kHaloCapVersion), &fonts->settingBold,
+                 RectF(scrollX + 16.0f, y + 14.0f, 300, 22), textPrimary);
+        DrawText(g, L"Windows 原生 2.0，配置与 1.x 同格式", &fonts->desc,
+                 RectF(scrollX + 16.0f, y + 38.0f, 340, 16), textSecondary);
+        {
+            const float buttonW = 96.0f;
+            const float buttonH = 30.0f;
+            const float bx = scrollX + scrollW - cardPad - buttonW * 2 - 8.0f;
+            const float by = y + (96.0f - buttonH) * 0.5f;
+            FillRoundRect(g, RectF(bx, by, buttonW, buttonH), 7.0f,
+                          Color(255, 0xFF, 0xFF, 0xFF));
+            StrokeRoundRect(g, RectF(bx, by, buttonW, buttonH), 7.0f,
+                            Color(255, 0xD9, 0xD9, 0xDE));
+            DrawText(g, L"复制摘要", &fonts->button, RectF(bx, by, buttonW, buttonH),
+                     textPrimary, StringAlignmentCenter);
+            AddHotspot(RECT{ static_cast<LONG>(bx), static_cast<LONG>(by),
+                             static_cast<LONG>(bx + buttonW), static_cast<LONG>(by + buttonH) },
+                       kIdCopySummary);
+
+            FillRoundRect(g, RectF(bx + buttonW + 8.0f, by, buttonW, buttonH), 7.0f, accent);
+            DrawText(g, L"检查更新", &fonts->buttonBold,
+                     RectF(bx + buttonW + 8.0f, by, buttonW, buttonH), Color(255, 255, 255, 255),
+                     StringAlignmentCenter);
+            AddHotspot(RECT{ static_cast<LONG>(bx + buttonW + 8.0f), static_cast<LONG>(by),
+                             static_cast<LONG>(bx + buttonW + 8.0f + buttonW),
+                             static_cast<LONG>(by + buttonH) },
+                       kIdUpdate);
+        }
+        y += 96.0f;
+
+        y += 20.0f;
+        groupLabel(L"诊断");
+        cardStart(150.0f);
+        DrawText(g, L"环境摘要", &fonts->setting,
+                 RectF(scrollX + 16.0f, y + 14.0f, 240, 18), textPrimary);
+        DrawText(g, L"OS build " + std::to_wstring(facts_.osBuild) + L" · WGC " +
+                     (facts_.graphicsCaptureSupported ? L"可用" : L"不可用"),
+                 &fonts->desc, RectF(scrollX + 16.0f, y + 36.0f, scrollW - 32.0f, 16),
+                 textSecondary);
+        DrawText(g, L"模型目录：" + Utf8ToWide(modelsDirectory_), &fonts->desc,
+                 RectF(scrollX + 16.0f, y + 58.0f, scrollW - 32.0f, 16), textSecondary);
+        DrawText(g, L"更新清单：%LOCALAPPDATA%\\HaloCap2\\update.url（网络）或 update.json（本地）",
+                 &fonts->desc, RectF(scrollX + 16.0f, y + 80.0f, scrollW - 32.0f, 16),
+                 textSecondary);
+        DrawText(g, L"识别完全在本机完成，图片不会上传网络。", &fonts->desc,
+                 RectF(scrollX + 16.0f, y + 102.0f, scrollW - 32.0f, 16), textSecondary);
+        y += 150.0f;
+        break;
+    }
+    }
+
+    contentHeight_ = static_cast<int>(y + scroll_ - scrollTop + 20.0f);
+    viewHeightDip_ = static_cast<int>(scrollBottom - scrollTop);
+    g.ResetClip();
+
+    // 右侧滚动条（内容超出时）。
+    const float viewHeight = scrollBottom - scrollTop;
+    if (contentHeight_ > static_cast<int>(viewHeight)) {
+        const float trackX = frame.X + frame.Width - 12.0f;
+        const float thumbHeight =
+            std::max(28.0f, viewHeight * viewHeight / static_cast<float>(contentHeight_));
+        const float maxScroll = static_cast<float>(contentHeight_) - viewHeight;
+        const float thumbY = scrollTop + (viewHeight - thumbHeight) *
+                                              (static_cast<float>(scroll_) / maxScroll);
+        FillRoundRect(g, RectF(trackX, thumbY, 6.0f, thumbHeight), 3.0f,
+                      Color(51, 0, 0, 0));
+    }
+
+    // 底部：提示 + 取消/保存。
+    const float footerTop = frame.Y + frame.Height - kFooter;
+    Pen footerHairline(hairline, 1.0f);
+    g.DrawLine(&footerHairline, frame.X + kSidebar, footerTop, frame.X + frame.Width, footerTop);
+    DrawText(g, L"更改在保存后生效", &fonts->desc,
+             RectF(headerX, footerTop, 300, kFooter), textTertiary);
+
+    const float saveW = 84.0f;
+    const float cancelW = 72.0f;
+    const float buttonH = 32.0f;
+    const float buttonY = footerTop + (kFooter - buttonH) * 0.5f;
+    const float saveX = frame.X + frame.Width - 30.0f - saveW;
+    const float cancelX = saveX - 8.0f - cancelW;
+    {
+        FillRoundRect(g, RectF(cancelX, buttonY, cancelW, buttonH), 7.0f, Color(0, 0, 0, 0));
+        DrawText(g, L"取消", &fonts->button, RectF(cancelX, buttonY, cancelW, buttonH),
+                 textSecondary, StringAlignmentCenter);
+        AddHotspot(RECT{ static_cast<LONG>(cancelX), static_cast<LONG>(buttonY),
+                         static_cast<LONG>(cancelX + cancelW),
+                         static_cast<LONG>(buttonY + buttonH) },
+                   kIdCancel);
+
+        FillRoundRect(g, RectF(saveX, buttonY, saveW, buttonH), 7.0f, accent);
+        DrawText(g, L"保存", &fonts->buttonBold, RectF(saveX, buttonY, saveW, buttonH),
+                 Color(255, 255, 255, 255), StringAlignmentCenter);
+        AddHotspot(RECT{ static_cast<LONG>(saveX), static_cast<LONG>(buttonY),
+                         static_cast<LONG>(saveX + saveW),
+                         static_cast<LONG>(buttonY + buttonH) },
+                   kIdSave);
+    }
+
+    // 拷贝到 DIB 并 UpdateLayeredWindow。
+    const Rect lockRect(0, 0, widthPx_, heightPx_);
+    BitmapData data{};
+    if (canvas.LockBits(&lockRect, ImageLockModeRead, PixelFormat32bppPARGB, &data) == Ok) {
+        for (int row = 0; row < heightPx_; ++row) {
+            std::memcpy(static_cast<std::uint8_t*>(bits_) +
+                            static_cast<std::size_t>(row) * widthPx_ * 4,
+                        static_cast<const std::uint8_t*>(data.Scan0) +
+                            static_cast<std::size_t>(row) * data.Stride,
+                        static_cast<std::size_t>(widthPx_) * 4);
+        }
+        canvas.UnlockBits(&data);
+    }
+
+    HDC screen = GetDC(nullptr);
+    RECT windowRect{};
+    GetWindowRect(window_, &windowRect);
+    POINT destination{ windowRect.left, windowRect.top };
+    SIZE windowSize{ widthPx_, heightPx_ };
+    POINT source{ 0, 0 };
+    BLENDFUNCTION blend{};
+    blend.BlendOp = AC_SRC_OVER;
+    blend.SourceConstantAlpha = 255;
+    blend.AlphaFormat = AC_SRC_ALPHA;
+    UpdateLayeredWindow(window_, screen, &destination, &windowSize, memory_, &source, 0, &blend,
+                        ULW_ALPHA);
+    ReleaseDC(nullptr, screen);
+}
+
+LRESULT CALLBACK SettingsWindow::WndProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
     auto* self = reinterpret_cast<SettingsWindow*>(GetWindowLongPtrW(window, GWLP_USERDATA));
     if (message == WM_NCCREATE) {
         const auto* create = reinterpret_cast<const CREATESTRUCTW*>(lParam);
@@ -685,225 +1370,63 @@ LRESULT CALLBACK SettingsWindow::WndProc(HWND window, UINT message, WPARAM wPara
 
 LRESULT SettingsWindow::Handle(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
-    case WM_ERASEBKGND: {
-        // 1.x：整窗 #F7F7F9，右侧内容区是一张 12 px 圆角的白卡。
-        HDC dc = reinterpret_cast<HDC>(wParam);
-        RECT client{};
-        GetClientRect(window, &client);
-        FillRect(dc, &client, background_);
-
-        // 自绘标题栏：标题 + 右侧由 owner-draw 按钮画的关闭叉。
-        SetBkMode(dc, TRANSPARENT);
-        SetTextColor(dc, RGB(29, 29, 31));
-        HGDIOBJ oldFont = SelectObject(dc, font_);
-        RECT titleRect{ 16, 9, client.right - 60, 9 + 24 };
-        DrawTextW(dc, L"HaloCap 设置", -1, &titleRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-        SelectObject(dc, oldFont);
-
-        static const wchar_t* const kPageTitles[] = { L"截图", L"录制", L"OCR",
-                                                      L"快捷键", L"外观",
-                                                      L"关于 / 诊断" };
-        const int pageIndex = std::clamp(static_cast<int>(currentPage_), 0, 5);
-        HGDIOBJ oldTitleFont = SelectObject(dc, titleFont_);
-        SetTextColor(dc, RGB(29, 29, 31));
-        RECT pageTitle{ 224, 12 + kTitleBar + 6, client.right - 24, 12 + kTitleBar + 32 };
-        DrawTextW(dc, kPageTitles[pageIndex], -1, &pageTitle,
-                  DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-        SelectObject(dc, oldTitleFont);
-
-        const RECT card{ 212, 12 + kTitleBar, client.right - 12,
-                     client.bottom - 64 + kTitleBar };
-        HGDIOBJ oldPen = SelectObject(dc, cardBorderPen_);
-        HGDIOBJ oldBrush = SelectObject(dc, cardBrush_);
-        RoundRect(dc, card.left, card.top, card.right, card.bottom, 24, 24);
-        SelectObject(dc, oldBrush);
-        SelectObject(dc, oldPen);
-        return 1;
-    }
-
-    case WM_CTLCOLORSTATIC: {
-        HDC dc = reinterpret_cast<HDC>(wParam);
-        SetTextColor(dc, RGB(29, 29, 31));
-        SetBkColor(dc, RGB(255, 255, 255));
-        return reinterpret_cast<LRESULT>(cardBrush_);
-    }
-
-    case WM_CTLCOLOREDIT: {
-        HDC dc = reinterpret_cast<HDC>(wParam);
-        SetTextColor(dc, RGB(29, 29, 31));
-        SetBkColor(dc, RGB(255, 255, 255));
-        return reinterpret_cast<LRESULT>(cardBrush_);
-    }
-
-    case WM_CTLCOLORLISTBOX: {
-        HDC dc = reinterpret_cast<HDC>(wParam);
-        SetTextColor(dc, RGB(110, 110, 115));
-        SetBkColor(dc, RGB(237, 237, 241));
-        return reinterpret_cast<LRESULT>(sidebarBrush_);
-    }
-
-    case WM_DRAWITEM: {
-        const auto* item = reinterpret_cast<const DRAWITEMSTRUCT*>(lParam);
-        if (item == nullptr) {
-            return 0;
+    case WM_NCHITTEST: {
+        const LRESULT hit = DefWindowProcW(window, message, wParam, lParam);
+        if (hit == HTCLIENT) {
+            POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+            ScreenToClient(window, &point);
+            const float x = point.x / scale_;
+            const float y = point.y / scale_;
+            const bool inClose = x >= kWindowW - kMargin - 14.0f - 28.0f &&
+                                 x < kWindowW - kMargin - 14.0f && y >= kMargin &&
+                                 y < kMargin + kTitleBar;
+            if (y < kMargin + kTitleBar && !inClose) {
+                return HTCAPTION;
+            }
         }
-        HDC dc = item->hDC;
-        SetBkMode(dc, TRANSPARENT);
-
-        if (item->CtlID == 100) {
-            const bool selected = (item->itemState & ODS_SELECTED) != 0;
-            FillRect(dc, &item->rcItem, sidebarBrush_);
-            RECT textRect = item->rcItem;
-            textRect.left += 14;
-            if (selected) {
-                HGDIOBJ oldPen = SelectObject(dc, GetStockObject(NULL_PEN));
-                HGDIOBJ oldBrush = SelectObject(dc, CreateSolidBrush(RGB(224, 224, 230)));
-                RECT pill{ item->rcItem.left + 8, item->rcItem.top + 3,
-                           item->rcItem.right - 8, item->rcItem.bottom - 3 };
-                RoundRect(dc, pill.left, pill.top, pill.right, pill.bottom, 16, 16);
-                SelectObject(dc, oldBrush);
-                SelectObject(dc, oldPen);
-                SetTextColor(dc, RGB(29, 29, 31));
+        return hit;
+    }
+    case WM_MOUSEMOVE: {
+        const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        const int id = HitTest(point);
+        if (id != hoverId_) {
+            hoverId_ = id;
+            SetCursor(LoadCursorW(nullptr, id != kIdNone ? IDC_HAND : IDC_ARROW));
+            Render();
+        }
+        return 0;
+    }
+    case WM_LBUTTONDOWN: {
+        const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        const int id = HitTest(point);
+        if (id != kIdNone) {
+            Click(id);
+        }
+        return 0;
+    }
+    case WM_MOUSEWHEEL: {
+        const int delta = GET_WHEEL_DELTA_WPARAM(wParam);
+        const int maxScroll = std::max(0, contentHeight_ - viewHeightDip_);
+        scroll_ = std::clamp(scroll_ - delta / WHEEL_DELTA * 40, 0, maxScroll);
+        Render();
+        return 0;
+    }
+    case WM_KEYDOWN:
+        if (wParam == VK_ESCAPE) {
+            if (captureIndex_ >= 0) {
+                CancelHotkeyCapture();
             } else {
-                SetTextColor(dc, RGB(110, 110, 115));
+                Close();
             }
-            wchar_t text[128] = {};
-            const LRESULT length = SendMessageW(list_, LB_GETTEXT, item->itemID,
-                                                reinterpret_cast<LPARAM>(text));
-            if (length > 0) {
-                DrawTextW(dc, text, static_cast<int>(length), &textRect,
-                          DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-            }
-            return 1;
-        }
-
-        if (item->CtlID == 202) {
-            const RECT& r = item->rcItem;
-            const int centerX = (r.left + r.right) / 2;
-            const int centerY = (r.top + r.bottom) / 2;
-            HGDIOBJ oldPen =
-                SelectObject(dc, CreatePen(PS_SOLID, 1, RGB(90, 90, 96)));
-            MoveToEx(dc, centerX - 5, centerY - 5, nullptr);
-            LineTo(dc, centerX + 5, centerY + 5);
-            MoveToEx(dc, centerX + 5, centerY - 5, nullptr);
-            LineTo(dc, centerX - 5, centerY + 5);
-            DeleteObject(SelectObject(dc, oldPen));
-            return 1;
-        }
-
-        if (item->CtlID == 200 || item->CtlID == 201) {
-            const bool primary = item->CtlID == 200;
-            const bool pressed = (item->itemState & ODS_SELECTED) != 0;
-            HGDIOBJ oldPen = SelectObject(dc, primary ? GetStockObject(NULL_PEN) : fieldBorderPen_);
-            HGDIOBJ oldBrush = SelectObject(
-                dc, primary ? accentBrush_ : cardBrush_);
-            const RECT& r = item->rcItem;
-            RoundRect(dc, r.left, r.top, r.right, r.bottom, 20, 20);
-            SelectObject(dc, oldBrush);
-            SelectObject(dc, oldPen);
-
-            SetTextColor(dc, primary ? RGB(255, 255, 255) : RGB(29, 29, 31));
-            if (pressed) {
-                RECT shade = r;
-                FrameRect(dc, &shade, static_cast<HBRUSH>(GetStockObject(GRAY_BRUSH)));
-            }
-            wchar_t text[32] = {};
-            const LRESULT length = GetWindowTextW(item->hwndItem, text, 32);
-            DrawTextW(dc, text, static_cast<int>(length), const_cast<RECT*>(&r),
-                      DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-            return 1;
-        }
-        return 0;
-    }
-
-    case WM_COMMAND:
-        if (LOWORD(wParam) == 100 && HIWORD(wParam) == LBN_SELCHANGE) {
-            const int index = static_cast<int>(SendMessageW(list_, LB_GETCURSEL, 0, 0));
-            ShowPage(static_cast<Page>(std::clamp(index, 0, 5)));
             return 0;
         }
-        if (LOWORD(wParam) == 202) {
-            DestroyWindow(window);
-            return 0;
-        }
-        if (LOWORD(wParam) == 7) {
-            CopyTextToClipboard(summaryText_);
-            MessageBoxW(window, L"环境摘要已复制到剪贴板。", L"HaloCap", MB_OK | MB_ICONINFORMATION);
-            return 0;
-        }
-        if (LOWORD(wParam) == 8) {
-            std::string json;
-            std::wstring source = L"本地清单";
-            const std::wstring url = ReadUpdateUrl();
-            if (!url.empty()) {
-                std::string networkError;
-                if (halocap::platform::win32::HttpGetUtf8(url, &json, &networkError) &&
-                    !json.empty()) {
-                    source = L"网络清单";
-                } else {
-                    json.clear();
-                }
-            }
-            if (json.empty()) {
-                json = ReadLocalUpdateManifest();
-            }
-            if (json.empty()) {
-                MessageBoxW(window,
-                            L"未找到更新清单：可在 %LOCALAPPDATA%\\HaloCap2\\update.url 写清单地址，"
-                            L"或放 update.json。",
-                            L"HaloCap 更新", MB_OK | MB_ICONINFORMATION);
-                return 0;
-            }
-            core::UpdateManifest manifest;
-            std::string error;
-            if (!core::ParseUpdateManifest(json, &manifest, &error)) {
-                MessageBoxW(window, L"更新清单解析失败，详见日志。", L"HaloCap 更新",
-                            MB_OK | MB_ICONWARNING);
-                return 0;
-            }
-            const bool newer = core::IsNewerVersion(manifest.version, halocap::app::kHaloCapVersion);
-            std::wstring message = L"当前版本：" +
-                                   Utf8ToWide(halocap::app::kHaloCapVersion) +
-                                   L"\n最新版本：" + Utf8ToWide(manifest.version) + L"\n\n";
-            message += newer ? L"发现新版本，可从清单中的地址下载。" : L"已经是最新版本。";
-            if (newer) {
-                message += L"\n" + Utf8ToWide(manifest.url);
-            }
-            message += L"\n来源：" + source;
-            MessageBoxW(window, message.c_str(), L"HaloCap 更新", MB_OK | MB_ICONINFORMATION);
-            return 0;
-        }
-
-        if (LOWORD(wParam) >= 300 && LOWORD(wParam) <= 304) {
-            StartHotkeyCapture(static_cast<int>(LOWORD(wParam)) - 300);
-            return 0;
-        }
-        if (LOWORD(wParam) == 200) {
-            Save();
-            return 0;
-        }
-        if (LOWORD(wParam) == 201) {
-            DestroyWindow(window);
-            return 0;
-        }
-        return 0;
-
-    case WM_CLOSE:
-        DestroyWindow(window);
-        return 0;
-
+        break;
     case WM_DESTROY:
         window_ = nullptr;
-        list_ = nullptr;
-        saveButton_ = nullptr;
-        cancelButton_ = nullptr;
-        controls_.clear();
         return 0;
-
     default:
         break;
     }
-
     return DefWindowProcW(window, message, wParam, lParam);
 }
 

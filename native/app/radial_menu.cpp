@@ -1,7 +1,7 @@
 ﻿#include "radial_menu.h"
 
-#include <windows.h>
 #include <windowsx.h>
+#include <shellscalingapi.h>
 
 #include <objbase.h>
 #include <gdiplus.h>
@@ -15,94 +15,176 @@ namespace halocap::app {
 
 namespace {
 
-constexpr wchar_t kClassName[] = L"HaloCapRadialMenu";
-constexpr int kRingRadius = 96;      // 四个按钮圆心到菜单中心
-constexpr int kButtonRadius = 34;
-constexpr int kMenuRadius = 150;
-constexpr UINT kMsgEscape = WM_APP + 1;
+using namespace Gdiplus;
 
-Gdiplus::Font* g_labelFont = nullptr;
-Gdiplus::Font* g_centerFont = nullptr;
-Gdiplus::Font* g_hintFont = nullptr;
+constexpr wchar_t kClassName[] = L"HaloCapRadialMenu";
+constexpr UINT kMsgTick = WM_APP + 11;
+
+// 1.x 的设计画布：380 DIP，盘半径 170，死区 52，节点半径 110，
+// 扇区 56–168，扇区间隙 3.6°，四周 20 DIP 透明边距留给投影。
+constexpr float kDesign = 380.0f;
+constexpr float kDiskRadius = 170.0f;
+constexpr float kDeadZone = 52.0f;
+constexpr float kNodeRadius = 110.0f;
+constexpr float kSectorInner = 56.0f;
+constexpr float kSectorOuter = 168.0f;
+constexpr float kSectorGapDegrees = 3.6f;
+constexpr float kPadding = 20.0f;
+
+struct ActionSpec {
+    core::AppAction action;
+    const wchar_t* title;
+    const wchar_t* shortcut;
+    Color accent;
+};
+
+const ActionSpec kActions[4] = {
+    { core::AppAction::Screenshot, L"截图", L"1", Color(255, 0x6C, 0xA8, 0xFF) },
+    { core::AppAction::Ocr, L"文字识别", L"2", Color(255, 0xB0, 0x8C, 0xFF) },
+    { core::AppAction::Record, L"录屏", L"3", Color(255, 0xFF, 0x73, 0x73) },
+    { core::AppAction::Pin, L"贴图", L"4", Color(255, 0xF5, 0xB9, 0x63) },
+};
 
 RadialMenu* g_active = nullptr;
 
-void EnsureFonts() {
-    static ULONG_PTR gdiplusToken = 0;
-    if (gdiplusToken == 0) {
-        Gdiplus::GdiplusStartupInput input;
-        Gdiplus::GdiplusStartup(&gdiplusToken, &input, nullptr);
+bool EnsureGdiplus() {
+    static ULONG_PTR token = 0;
+    if (token == 0) {
+        GdiplusStartupInput input;
+        if (GdiplusStartup(&token, &input, nullptr) != Ok) {
+            return false;
+        }
     }
-    if (g_labelFont == nullptr) {
-        g_labelFont = new Gdiplus::Font(L"Microsoft YaHei UI", 12.0f, Gdiplus::FontStyleRegular,
-                                        Gdiplus::UnitPixel);
-        g_centerFont = new Gdiplus::Font(L"Microsoft YaHei UI", 13.0f, Gdiplus::FontStyleBold,
-                                         Gdiplus::UnitPixel);
-        g_hintFont = new Gdiplus::Font(L"Microsoft YaHei UI", 10.0f, Gdiplus::FontStyleRegular,
-                                       Gdiplus::UnitPixel);
+    return true;
+}
+
+Font* LabelFont() {
+    static Font font(L"Microsoft YaHei UI", 12.5f, FontStyleRegular, UnitPixel);
+    return &font;
+}
+
+Font* CenterFont() {
+    static Font font(L"Microsoft YaHei UI", 13.5f, FontStyleBold, UnitPixel);
+    return &font;
+}
+
+Font* BadgeFont() {
+    static Font font(L"Microsoft YaHei UI", 9.5f, FontStyleBold, UnitPixel);
+    return &font;
+}
+
+PointF DesignPoint(float angleDegrees, float radius) {
+    const float radians = (angleDegrees - 90.0f) * 3.14159265f / 180.0f;
+    return PointF(190.0f + radius * std::cos(radians), 190.0f + radius * std::sin(radians));
+}
+
+GraphicsPath* SectorPath(float startAngle, float endAngle, float inner, float outer) {
+    auto* path = new GraphicsPath();
+    const PointF outerStart = DesignPoint(startAngle, outer);
+    const PointF outerEnd = DesignPoint(endAngle, outer);
+    const PointF innerEnd = DesignPoint(endAngle, inner);
+    const PointF innerStart = DesignPoint(startAngle, inner);
+    path->AddArc(190.0f - outer, 190.0f - outer, outer * 2.0f, outer * 2.0f,
+                 startAngle - 90.0f, endAngle - startAngle);
+    path->AddLine(outerEnd, innerEnd);
+    path->AddArc(190.0f - inner, 190.0f - inner, inner * 2.0f, inner * 2.0f,
+                 endAngle - 90.0f, -(endAngle - startAngle));
+    path->AddLine(innerStart, outerStart);
+    path->CloseFigure();
+    return path;
+}
+
+GraphicsPath* RoundRectPath(float left, float top, float width, float height, float radius) {
+    auto* path = new GraphicsPath();
+    const float d = radius * 2.0f;
+    path->AddArc(left, top, d, d, 180.0f, 90.0f);
+    path->AddArc(left + width - d, top, d, d, 270.0f, 90.0f);
+    path->AddArc(left + width - d, top + height - d, d, d, 0.0f, 90.0f);
+    path->AddArc(left, top + height - d, d, d, 90.0f, 90.0f);
+    path->CloseFigure();
+    return path;
+}
+
+void DrawCenteredText(Graphics& graphics, const wchar_t* text, Font* font,
+                      const RectF& rect, const Color& color) {
+    StringFormat format;
+    format.SetAlignment(StringAlignmentCenter);
+    format.SetLineAlignment(StringAlignmentCenter);
+    SolidBrush brush(color);
+    graphics.DrawString(text, -1, font, rect, &format, &brush);
+}
+
+Color Blend(const Color& from, const Color& to, float t) {
+    const auto mix = [t](BYTE a, BYTE b) {
+        return static_cast<BYTE>(std::lround(a + (b - a) * t));
+    };
+    return Color(255, mix(from.GetR(), to.GetR()), mix(from.GetG(), to.GetG()),
+                 mix(from.GetB(), to.GetB()));
+}
+
+Color WithAlpha(const Color& color, int alpha) {
+    return Color(static_cast<BYTE>(std::clamp(alpha, 0, 255)), color.GetR(), color.GetG(),
+                 color.GetB());
+}
+
+void DrawIcon(Graphics& graphics, int index, const PointF& center, const Color& color) {
+    Pen pen(color, 1.55f);
+    pen.SetStartCap(LineCapRound);
+    pen.SetEndCap(LineCapRound);
+    pen.SetLineJoin(LineJoinRound);
+    const float x = center.X;
+    const float y = center.Y;
+
+    switch (index) {
+    case 0: {   // 截图：四角 + 中心点
+        graphics.DrawLine(&pen, x - 7.5f, y - 3.5f, x - 7.5f, y - 6.0f);
+        graphics.DrawLine(&pen, x - 7.5f, y - 6.0f, x - 5.0f, y - 8.0f);
+        graphics.DrawLine(&pen, x + 7.5f, y - 3.5f, x + 7.5f, y - 6.0f);
+        graphics.DrawLine(&pen, x + 7.5f, y - 6.0f, x + 5.0f, y - 8.0f);
+        graphics.DrawLine(&pen, x - 7.5f, y + 3.5f, x - 7.5f, y + 6.0f);
+        graphics.DrawLine(&pen, x - 7.5f, y + 6.0f, x - 5.0f, y + 8.0f);
+        graphics.DrawLine(&pen, x + 7.5f, y + 3.5f, x + 7.5f, y + 6.0f);
+        graphics.DrawLine(&pen, x + 7.5f, y + 6.0f, x + 5.0f, y + 8.0f);
+        SolidBrush dot(color);
+        graphics.FillEllipse(&dot, x - 1.2f, y - 1.2f, 2.4f, 2.4f);
+        break;
+    }
+    case 1: {   // 文字识别：T
+        graphics.DrawLine(&pen, x - 7.5f, y - 7.5f, x + 7.5f, y - 7.5f);
+        graphics.DrawLine(&pen, x, y - 7.5f, x, y + 7.5f);
+        graphics.DrawLine(&pen, x - 3.5f, y + 7.5f, x + 3.5f, y + 7.5f);
+        break;
+    }
+    case 2: {   // 录屏：机身 + 镜头
+        GraphicsPath* body = RoundRectPath(x - 9.0f, y - 5.0f, 13.0f, 10.0f, 3.0f);
+        graphics.DrawPath(&pen, body);
+        delete body;
+        graphics.DrawLine(&pen, x + 4.5f, y, x + 9.0f, y - 4.0f);
+        graphics.DrawLine(&pen, x + 9.0f, y - 4.0f, x + 9.0f, y + 4.0f);
+        graphics.DrawLine(&pen, x + 9.0f, y + 4.0f, x + 4.5f, y);
+        break;
+    }
+    default: {  // 贴图：图钉
+        graphics.DrawLine(&pen, x - 4.0f, y - 8.0f, x + 4.0f, y - 8.0f);
+        graphics.DrawLine(&pen, x + 4.0f, y - 8.0f, x + 5.0f, y - 3.0f);
+        graphics.DrawLine(&pen, x + 5.0f, y - 3.0f, x + 8.0f, y - 0.5f);
+        graphics.DrawLine(&pen, x + 8.0f, y - 0.5f, x + 8.0f, y + 1.5f);
+        graphics.DrawLine(&pen, x + 8.0f, y + 1.5f, x - 8.0f, y + 1.5f);
+        graphics.DrawLine(&pen, x - 8.0f, y + 1.5f, x - 8.0f, y - 0.5f);
+        graphics.DrawLine(&pen, x - 8.0f, y - 0.5f, x - 5.0f, y - 3.0f);
+        graphics.DrawLine(&pen, x - 5.0f, y - 3.0f, x - 4.0f, y - 8.0f);
+        graphics.DrawLine(&pen, x, y + 1.5f, x, y + 9.0f);
+        break;
+    }
     }
 }
 
-const wchar_t* ActionLabel(core::AppAction action) {
-    switch (action) {
-    case core::AppAction::Screenshot: return L"截图";
-    case core::AppAction::Ocr: return L"OCR";
-    case core::AppAction::Record: return L"录制";
-    case core::AppAction::Pin: return L"贴图";
-    default: return L"";
+int WindowDip(core::MenuSize size) {
+    switch (size) {
+    case core::MenuSize::Small: return 360;
+    case core::MenuSize::Large: return 480;
+    default: return 420;
     }
-}
-
-void DrawScreenshotIcon(Gdiplus::Graphics& g, float cx, float cy, const Gdiplus::Color& color) {
-    Gdiplus::Pen pen(color, 1.8f);
-    g.DrawRectangle(&pen, cx - 10.0f, cy - 6.0f, 20.0f, 13.0f);
-    g.DrawEllipse(&pen, cx - 4.0f, cy - 2.5f, 8.0f, 8.0f);
-    Gdiplus::SolidBrush bumpBrush(color);
-    g.FillRectangle(&bumpBrush, cx - 5.0f, cy - 9.0f, 7.0f, 3.0f);
-}
-
-void DrawOcrIcon(Gdiplus::Graphics& g, float cx, float cy, const Gdiplus::Color& color) {
-    Gdiplus::Pen pen(color, 1.8f);
-    g.DrawRectangle(&pen, cx - 9.0f, cy - 8.0f, 18.0f, 16.0f);
-    g.DrawLine(&pen, cx - 5.0f, cy - 3.0f, cx + 5.0f, cy - 3.0f);
-    g.DrawLine(&pen, cx - 5.0f, cy + 1.0f, cx + 5.0f, cy + 1.0f);
-    g.DrawLine(&pen, cx - 5.0f, cy + 5.0f, cx + 1.0f, cy + 5.0f);
-}
-
-void DrawRecordIcon(Gdiplus::Graphics& g, float cx, float cy, const Gdiplus::Color& color) {
-    Gdiplus::SolidBrush brush(Gdiplus::Color(255, 255, 107, 107));
-    g.FillEllipse(&brush, cx - 8.0f, cy - 8.0f, 16.0f, 16.0f);
-    (void)color;
-}
-
-void DrawPinIcon(Gdiplus::Graphics& g, float cx, float cy, const Gdiplus::Color& color) {
-    Gdiplus::SolidBrush brush(color);
-    g.FillEllipse(&brush, cx - 7.0f, cy - 9.0f, 14.0f, 9.0f);
-    Gdiplus::Pen pen(color, 1.8f);
-    g.DrawLine(&pen, cx, cy - 1.0f, cx, cy + 7.0f);
-    g.DrawLine(&pen, cx, cy + 7.0f, cx + 5.0f, cy + 10.0f);
-}
-
-void DrawIcon(Gdiplus::Graphics& g, core::AppAction action, float cx, float cy,
-              const Gdiplus::Color& color) {
-    switch (action) {
-    case core::AppAction::Screenshot: DrawScreenshotIcon(g, cx, cy, color); break;
-    case core::AppAction::Ocr: DrawOcrIcon(g, cx, cy, color); break;
-    case core::AppAction::Record: DrawRecordIcon(g, cx, cy, color); break;
-    case core::AppAction::Pin: DrawPinIcon(g, cx, cy, color); break;
-    default: break;
-    }
-}
-
-std::wstring Utf8ToWide(std::string_view text) {
-    if (text.empty()) {
-        return {};
-    }
-    const int length =
-        MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0);
-    std::wstring wide(static_cast<std::size_t>(length), L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), wide.data(), length);
-    return wide;
 }
 
 }  // namespace
@@ -117,7 +199,6 @@ bool RadialMenu::EnsureClass() {
         description.cbSize = sizeof(description);
         description.lpfnWndProc = &RadialMenu::WndProc;
         description.hInstance = GetModuleHandleW(nullptr);
-        description.hCursor = LoadCursorW(nullptr, IDC_HAND);
         description.lpszClassName = kClassName;
         return RegisterClassExW(&description) != 0 ||
                GetLastError() == ERROR_CLASS_ALREADY_EXISTS;
@@ -125,73 +206,106 @@ bool RadialMenu::EnsureClass() {
     return registered;
 }
 
-bool RadialMenu::Open(SelectHandler onSelect) {
+bool RadialMenu::Open(SelectHandler onSelect, core::MenuSize size) {
     Close();
-    EnsureFonts();
-    if (!EnsureClass()) {
+    if (!EnsureClass() || !EnsureGdiplus()) {
         return false;
     }
     onSelect_ = std::move(onSelect);
-
-    width_ = GetSystemMetrics(SM_CXVIRTUALSCREEN);
-    height_ = GetSystemMetrics(SM_CYVIRTUALSCREEN);
-    const int originX = GetSystemMetrics(SM_XVIRTUALSCREEN);
-    const int originY = GetSystemMetrics(SM_YVIRTUALSCREEN);
-    if (width_ < 200 || height_ < 200) {
-        width_ = GetSystemMetrics(SM_CXSCREEN);
-        height_ = GetSystemMetrics(SM_CYSCREEN);
-    }
+    windowDip_ = WindowDip(size);
 
     POINT cursor{};
     GetCursorPos(&cursor);
-    center_ = POINT{ std::clamp(static_cast<int>(cursor.x) - originX, kMenuRadius + 8,
-                                width_ - kMenuRadius - 8),
-                     std::clamp(static_cast<int>(cursor.y) - originY, kMenuRadius + 8,
-                                height_ - kMenuRadius - 8) };
+    centerScreen_ = cursor;
+
+    const HMONITOR monitor = MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO info{};
+    info.cbSize = sizeof(info);
+    if (GetMonitorInfoW(monitor, &info)) {
+        workArea_ = info.rcWork;
+    } else {
+        workArea_ = RECT{ 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN) };
+    }
+
+    UINT dpiX = 96;
+    UINT dpiY = 96;
+    if (FAILED(GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &dpiX, &dpiY)) || dpiX == 0) {
+        dpiX = 96;
+    }
+    pixelScale_ = dpiX / 96.0f;
+    contentScale_ = (windowDip_ - 2.0f * kPadding) / kDesign;
+
+    widthPx_ = static_cast<int>(std::lround(windowDip_ * pixelScale_));
+    heightPx_ = widthPx_;
+
+    const int margin = static_cast<int>(std::lround(10.0f * pixelScale_));
+    int left = cursor.x - widthPx_ / 2;
+    int top = cursor.y - heightPx_ / 2;
+    const int minLeft = workArea_.left + margin;
+    const int maxLeft = workArea_.right - widthPx_ - margin;
+    const int minTop = workArea_.top + margin;
+    const int maxTop = workArea_.bottom - heightPx_ - margin;
+    left = (maxLeft >= minLeft) ? std::clamp(left, minLeft, maxLeft) : workArea_.left;
+    top = (maxTop >= minTop) ? std::clamp(top, minTop, maxTop) : workArea_.top;
 
     HDC screen = GetDC(nullptr);
     memory_ = CreateCompatibleDC(screen);
-    BITMAPINFO info{};
-    info.bmiHeader.biSize = sizeof(info.bmiHeader);
-    info.bmiHeader.biWidth = width_;
-    info.bmiHeader.biHeight = -height_;
-    info.bmiHeader.biPlanes = 1;
-    info.bmiHeader.biBitCount = 32;
-    info.bmiHeader.biCompression = BI_RGB;
-    bitmap_ = CreateDIBSection(memory_, &info, DIB_RGB_COLORS, &bits_, nullptr, 0);
+    BITMAPINFO info2{};
+    info2.bmiHeader.biSize = sizeof(info2.bmiHeader);
+    info2.bmiHeader.biWidth = widthPx_;
+    info2.bmiHeader.biHeight = -heightPx_;
+    info2.bmiHeader.biPlanes = 1;
+    info2.bmiHeader.biBitCount = 32;
+    info2.bmiHeader.biCompression = BI_RGB;
+    bitmap_ = CreateDIBSection(memory_, &info2, DIB_RGB_COLORS, &bits_, nullptr, 0);
     ReleaseDC(nullptr, screen);
     if (bitmap_ == nullptr || bits_ == nullptr) {
         Close();
         return false;
     }
     SelectObject(memory_, bitmap_);
-    std::memset(bits_, 0, static_cast<std::size_t>(width_) * height_ * 4);
 
     window_ = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
-                              kClassName, L"HaloCap radial", WS_POPUP, originX, originY, width_,
-                              height_, nullptr, nullptr, GetModuleHandleW(nullptr), this);
+                              kClassName, L"HaloCap radial", WS_POPUP, left, top, widthPx_,
+                              heightPx_, nullptr, nullptr, GetModuleHandleW(nullptr), this);
     if (window_ == nullptr) {
         Close();
         return false;
     }
 
+    centerScreen_ = POINT{ left + widthPx_ / 2, top + heightPx_ / 2 };
+    showStartMs_ = GetTickCount64();
+    animating_ = true;
+    hovered_ = -1;
+    for (float& alpha : hoverAlpha_) {
+        alpha = 0.0f;
+    }
+
     Render();
     ShowWindow(static_cast<HWND>(window_), SW_SHOWNOACTIVATE);
+    SetTimer(static_cast<HWND>(window_), 1, 16, nullptr);
 
     g_active = this;
-    hook_ = SetWindowsHookExW(WH_KEYBOARD_LL, &RadialMenu::KeyHook, GetModuleHandleW(nullptr), 0);
+    mouseHook_ =
+        SetWindowsHookExW(WH_MOUSE_LL, &RadialMenu::MouseHook, GetModuleHandleW(nullptr), 0);
+    keyHook_ = SetWindowsHookExW(WH_KEYBOARD_LL, &RadialMenu::KeyHook, GetModuleHandleW(nullptr), 0);
     return true;
 }
 
 void RadialMenu::Close() {
-    if (hook_ != nullptr) {
-        UnhookWindowsHookEx(hook_);
-        hook_ = nullptr;
+    if (mouseHook_ != nullptr) {
+        UnhookWindowsHookEx(mouseHook_);
+        mouseHook_ = nullptr;
+    }
+    if (keyHook_ != nullptr) {
+        UnhookWindowsHookEx(keyHook_);
+        keyHook_ = nullptr;
     }
     if (g_active == this) {
         g_active = nullptr;
     }
     if (window_ != nullptr) {
+        KillTimer(static_cast<HWND>(window_), 1);
         DestroyWindow(static_cast<HWND>(window_));
         window_ = nullptr;
     }
@@ -204,16 +318,349 @@ void RadialMenu::Close() {
         memory_ = nullptr;
     }
     bits_ = nullptr;
+    dragging_ = false;
     hovered_ = -1;
+}
+
+void RadialMenu::Render() {
+    if (bits_ == nullptr || window_ == nullptr) {
+        return;
+    }
+
+    const ULONGLONG now = GetTickCount64();
+    const float show = std::clamp((now - showStartMs_) / 160.0f, 0.0f, 1.0f);
+    const float ease = 1.0f - std::pow(1.0f - show, 3.0f);
+    const float scale = 0.93f + 0.07f * ease;
+
+    Bitmap canvas(widthPx_, heightPx_, PixelFormat32bppPARGB);
+    Graphics graphics(&canvas);
+    graphics.SetSmoothingMode(SmoothingModeAntiAlias);
+    graphics.SetTextRenderingHint(TextRenderingHintAntiAlias);
+    graphics.SetCompositingQuality(CompositingQualityHighQuality);
+    graphics.Clear(Color(0, 0, 0, 0));
+
+    const float k = contentScale_ * pixelScale_;
+    const float pad = kPadding * pixelScale_;
+    const float offset = pad + kDesign * k * (1.0f - scale) * 0.5f;
+    Matrix transform(k * scale, 0.0f, 0.0f, k * scale, offset, offset);
+    graphics.SetTransform(&transform);
+
+    const PointF diskCenter(190.0f, 190.0f);
+
+    // 外盘投影：用一圈递减 alpha 的椭圆近似 DropShadow（30 blur / 2 depth / 0.22）。
+    for (int i = 0; i < 15; ++i) {
+        const float t = static_cast<float>(i) / 14.0f;
+        const float radius = kDiskRadius + 1.0f + i * 1.35f;
+        const int alpha = static_cast<int>(26.0f * (1.0f - t) * (1.0f - t));
+        SolidBrush shadow(Color(static_cast<BYTE>(alpha), 0, 0, 0));
+        graphics.FillEllipse(&shadow, 190.0f - radius, 192.0f - radius, radius * 2.0f,
+                             radius * 2.0f);
+    }
+
+    // 白色径向盘：#FFFFFF → #F8F9FB(0.62) → #EFF1F5。
+    GraphicsPath disk;
+    disk.AddEllipse(190.0f - kDiskRadius, 190.0f - kDiskRadius, kDiskRadius * 2.0f,
+                    kDiskRadius * 2.0f);
+    PathGradientBrush diskBrush(&disk);
+    diskBrush.SetCenterPoint(PointF(190.0f, 190.0f - 0.14f * kDiskRadius));
+    diskBrush.SetCenterColor(Color(255, 255, 255, 255));
+    std::vector<Color> surround(static_cast<std::size_t>(disk.GetPointCount()),
+                                Color(255, 0xEF, 0xF1, 0xF5));
+    INT surroundCount = static_cast<INT>(surround.size());
+    diskBrush.SetSurroundColors(surround.data(), &surroundCount);
+    graphics.FillPath(&diskBrush, &disk);
+    Pen diskBorder(Color(26, 0, 0, 0), 1.0f);
+    graphics.DrawEllipse(&diskBorder, 190.0f - kDiskRadius, 190.0f - kDiskRadius,
+                         kDiskRadius * 2.0f, kDiskRadius * 2.0f);
+
+    // 四个扇区：基础 #07000000，悬停填充 accent 0x26、外弧 accent 2.2。
+    const float halfSweep = 45.0f - kSectorGapDegrees * 0.5f;
+    for (int i = 0; i < 4; ++i) {
+        const float centerAngle = i * 90.0f;
+        GraphicsPath* sector =
+            SectorPath(centerAngle - halfSweep, centerAngle + halfSweep, kSectorInner,
+                       kSectorOuter);
+        SolidBrush base(Color(7, 0, 0, 0));
+        graphics.FillPath(&base, sector);
+
+        const float hover = std::clamp(hoverAlpha_[i], 0.0f, 1.0f);
+        if (hover > 0.01f) {
+            SolidBrush lit(WithAlpha(kActions[i].accent, static_cast<int>(0x26 * hover)));
+            graphics.FillPath(&lit, sector);
+            Pen arc(WithAlpha(kActions[i].accent, static_cast<int>(255 * hover)), 2.2f);
+            arc.SetStartCap(LineCapRound);
+            arc.SetEndCap(LineCapRound);
+            GraphicsPath arcPath;
+            const float radius = kSectorOuter - 0.8f;
+            arcPath.AddArc(190.0f - radius, 190.0f - radius, radius * 2.0f, radius * 2.0f,
+                           centerAngle - halfSweep - 90.0f, halfSweep * 2.0f);
+            graphics.DrawPath(&arc, &arcPath);
+        }
+        delete sector;
+    }
+
+    // 四个动作：节点半径 110，悬停外移 4、图标 1.06。
+    for (int i = 0; i < 4; ++i) {
+        const float angle = i * 90.0f;
+        const PointF node = DesignPoint(angle, kNodeRadius);
+        const float radians = (angle - 90.0f) * 3.14159265f / 180.0f;
+        const float hover = std::clamp(hoverAlpha_[i], 0.0f, 1.0f);
+        const float ox = std::cos(radians) * 4.0f * hover;
+        const float oy = std::sin(radians) * 4.0f * hover;
+        const PointF iconCenter(node.X + ox, node.Y - 8.0f + oy);
+
+        const float iconScale = 1.0f + 0.06f * hover;
+        const float half = 20.0f * iconScale;
+        GraphicsPath* iconRect = RoundRectPath(iconCenter.X - half, iconCenter.Y - half,
+                                                half * 2.0f, half * 2.0f, 13.0f);
+        SolidBrush iconBackground(Color(255, 255, 255, 255));
+        graphics.FillPath(&iconBackground, iconRect);
+        if (hover > 0.01f) {
+            SolidBrush tint(WithAlpha(kActions[i].accent, static_cast<int>(0x26 * hover)));
+            graphics.FillPath(&tint, iconRect);
+        }
+        const Color borderColor =
+            Blend(Color(26, 0, 0, 0), kActions[i].accent, hover);
+        Pen iconBorder(borderColor, 1.0f);
+        graphics.DrawPath(&iconBorder, iconRect);
+        delete iconRect;
+
+        const Color iconColor = Blend(Color(255, 0x3C, 0x3C, 0x43), kActions[i].accent, hover);
+        DrawIcon(graphics, i, iconCenter, iconColor);
+
+        // 快捷键徽标：17×17，右上角 (-4,-3)。
+        const float badgeRadius = 8.5f;
+        const PointF badgeCenter(iconCenter.X + 20.0f * iconScale - 5.0f,
+                                 iconCenter.Y - 20.0f * iconScale + 4.0f);
+        SolidBrush badgeBackground(
+            hover > 0.5f ? kActions[i].accent : Color(255, 0xED, 0xEE, 0xF2));
+        graphics.FillEllipse(&badgeBackground, badgeCenter.X - badgeRadius,
+                             badgeCenter.Y - badgeRadius, badgeRadius * 2.0f,
+                             badgeRadius * 2.0f);
+        const Color badgeText =
+            hover > 0.5f ? Color(255, 0x1D, 0x1D, 0x1F) : Color(255, 0x85, 0x85, 0x8B);
+        DrawCenteredText(graphics, kActions[i].shortcut, BadgeFont(),
+                         RectF(badgeCenter.X - badgeRadius, badgeCenter.Y - badgeRadius,
+                               badgeRadius * 2.0f, badgeRadius * 2.0f),
+                         badgeText);
+
+        const Color labelColor =
+            Blend(Color(255, 0x51, 0x51, 0x56), Color(255, 0x1D, 0x1D, 0x1F), hover);
+        DrawCenteredText(graphics, kActions[i].title, LabelFont(),
+                         RectF(node.X + ox - 40.0f, node.Y + 14.0f + oy, 80.0f, 20.0f),
+                         labelColor);
+    }
+
+    // 中心盘：104 白色圆 + 柔和投影。
+    for (int i = 0; i < 9; ++i) {
+        const float t = static_cast<float>(i) / 8.0f;
+        const float radius = 52.0f + i * 1.4f;
+        const int alpha = static_cast<int>(16.0f * (1.0f - t) * (1.0f - t));
+        SolidBrush shadow(Color(static_cast<BYTE>(alpha), 0, 0, 0));
+        graphics.FillEllipse(&shadow, 190.0f - radius, 192.0f - radius, radius * 2.0f,
+                             radius * 2.0f);
+    }
+    SolidBrush centerWhite(Color(255, 255, 255, 255));
+    graphics.FillEllipse(&centerWhite, 190.0f - 52.0f, 190.0f - 52.0f, 104.0f, 104.0f);
+    Pen centerBorder(Color(20, 0, 0, 0), 1.0f);
+    graphics.DrawEllipse(&centerBorder, 190.0f - 52.0f, 190.0f - 52.0f, 104.0f, 104.0f);
+
+    int active = hovered_;
+    if (active < 0) {
+        float best = 0.2f;
+        for (int i = 0; i < 4; ++i) {
+            if (hoverAlpha_[i] > best) {
+                best = hoverAlpha_[i];
+                active = i;
+            }
+        }
+    }
+    if (active >= 0) {
+        SolidBrush dot(kActions[active].accent);
+        graphics.FillEllipse(&dot, 190.0f - 3.0f, 190.0f - 20.0f, 6.0f, 6.0f);
+        DrawCenteredText(graphics, kActions[active].title, CenterFont(),
+                         RectF(190.0f - 48.0f, 190.0f - 2.0f, 96.0f, 22.0f),
+                         Color(255, 0x1D, 0x1D, 0x1F));
+    } else {
+        DrawCenteredText(graphics, L"HaloCap", CenterFont(),
+                         RectF(190.0f - 48.0f, 190.0f - 11.0f, 96.0f, 24.0f),
+                         Color(255, 0x1D, 0x1D, 0x1F));
+    }
+
+    // 拷贝到 DIB：GDI+ 输出预乘 BGRA，分层窗口直接吃。
+    const Rect lockRect(0, 0, widthPx_, heightPx_);
+    BitmapData data{};
+    if (canvas.LockBits(&lockRect, ImageLockModeRead, PixelFormat32bppPARGB, &data) == Ok) {
+        for (int y = 0; y < heightPx_; ++y) {
+            std::memcpy(static_cast<std::uint8_t*>(bits_) + static_cast<std::size_t>(y) * widthPx_ * 4,
+                        static_cast<const std::uint8_t*>(data.Scan0) +
+                            static_cast<std::size_t>(y) * data.Stride,
+                        static_cast<std::size_t>(widthPx_) * 4);
+        }
+        canvas.UnlockBits(&data);
+    }
+
+    HDC screen = GetDC(nullptr);
+    RECT windowRect{};
+    GetWindowRect(static_cast<HWND>(window_), &windowRect);
+    POINT destination{ windowRect.left, windowRect.top };
+    SIZE windowSize{ widthPx_, heightPx_ };
+    POINT source{ 0, 0 };
+    BLENDFUNCTION blend{};
+    blend.BlendOp = AC_SRC_OVER;
+    blend.SourceConstantAlpha = static_cast<BYTE>(std::lround(255.0f * std::min(1.0f, show * 1.15f)));
+    blend.AlphaFormat = AC_SRC_ALPHA;
+    UpdateLayeredWindow(static_cast<HWND>(window_), screen, &destination, &windowSize, memory_,
+                        &source, 0, &blend, ULW_ALPHA);
+    ReleaseDC(nullptr, screen);
+}
+
+void RadialMenu::Tick() {
+    const ULONGLONG now = GetTickCount64();
+    const float show = std::clamp((now - showStartMs_) / 160.0f, 0.0f, 1.0f);
+
+    bool animating = show < 1.0f;
+    for (int i = 0; i < 4; ++i) {
+        const float target = (i == hovered_) ? 1.0f : 0.0f;
+        const float step = 16.0f / 130.0f;
+        if (hoverAlpha_[i] < target) {
+            hoverAlpha_[i] = std::min(target, hoverAlpha_[i] + step);
+            animating = true;
+        } else if (hoverAlpha_[i] > target) {
+            hoverAlpha_[i] = std::max(target, hoverAlpha_[i] - step);
+            animating = true;
+        }
+    }
+
+    Render();
+    if (!animating) {
+        KillTimer(static_cast<HWND>(window_), 1);
+    }
+}
+
+void RadialMenu::UpdateHover(POINT screenPoint) {
+    if (dragging_) {
+        return;
+    }
+    const float dx = static_cast<float>(screenPoint.x - centerScreen_.x);
+    const float dy = static_cast<float>(screenPoint.y - centerScreen_.y);
+    const float distance = std::sqrt(dx * dx + dy * dy);
+    const float designToPx = contentScale_ * pixelScale_;
+    const float deadPx = kDeadZone * designToPx;
+    const float diskPx = kDiskRadius * designToPx;
+
+    if (distance < deadPx || distance > diskPx) {
+        if (hovered_ != -1) {
+            hovered_ = -1;
+            SetTimer(static_cast<HWND>(window_), 1, 16, nullptr);
+        }
+        return;
+    }
+
+    float angle = std::atan2(dx, -dy) * 180.0f / 3.14159265f;
+    if (angle < 0.0f) {
+        angle += 360.0f;
+    }
+    const int index = static_cast<int>(std::floor((angle + 45.0f) / 90.0f)) % 4;
+    if (index != hovered_) {
+        hovered_ = index;
+        SetTimer(static_cast<HWND>(window_), 1, 16, nullptr);
+    }
+}
+
+void RadialMenu::Select(int index) {
+    if (index < 0 || index >= 4) {
+        return;
+    }
+    const SelectHandler handler = onSelect_;
+    const core::AppAction action = kActions[index].action;
+    Close();
+    if (handler) {
+        handler(action);
+    }
+}
+
+void RadialMenu::StartDrag(POINT screenPoint) {
+    dragging_ = true;
+    dragOffset_ = POINT{ centerScreen_.x - screenPoint.x, centerScreen_.y - screenPoint.y };
+    hovered_ = -1;
+    SetTimer(static_cast<HWND>(window_), 1, 16, nullptr);
+}
+
+void RadialMenu::DragTo(POINT screenPoint) {
+    if (!dragging_ || window_ == nullptr) {
+        return;
+    }
+    const int left = screenPoint.x + dragOffset_.x - widthPx_ / 2;
+    const int top = screenPoint.y + dragOffset_.y - heightPx_ / 2;
+    SetWindowPos(static_cast<HWND>(window_), HWND_TOPMOST, left, top, 0, 0,
+                 SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    centerScreen_ = POINT{ left + widthPx_ / 2, top + heightPx_ / 2 };
+}
+
+LRESULT CALLBACK RadialMenu::MouseHook(int code, WPARAM wParam, LPARAM lParam) {
+    if (code < 0 || g_active == nullptr) {
+        return CallNextHookEx(nullptr, code, wParam, lParam);
+    }
+    const auto* mouse = reinterpret_cast<const MSLLHOOKSTRUCT*>(lParam);
+    switch (wParam) {
+    case WM_MOUSEMOVE:
+        if (g_active->dragging_) {
+            g_active->DragTo(mouse->pt);
+        } else {
+            g_active->UpdateHover(mouse->pt);
+        }
+        // 移动必须放行，否则系统光标会被钩子冻住。
+        return CallNextHookEx(nullptr, code, wParam, lParam);
+    case WM_LBUTTONDOWN: {
+        const float dx = static_cast<float>(mouse->pt.x - g_active->centerScreen_.x);
+        const float dy = static_cast<float>(mouse->pt.y - g_active->centerScreen_.y);
+        const float distance = std::sqrt(dx * dx + dy * dy);
+        const float designToPx = g_active->contentScale_ * g_active->pixelScale_;
+        if (distance < kDeadZone * designToPx) {
+            g_active->StartDrag(mouse->pt);
+        } else if (distance <= kDiskRadius * designToPx) {
+            float angle = std::atan2(dx, -dy) * 180.0f / 3.14159265f;
+            if (angle < 0.0f) {
+                angle += 360.0f;
+            }
+            const int index = static_cast<int>(std::floor((angle + 45.0f) / 90.0f)) % 4;
+            g_active->Select(index);
+        } else {
+            g_active->Close();
+        }
+        return 1;
+    }
+    case WM_LBUTTONUP:
+        g_active->dragging_ = false;
+        return 1;
+    case WM_RBUTTONDOWN:
+    case WM_MBUTTONDOWN:
+        g_active->Close();
+        return 1;
+    default:
+        return 1;
+    }
 }
 
 LRESULT CALLBACK RadialMenu::KeyHook(int code, WPARAM wParam, LPARAM lParam) {
     if (code < 0 || g_active == nullptr) {
         return CallNextHookEx(nullptr, code, wParam, lParam);
     }
-    if ((wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN) &&
-        reinterpret_cast<const KBDLLHOOKSTRUCT*>(lParam)->vkCode == VK_ESCAPE) {
-        PostMessageW(static_cast<HWND>(g_active->window_), kMsgEscape, 0, 0);
+    if (wParam != WM_KEYDOWN && wParam != WM_SYSKEYDOWN) {
+        return CallNextHookEx(nullptr, code, wParam, lParam);
+    }
+    const DWORD key = reinterpret_cast<const KBDLLHOOKSTRUCT*>(lParam)->vkCode;
+    if (key == VK_ESCAPE) {
+        g_active->Close();
+        return 1;
+    }
+    if (key >= '1' && key <= '4') {
+        PostMessageW(static_cast<HWND>(g_active->window_), WM_APP + 12, key - '1', 0);
+        return 1;
+    }
+    if (key >= VK_NUMPAD1 && key <= VK_NUMPAD4) {
+        PostMessageW(static_cast<HWND>(g_active->window_), WM_APP + 12, key - VK_NUMPAD1, 0);
         return 1;
     }
     return CallNextHookEx(nullptr, code, wParam, lParam);
@@ -235,175 +682,29 @@ LRESULT CALLBACK RadialMenu::WndProc(HWND window, UINT message, WPARAM wParam, L
     return DefWindowProcW(window, message, wParam, lParam);
 }
 
-int RadialMenu::HitTest(POINT client) const {
-    const float dx = static_cast<float>(client.x - center_.x);
-    const float dy = static_cast<float>(client.y - center_.y);
-    const float distance = std::sqrt(dx * dx + dy * dy);
-    if (distance < kRingRadius - kButtonRadius - 4.0f ||
-        distance > kRingRadius + kButtonRadius + 4.0f) {
-        return -1;
-    }
-
-    // 12 点开始顺时针：截图 / OCR / 录制 / 贴图。
-    const float angle = std::atan2(dy, dx);
-    const float top = -1.5707963f;
-    int best = -1;
-    float bestDelta = 0.7854f;   // 45°
-    for (int i = 0; i < 4; ++i) {
-        float delta = std::fabs(angle - (top + i * 1.5707963f));
-        if (delta > 3.1415926f) {
-            delta = 6.2831853f - delta;
-        }
-        if (delta < bestDelta) {
-            bestDelta = delta;
-            best = i;
-        }
-    }
-    return best;
-}
-
-void RadialMenu::Render() {
-    if (bits_ == nullptr) {
-        return;
-    }
-
-    Gdiplus::Bitmap canvas(width_, height_, PixelFormat32bppPARGB);
-    {
-        Gdiplus::Graphics g(&canvas);
-        g.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
-        g.SetTextRenderingHint(Gdiplus::TextRenderingHintAntiAlias);
-        g.Clear(Gdiplus::Color(0, 0, 0, 0));
-
-        // 全屏压暗一点，让焦点落在圆盘上。
-        Gdiplus::SolidBrush dimBrush(Gdiplus::Color(46, 0, 0, 0));
-        g.FillRectangle(&dimBrush, 0, 0, width_, height_);
-
-        const float cx = static_cast<float>(center_.x);
-        const float cy = static_cast<float>(center_.y);
-        Gdiplus::SolidBrush background(Gdiplus::Color(230, 0x16, 0x1A, 0x22));
-        g.FillEllipse(&background, cx - kMenuRadius, cy - kMenuRadius, kMenuRadius * 2.0f,
-                      kMenuRadius * 2.0f);
-        Gdiplus::Pen ringPen(Gdiplus::Color(40, 255, 255, 255), 1.0f);
-        g.DrawEllipse(&ringPen, cx - kMenuRadius, cy - kMenuRadius, kMenuRadius * 2.0f,
-                      kMenuRadius * 2.0f);
-
-        const core::AppAction actions[] = { core::AppAction::Screenshot, core::AppAction::Ocr,
-                                            core::AppAction::Record, core::AppAction::Pin };
-        const float top = -1.5707963f;
-        for (int i = 0; i < 4; ++i) {
-            const float angle = top + i * 1.5707963f;
-            const float bx = cx + std::cos(angle) * kRingRadius;
-            const float by = cy + std::sin(angle) * kRingRadius;
-            const bool hovered = hovered_ == i;
-            Gdiplus::SolidBrush buttonBrush(
-                hovered ? Gdiplus::Color(255, 0x2F, 0x7C, 0xF6)
-                        : Gdiplus::Color(255, 0x22, 0x28, 0x33));
-            g.FillEllipse(&buttonBrush, bx - kButtonRadius, by - kButtonRadius,
-                          kButtonRadius * 2.0f, kButtonRadius * 2.0f);
-            Gdiplus::Pen buttonPen(Gdiplus::Color(hovered ? 120 : 30, 255, 255, 255), 1.0f);
-            g.DrawEllipse(&buttonPen, bx - kButtonRadius, by - kButtonRadius,
-                          kButtonRadius * 2.0f, kButtonRadius * 2.0f);
-            DrawIcon(g, actions[i], bx, by - 6.0f,
-                     Gdiplus::Color(255, hovered ? 255 : 0xE9, hovered ? 255 : 0xED,
-                                    hovered ? 255 : 0xF4));
-
-            Gdiplus::StringFormat format;
-            format.SetAlignment(Gdiplus::StringAlignmentCenter);
-            format.SetLineAlignment(Gdiplus::StringAlignmentCenter);
-            const std::wstring label = ActionLabel(actions[i]);
-            Gdiplus::RectF labelRect(bx - 40.0f, by + 16.0f, 80.0f, 22.0f);
-            Gdiplus::SolidBrush labelBrush(Gdiplus::Color(
-                255, hovered ? 255 : 0xE9, hovered ? 255 : 0xED, hovered ? 255 : 0xF4));
-            g.DrawString(label.c_str(), static_cast<int>(label.size()), g_labelFont, labelRect,
-                         &format, &labelBrush);
-        }
-
-        Gdiplus::StringFormat centerFormat;
-        centerFormat.SetAlignment(Gdiplus::StringAlignmentCenter);
-        centerFormat.SetLineAlignment(Gdiplus::StringAlignmentCenter);
-        Gdiplus::SolidBrush centerBrush(Gdiplus::Color(255, 0xE9, 0xED, 0xF4));
-        g.DrawString(L"HaloCap", 7, g_centerFont,
-                     Gdiplus::RectF(cx - 60.0f, cy - 26.0f, 120.0f, 22.0f), &centerFormat,
-                     &centerBrush);
-        Gdiplus::SolidBrush hintBrush(Gdiplus::Color(255, 0x9A, 0xA5, 0xB5));
-        g.DrawString(L"Esc 关闭", 6, g_hintFont,
-                     Gdiplus::RectF(cx - 60.0f, cy + 2.0f, 120.0f, 18.0f), &centerFormat,
-                     &hintBrush);
-    }
-
-    Gdiplus::Rect lockRect(0, 0, width_, height_);
-    Gdiplus::BitmapData data{};
-    if (canvas.LockBits(&lockRect, Gdiplus::ImageLockModeRead, PixelFormat32bppPARGB, &data) ==
-        Gdiplus::Ok) {
-        for (int y = 0; y < height_; ++y) {
-            std::memcpy(static_cast<std::uint8_t*>(bits_) + static_cast<std::size_t>(y) * width_ * 4,
-                        static_cast<const std::uint8_t*>(data.Scan0) +
-                            static_cast<std::size_t>(y) * data.Stride,
-                        static_cast<std::size_t>(width_) * 4);
-        }
-        canvas.UnlockBits(&data);
-    }
-
-    HDC screen = GetDC(nullptr);
-    POINT destination{ GetSystemMetrics(SM_XVIRTUALSCREEN), GetSystemMetrics(SM_YVIRTUALSCREEN) };
-    SIZE size{ width_, height_ };
-    POINT source{ 0, 0 };
-    BLENDFUNCTION blend{};
-    blend.BlendOp = AC_SRC_OVER;
-    blend.SourceConstantAlpha = 255;
-    blend.AlphaFormat = AC_SRC_ALPHA;
-    UpdateLayeredWindow(static_cast<HWND>(window_), screen, &destination, &size, memory_, &source, 0,
-                        &blend, ULW_ALPHA);
-    ReleaseDC(nullptr, screen);
-}
-
 LRESULT RadialMenu::Handle(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
     case WM_MOUSEMOVE: {
-        const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
-        const int hovered = HitTest(point);
-        if (hovered != hovered_) {
-            hovered_ = hovered;
-            Render();
-        }
+        POINT cursor{};
+        GetCursorPos(&cursor);
+        UpdateHover(cursor);
         return 0;
     }
-
-    case WM_LBUTTONDOWN: {
-        const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
-        const int hit = HitTest(point);
-        if (hit >= 0) {
-            const core::AppAction actions[] = { core::AppAction::Screenshot, core::AppAction::Ocr,
-                                                core::AppAction::Record, core::AppAction::Pin };
-            const SelectHandler handler = onSelect_;
-            const core::AppAction action = actions[hit];
-            Close();
-            if (handler) {
-                handler(action);
-            }
-        } else {
-            Close();
+    case WM_TIMER:
+        if (wParam == 1) {
+            Tick();
+            return 0;
         }
+        break;
+    case WM_APP + 12:
+        Select(static_cast<int>(wParam));
         return 0;
-    }
-
-    case WM_RBUTTONDOWN:
-    case WM_MBUTTONDOWN:
-        Close();
-        return 0;
-
-    case kMsgEscape:
-        Close();
-        return 0;
-
     case WM_DESTROY:
         window_ = nullptr;
         return 0;
-
     default:
         break;
     }
-
     return DefWindowProcW(window, message, wParam, lParam);
 }
 

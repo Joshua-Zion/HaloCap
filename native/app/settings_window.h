@@ -5,15 +5,17 @@
 
 #include <functional>
 #include <string>
-#include <string>
 #include <vector>
+#include <string_view>
 #include <windows.h>
 
 namespace halocap::app {
 
-// 六页设置：截图 / 录制 / OCR / 快捷键 / 外观 / 关于（含环境摘要）。
-// 用 GDI 控件而不是 D2D：设置是低频界面，原生 COMBOBOX/EDIT 的选择、输入法、
-// 键盘导航都是白拿的；覆盖层那套高频渲染不该被搬到这里。
+// 1.x 设置窗：820×620 DIP，18 边距外投影、18 圆角；标题栏 50、侧栏 218、
+// 内容 #F7F7F9、白卡片 12 圆角；开关 44×24、分段控件、快捷键字段、底部保存/取消。
+//
+// 整窗用 GDI+ 直接画到分层窗口：设置是低频界面，自绘能逐像素对齐 1.x 的
+// 行距、圆角与开关形态；只有目录选择走系统对话框。
 class SettingsWindow {
 public:
     SettingsWindow();
@@ -31,83 +33,67 @@ public:
     bool Valid() const { return window_ != nullptr; }
     HWND Handle() const { return window_; }
 
+    // 自检/截图用：直接切到某一页。
+    void ShowPageForTest(int index);
+
 private:
     enum class Page : int {
-        Screenshot = 0,
-        Recording = 1,
-        Ocr = 2,
-        Hotkeys = 3,
-        Appearance = 4,
+        General = 0,
+        Hotkeys = 1,
+        Capture = 2,
+        Ocr = 3,
+        Recording = 4,
         About = 5,
+    };
+
+    struct Hotspot {
+        RECT rect{};
+        int id = 0;
     };
 
     static bool EnsureClass();
     static LRESULT CALLBACK WndProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam);
     static LRESULT CALLBACK HotkeyHook(int code, WPARAM wParam, LPARAM lParam);
-    void StartHotkeyCapture(int index);
-    void FinishHotkeyCapture(const core::HotkeySpec& spec);
-    void RefreshHotkeyLabels();
     LRESULT Handle(HWND window, UINT message, WPARAM wParam, LPARAM lParam);
 
-    HWND AddCombo(Page page, int x, int y, int width, const std::vector<std::wstring>& items,
-                  int selected);
-    HWND AddCheck(Page page, int x, int y, int width, const std::wstring& text, bool checked);
-    HWND AddLabel(Page page, int x, int y, int width, const std::wstring& text);
-    HWND AddEdit(Page page, int x, int y, int width, const std::wstring& text);
-    void ShowPage(Page page);
+    void Render();
+    void AddHotspot(const RECT& rect, int id);
+    int HitTest(POINT client) const;
+    void Click(int id);
+    void StartHotkeyCapture(int index);
+    void FinishHotkeyCapture(const core::HotkeySpec& spec);
+    void CancelHotkeyCapture();
     void Save();
+    void CopySummary();
+    void CheckUpdate();
+    void ChooseDirectory();
+    std::wstring SummaryText() const;
 
     HWND window_ = nullptr;
-    HWND list_ = nullptr;
-    HWND saveButton_ = nullptr;
-    HWND cancelButton_ = nullptr;
-    HFONT font_ = nullptr;
-    HBRUSH background_ = nullptr;
-    HBRUSH sidebarBrush_ = nullptr;
-    HBRUSH cardBrush_ = nullptr;
-    HBRUSH accentBrush_ = nullptr;
-    HPEN cardBorderPen_ = nullptr;
-    HPEN fieldBorderPen_ = nullptr;
+    HBITMAP bitmap_ = nullptr;
+    HDC memory_ = nullptr;
+    void* bits_ = nullptr;
+    int widthPx_ = 0;
+    int heightPx_ = 0;
+    float scale_ = 1.0f;
 
-    struct PageControl {
-        HWND handle = nullptr;
-        Page page = Page::Screenshot;
-    };
-    std::vector<PageControl> controls_;
-
-    Page current_ = Page::Screenshot;
     core::AppSettings settings_;
     core::PlatformFacts facts_;
     std::string modelsDirectory_;
     SaveHandler onSave_;
     bool saved_ = false;
 
-    // 控件句柄（保存时读回）。
-    HWND screenshotFormat_ = nullptr;
-    HWND recordingResolution_ = nullptr;
-    HWND recordingFrameRate_ = nullptr;
-    HWND recordingQuality_ = nullptr;
-    HWND recordingRange_ = nullptr;
-    HWND recordingCountdown_ = nullptr;
-    HWND recordingBitrate_ = nullptr;
-    HWND systemAudio_ = nullptr;
-    HWND microphone_ = nullptr;
-    HWND recordingDirectory_ = nullptr;
-    HWND ocrEngine_ = nullptr;
-    HWND ocrAutoCopy_ = nullptr;
-    HWND ocrPin_ = nullptr;
-    HWND menuSize_ = nullptr;
-    HWND pinGlow_ = nullptr;
-    HWND autoStart_ = nullptr;
-    HWND recordCursor_ = nullptr;
-    HGDIOBJ titleFont_ = nullptr;
-    Page currentPage_ = Page::Screenshot;
-    HWND hotkeyValues_[5] = {};
-    HWND hotkeyButtons_[5] = {};
+    Page page_ = Page::General;
+    int scroll_ = 0;
+    int contentHeight_ = 0;
+    int viewHeightDip_ = 0;
+    int hoverId_ = 0;
     int captureIndex_ = -1;
-    std::wstring summaryText_;
-    HWND copySummaryButton_ = nullptr;
-    HWND checkUpdateButton_ = nullptr;
+    HHOOK keyHook_ = nullptr;
+    std::vector<Hotspot> hotspots_;
+    bool dragging_ = false;
+    POINT dragOrigin_{};
+    RECT dragWindow_{};
 };
 
 }

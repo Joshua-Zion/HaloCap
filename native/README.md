@@ -2,7 +2,7 @@
 
 本目录属于 `2.0` 分支。设计依据见 [../docs/2.0-native-plan.md](../docs/2.0-native-plan.md)，分支约定见其 §10，工具链与构建前提见计划文档的「S1 的工具链」。
 
-当前状态：**S1 / S2 / S3 / S4 完成**（S4 的热键捕获、结果窗口高亮与同进程内存回落是收尾项）——十六套测试全绿；`HaloCap.exe` 有设置、日志、托盘、热键、覆盖层、录制、截图与 OCR（托盘「录屏」/`Ctrl+Alt+R`、托盘「截图」/`Ctrl+Alt+A`、托盘「OCR」/`Ctrl+Alt+O`、托盘「设置」；`--record-seconds` / `--screenshot-selftest` / `--ocr-selftest` / `--settings-selftest` 四个自检）。截图：九种标注、工具栏、贴图光晕、PNG/JPEG/剪贴板（选区打开 78.2 ms、私有内存 107.6 MB）。OCR：PP-OCRv6 tiny + 系统 `Windows.Media.Ocr` 双引擎，推理在 worker 子进程里（主进程不加载 ORT），合成图 PP-OCR 3/3 行、识别 82 ms；六页设置与诊断页已可用。
+当前状态：**S1–S5 完成**（S4 的热键捕获、结果窗口高亮、同进程内存回落是收尾项）——十七套测试全绿；`HaloCap.exe` 有设置、日志、托盘、热键、覆盖层、录制、截图、OCR 与六页设置（托盘「录屏」/`Ctrl+Alt+R`、托盘「截图」/`Ctrl+Alt+A`、托盘「OCR」/`Ctrl+Alt+O`、托盘「设置」；`--record-seconds` / `--screenshot-selftest` / `--ocr-selftest` / `--settings-selftest` 四个自检，另有 `--version` / `--check-update`）。交付：`package.ps1` 产出 **11.05 MB** 的 win64 zip（目标 ≤ 20 MB）与 SHA-256 清单；空闲 2.5 MB、4K30 峰值 230.8 MB、截图选区 78.2 ms。
 
 一处环境阻塞要写清：本机现在对**任何**程序都拒绝 `DuplicateOutput`（`E_ACCESSDENIED`；今天早些时候还能跑出吞吐数字的 spike 2 工具现在同样被拒），所以 `ICaptureSource` 的端到端脏矩形量级数字还没拿到。拷贝逻辑本身不依赖复制权，已经单独验过（`rect_copy_test`）。
 
@@ -38,6 +38,7 @@ native/
     mosaic.h            马赛克：块对齐、块平均降采样（每格一个像素）
     ocr.h               OCR 前后处理：检测输入、DBNet 后处理、裁切、CTC 解码、按行排版与搜索
     ocr_engine.h        OCR 引擎 seam（IOcrEngine）：模型目录、识别入口
+    update.h            更新清单解析与语义化版本比较（--check-update 用）
     frame_scheduler.h   帧节奏与丢帧口径：BeginFrame / EndFrame / Stats，时钟由调用方注入微秒
   platform/win32/
     d2d_render_backend.h/.cpp      Direct2D 1.1（ID2D1Device + ID2D1DeviceContext）+ 合成链呈现
@@ -70,7 +71,7 @@ native/
                         也支持 synthetic:WxH（合成源，用来量 4K30 峰值）与 static/noaudio
   tools/wgc_probe/      窗口录制端到端：自建窗口 → WGC → 常驻纹理 → MP4
   tools/rect_copy_test/ 脏矩形拷贝的功能验证（进 CTest，不碰屏幕也不需要复制权）
-  tests/      core 的单测（无第三方框架，十六个可执行 + CTest）
+  tests/      core 的单测（无第三方框架，十七个可执行 + CTest）
   app/        组装根：DPI → 能力 → 设置 → 日志 → 托盘 → 热键 → 覆盖层 → 消息循环，
               `--selftest` 量空闲内存并给出退出码
     screenshot_overlay.h/.cpp   截图会话：全屏覆盖层、选区/把手、工具栏、鼠标键盘编辑、文字 EDIT、导出
@@ -78,7 +79,9 @@ native/
     ocr_result_window.h/.cpp    OCR 结果：左侧原图 + 红框，右侧按行文本 + 搜索 + 复制全部
     ocr_worker.h/.cpp           OCR worker：raw + 结果文本协议，子进程跑推理
     settings_window.h/.cpp      六页设置 + 环境摘要（截图/录制/OCR/快捷键/外观/关于）
+    version.h                   交付版本与通道（2.0.0 / stable）
   build.cmd   vcvars → cmake configure → build → ctest
+  package.ps1 交付打包：staging + SHA-256 + zip + 更新清单（≤ 20 MB 断言）
 ```
 
 三条硬规则（计划 §3.3）各自的执行方式：
@@ -359,3 +362,27 @@ native> build\app\HaloCap.exe --ocr-selftest ocr-selftest.png
 一个踩到的坑：rec 的导出已经做了 softmax，再算一次会把置信度算成 1/6906（0.000），所有行被过滤；`DecodeCtc` 现在先看行和，像概率就取最大值、否则才算 softmax。
 
 收尾项：设置页的热键捕获（目前五把只读展示）、结果窗口的命中高亮/按行跳转、同进程 OCR 后的内存回落。
+
+## S5 交付（package.ps1）
+
+```
+native> powershell -NoProfile -ExecutionPolicy Bypass -File package.ps1
+native> build\app\HaloCap.exe --version
+native> build\app\HaloCap.exe --check-update dist\HaloCap-2.0.0-win64.json
+```
+
+`package.ps1` 把 `HaloCap.exe`、`onnxruntime.dll` 与 `models\ppocrv6-tiny-1\*` 放进 staging，逐个算 SHA-256，压成 zip，并把清单写在 zip 旁边（清单里要放 zip 自己的哈希，放进 zip 会自引用）。
+
+| 项 | 值 |
+| --- | --- |
+| 包体 | **11.05 MB**（11,591,818 字节，zip）≤ 20 MB |
+| 文件数 | 8 |
+| 清单 | `dist\HaloCap-2.0.0-win64.json`（version / url / sha256 / size / files） |
+| 签名 | 2.0 分支不签（`PACKAGE_SIGNED=0`）；main 的发行线补 `signtool` |
+| 打包后自检 | 复制到工作区外、清掉 `HALOCAP_OCR_MODELS`：`--ocr-selftest` 与 `--ocr-worker ... pp` 都通过（模型在 exe 旁边） |
+
+更新通道是「清单 + 版本比较」：`--check-update` 打印 `UPDATE_CURRENT / UPDATE_LATEST / UPDATE_AVAILABLE / UPDATE_URL / UPDATE_SIZE`，语义化版本比较支持 `2.0.0-beta < 2.0.0`。下载/校验/替换留给 main 的发行线，2.0 只提供可测的协议（`update_tests` 19 条断言）。
+
+**与 1.x 的对照**：空闲 249 → **2.5 MB**；4K30 峰值 841 → **230.8 MB**；交付包 90 → **11.05 MB**；截图选区 0（1.x 未单测）→ **78.2 ms**；4K 体积/分钟 184 MB（真实桌面）vs 合成源 1.7 MB/分钟，**内容不同不可比**，需 4K 真机复测。
+
+**测试迁移**：1.x 的 82 项里，core 部分全部落到 17 个 CTest 可执行文件（坐标/选区/热键/标注/马赛克/OCR/录制/音频/诊断/日志），日志见 `docs/2.0-native-plan.md` §5.1「S5 交付」的矩阵；未迁的是剪贴板历史解析与 WPF 工具栏图标（2.0 只做截屏贴图，工具栏是文字标签）。

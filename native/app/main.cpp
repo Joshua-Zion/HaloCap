@@ -30,11 +30,13 @@
 #include "mf_h264_encoder.h"
 #include "ocr_engine.h"
 #include "ocr_result_window.h"
-#include "settings_window.h"
 #include "ocr_worker.h"
 #include "ort_ocr_engine.h"
 #include "pin_window.h"
 #include "screenshot_overlay.h"
+#include "settings_window.h"
+#include "update.h"
+#include "version.h"
 #include "wasapi_audio_source.h"
 #include "win32_capability.h"
 #include "win32_input_host.h"
@@ -51,6 +53,7 @@
 #include <cstring>
 #include <ctime>
 #include <filesystem>
+#include <fstream>
 #include <malloc.h>
 #include <memory>
 #include <string>
@@ -105,6 +108,10 @@ struct Options {
 
     // 非空 = 无人值守的设置页自检：打开六页设置 → 抓图 → 退出。
     std::wstring settingsSelftestPath;
+
+    // 交付：--version 打印版本；--check-update 读一份清单并比较版本。
+    bool version = false;
+    std::wstring updateManifestPath;
 };
 
 std::wstring Utf8ToWide(std::string_view text) {
@@ -301,6 +308,10 @@ Options ParseOptions(int argc, char** argv) {
             options.ocrSelftestPath = Utf8ToWide(argv[++i]);
         } else if (argument == "--settings-selftest" && i + 1 < argc) {
             options.settingsSelftestPath = Utf8ToWide(argv[++i]);
+        } else if (argument == "--version") {
+            options.version = true;
+        } else if (argument == "--check-update" && i + 1 < argc) {
+            options.updateManifestPath = Utf8ToWide(argv[++i]);
         } else if (argument == "--no-tray") {
             options.tray = false;
         } else if (argument == "--no-input") {
@@ -322,6 +333,8 @@ void PrintUsage() {
         "  --screenshot-selftest PATH  open the screenshot overlay, annotate, export, exit\n"
         "  --ocr-selftest PATH         open the OCR overlay, recognise the selection, exit\n"
         "  --settings-selftest PATH    open the six settings pages, capture, exit\n"
+        "  --version                   print the delivery version and exit\n"
+        "  --check-update PATH         compare this build with an update manifest\n"
         "  --settings-selftest PATH    open the settings pages, capture, exit\n"
         "  --overlay-size 1920x1080\n"
         "  --no-tray | --no-input | --no-overlay\n");
@@ -557,8 +570,16 @@ void TrimProcessMemory() {
     }
 }
 
-std::string ResolveOcrModelDirectory() {
-    if (const char* environment = std::getenv("HALOCAP_OCR_MODELS")) {
+std::string ReadTextFileUtf8(const std::wstring& path) {
+    std::ifstream stream(std::filesystem::path(path), std::ios::binary);
+    if (!stream) {
+        return {};
+    }
+    return std::string((std::istreambuf_iterator<char>(stream)),
+                       std::istreambuf_iterator<char>());
+}
+
+std::string ResolveOcrModelDirectory() {    if (const char* environment = std::getenv("HALOCAP_OCR_MODELS")) {
         return environment;
     }
 
@@ -1378,6 +1399,36 @@ int main(int argc, char** argv) {
     const Options options = ParseOptions(argc, argv);
     if (options.help) {
         PrintUsage();
+        return 0;
+    }
+
+    if (options.version) {
+        std::printf("%s %s (%s)\n", halocap::app::kHaloCapProductName,
+                    halocap::app::kHaloCapVersion, halocap::app::kHaloCapChannel);
+        return 0;
+    }
+
+    if (!options.updateManifestPath.empty()) {
+        const std::string json = ReadTextFileUtf8(options.updateManifestPath);
+        if (json.empty()) {
+            std::printf("UPDATE_CHECK=FAILED reason=manifest-missing\n");
+            return 2;
+        }
+
+        core::UpdateManifest manifest;
+        std::string error;
+        if (!core::ParseUpdateManifest(json, &manifest, &error)) {
+            std::printf("UPDATE_CHECK=FAILED reason=%s\n", error.c_str());
+            return 2;
+        }
+
+        const bool available =
+            core::IsNewerVersion(manifest.version, halocap::app::kHaloCapVersion);
+        std::printf("UPDATE_CURRENT=%s\n", halocap::app::kHaloCapVersion);
+        std::printf("UPDATE_LATEST=%s\n", manifest.version.c_str());
+        std::printf("UPDATE_AVAILABLE=%d\n", available ? 1 : 0);
+        std::printf("UPDATE_URL=%s\n", manifest.url.c_str());
+        std::printf("UPDATE_SIZE=%lld\n", static_cast<long long>(manifest.size));
         return 0;
     }
 

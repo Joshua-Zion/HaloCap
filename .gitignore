@@ -7,3 +7,5 @@ publish/
 artifacts/
 native/build/
 native/build.log
+
+native/dist/

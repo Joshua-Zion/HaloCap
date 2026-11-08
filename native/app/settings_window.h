@@ -5,6 +5,7 @@
 
 #include <functional>
 #include <string>
+#include <string>
 #include <vector>
 #include <windows.h>
 
@@ -97,9 +98,13 @@ private:
     HWND ocrPin_ = nullptr;
     HWND menuSize_ = nullptr;
     HWND pinGlow_ = nullptr;
+    HWND autoStart_ = nullptr;
     HWND hotkeyValues_[5] = {};
     HWND hotkeyButtons_[5] = {};
     int captureIndex_ = -1;
+    std::wstring summaryText_;
+    HWND copySummaryButton_ = nullptr;
+    HWND checkUpdateButton_ = nullptr;
 };
 
 }

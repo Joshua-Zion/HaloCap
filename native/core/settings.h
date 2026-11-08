@@ -1,4 +1,4 @@
-﻿#pragma once
+#pragma once
 
 #include "input_host.h"
 
@@ -146,6 +146,7 @@ struct AppSettings {
 
     bool convertFilePathsToImages = true;
     bool pinGlowEnabled = true;
+    bool autoStart = false;
 
     OcrSettings ocr;
     RecordingSettings recording;
@@ -156,7 +157,7 @@ struct AppSettings {
                pinHotkey == other.pinHotkey && screenshotFormat == other.screenshotFormat &&
                menuSize == other.menuSize && recordingDirectory == other.recordingDirectory &&
                convertFilePathsToImages == other.convertFilePathsToImages &&
-               pinGlowEnabled == other.pinGlowEnabled && ocr.engine == other.ocr.engine &&
+               pinGlowEnabled == other.pinGlowEnabled && autoStart == other.autoStart && ocr.engine == other.ocr.engine &&
                ocr.autoCopy == other.ocr.autoCopy && ocr.pinOcrEnabled == other.ocr.pinOcrEnabled &&
                recording == other.recording;
     }

@@ -16,6 +16,7 @@
     ort_ocr_engine.cpp
     winrt_ocr_engine.cpp
     win32_clipboard.cpp
+    win32_autostart.cpp
 )
 
 target_include_directories(halocap_platform_win32 PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

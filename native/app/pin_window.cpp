@@ -130,20 +130,27 @@ void PinWindow::Render() {
 
     for (int y = 0; y < outerHeight; ++y) {
         for (int x = 0; x < outerWidth; ++x) {
-            const float px = static_cast<float>(x - contentLeft);
-            const float py = static_cast<float>(y - contentTop);
+            const int contentX = x - contentLeft;
+            const int contentY = y - contentTop;
+            const float px = static_cast<float>(contentX);
+            const float py = static_cast<float>(contentY);
             const float contentDistance =
                 roundedDistance(px - centerX, py - centerY, centerX, centerY, kRadius);
             const float outerDistance = roundedDistance(
                 px - centerX, py - centerY, centerX + kBorderPx, centerY + kBorderPx,
                 kRadius + kBorderPx);
 
+            // 圆角判定的等号会把右/下边界也算进来，而像素索引只到 width-1/height-1；
+            // 之前这里正好越界一行，触发 vector subscript out of range。
+            const bool insideContent = contentDistance < 0.0f && contentX >= 0 &&
+                                       contentX < width && contentY >= 0 && contentY < height;
+
             std::uint8_t b = 0;
             std::uint8_t g = 0;
             std::uint8_t r = 0;
             std::uint8_t a = 0;
 
-            if (contentDistance <= 0.0f) {
+            if (insideContent) {
                 const std::size_t source =
                     (static_cast<std::size_t>(y - contentTop) * width + (x - contentLeft)) * 4;
                 b = content_[source + 0];

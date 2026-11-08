@@ -1,8 +1,15 @@
-﻿#include "settings_window.h"
+#include "settings_window.h"
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <fstream>
+#include <sstream>
 #include <string>
+
+#include "update.h"
+#include "version.h"
 
 namespace halocap::app {
 
@@ -45,6 +52,51 @@ std::wstring GetText(HWND control) {
 }  // namespace
 
 namespace {
+
+namespace {
+
+void CopyTextToClipboard(const std::wstring& text) {
+    if (text.empty()) {
+        return;
+    }
+    const std::size_t bytes = (text.size() + 1) * sizeof(wchar_t);
+    HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, bytes);
+    if (memory == nullptr) {
+        return;
+    }
+    void* target = GlobalLock(memory);
+    if (target == nullptr) {
+        GlobalFree(memory);
+        return;
+    }
+    std::memcpy(target, text.c_str(), bytes);
+    GlobalUnlock(memory);
+    if (!OpenClipboard(nullptr)) {
+        GlobalFree(memory);
+        return;
+    }
+    EmptyClipboard();
+    if (SetClipboardData(CF_UNICODETEXT, memory) == nullptr) {
+        GlobalFree(memory);
+    }
+    CloseClipboard();
+}
+
+std::string ReadLocalUpdateManifest() {
+    wchar_t localAppData[MAX_PATH] = {};
+    if (GetEnvironmentVariableW(L"LOCALAPPDATA", localAppData, MAX_PATH) == 0) {
+        return {};
+    }
+    const std::wstring path = std::wstring(localAppData) + L"\\HaloCap2\\update.json";
+    std::ifstream stream(path, std::ios::binary);
+    if (!stream) {
+        return {};
+    }
+    return std::string((std::istreambuf_iterator<char>(stream)),
+                       std::istreambuf_iterator<char>());
+}
+
+}  // namespace
 
 SettingsWindow* g_hotkeyOwner = nullptr;
 int g_hotkeyIndex = -1;
@@ -294,6 +346,7 @@ bool SettingsWindow::Create(void* owner, const core::AppSettings& settings,
     menuSize_ = AddCombo(Page::Appearance, x, 44, controlWidth, { L"小", L"中", L"大" },
                          static_cast<int>(settings_.menuSize));
     pinGlow_ = AddCheck(Page::Appearance, x, 92, 300, L"贴图窗口显示光晕", settings_.pinGlowEnabled);
+    autoStart_ = AddCheck(Page::Appearance, x, 126, 300, L"开机自动启动", settings_.autoStart);
 
     // ---- 关于 / 诊断 ----
     {
@@ -313,13 +366,28 @@ bool SettingsWindow::Create(void* owner, const core::AppSettings& settings,
         summary += L"设置：%APPDATA%\\HaloCap2\\settings.json\n";
         summary += L"日志：%APPDATA%\\HaloCap2\\logs\n";
 
+        summaryText_ = summary;
         HWND about = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", summary.c_str(),
                                      WS_CHILD | ES_MULTILINE | ES_READONLY | WS_VSCROLL, x, 20,
-                                     560, 470, window_, nullptr, GetModuleHandleW(nullptr),
+                                     560, 420, window_, nullptr, GetModuleHandleW(nullptr),
                                      nullptr);
         SendMessageW(about, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
         controls_.push_back({ about, Page::About });
         ShowWindow(about, SW_HIDE);
+
+        copySummaryButton_ = CreateWindowExW(0, L"BUTTON", L"复制环境摘要",
+                                             WS_CHILD | BS_PUSHBUTTON, x, 456, 140, 30,
+                                             window_, reinterpret_cast<HMENU>(7),
+                                             GetModuleHandleW(nullptr), nullptr);
+        checkUpdateButton_ = CreateWindowExW(0, L"BUTTON", L"检查更新",
+                                             WS_CHILD | BS_PUSHBUTTON, x + 152, 456, 120, 30,
+                                             window_, reinterpret_cast<HMENU>(8),
+                                             GetModuleHandleW(nullptr), nullptr);
+        for (HWND button : { copySummaryButton_, checkUpdateButton_ }) {
+            SendMessageW(button, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
+            controls_.push_back({ button, Page::About });
+            ShowWindow(button, SW_HIDE);
+        }
     }
 
     ShowPage(Page::Screenshot);
@@ -400,6 +468,9 @@ void SettingsWindow::Save() {
     }
     if (pinGlow_ != nullptr) {
         settings_.pinGlowEnabled = SendMessageW(pinGlow_, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    }
+    if (autoStart_ != nullptr) {
+        settings_.autoStart = SendMessageW(autoStart_, BM_GETCHECK, 0, 0) == BST_CHECKED;
     }
 
     if (onSave_ != nullptr && onSave_(settings_)) {
@@ -654,6 +725,37 @@ LRESULT SettingsWindow::Handle(HWND window, UINT message, WPARAM wParam, LPARAM 
             ShowPage(static_cast<Page>(std::clamp(index, 0, 5)));
             return 0;
         }
+        if (LOWORD(wParam) == 7) {
+            CopyTextToClipboard(summaryText_);
+            MessageBoxW(window, L"环境摘要已复制到剪贴板。", L"HaloCap", MB_OK | MB_ICONINFORMATION);
+            return 0;
+        }
+        if (LOWORD(wParam) == 8) {
+            const std::string json = ReadLocalUpdateManifest();
+            if (json.empty()) {
+                MessageBoxW(window, L"未找到更新清单（%LOCALAPPDATA%\\HaloCap2\\update.json）。",
+                            L"HaloCap 更新", MB_OK | MB_ICONINFORMATION);
+                return 0;
+            }
+            core::UpdateManifest manifest;
+            std::string error;
+            if (!core::ParseUpdateManifest(json, &manifest, &error)) {
+                MessageBoxW(window, L"更新清单解析失败，详见日志。", L"HaloCap 更新",
+                            MB_OK | MB_ICONWARNING);
+                return 0;
+            }
+            const bool newer = core::IsNewerVersion(manifest.version, halocap::app::kHaloCapVersion);
+            std::wstring message = L"当前版本：" +
+                                   Utf8ToWide(halocap::app::kHaloCapVersion) +
+                                   L"\n最新版本：" + Utf8ToWide(manifest.version) + L"\n\n";
+            message += newer ? L"发现新版本，可从清单中的地址下载。" : L"已经是最新版本。";
+            if (newer) {
+                message += L"\n" + Utf8ToWide(manifest.url);
+            }
+            MessageBoxW(window, message.c_str(), L"HaloCap 更新", MB_OK | MB_ICONINFORMATION);
+            return 0;
+        }
+
         if (LOWORD(wParam) >= 300 && LOWORD(wParam) <= 304) {
             StartHotkeyCapture(static_cast<int>(LOWORD(wParam)) - 300);
             return 0;

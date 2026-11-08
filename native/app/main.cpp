@@ -1,4 +1,4 @@
-﻿// S1 的组装：把 8 个 seam 接成一个能起来、能待着、能自己报出空闲内存的进程。
+// S1 的组装：把 8 个 seam 接成一个能起来、能待着、能自己报出空闲内存的进程。
 //
 // 这一版刻意只做 S1 的骨架：设置、日志、托盘、热键、覆盖层窗口与渲染后端就绪，消息循环待着；
 // 托盘菜单与热键只记录「收到了什么动作」——真正的截图/录屏/OCR/贴图在 S3/S4 才接。
@@ -41,6 +41,7 @@
 #include "update.h"
 #include "version.h"
 #include "wasapi_audio_source.h"
+#include "win32_autostart.h"
 #include "win32_capability.h"
 #include "win32_clipboard.h"
 #include "win32_input_host.h"
@@ -680,7 +681,16 @@ int Run(const Options& options) {
     trayState.pinHotkey = core::FormatHotkeyText(settings.pinHotkey);
     // 贴图已经接上；开机自启服务还没接（S4），先按「未开启」呈现。
     trayState.pinAvailable = true;
-    trayState.autoStart = false;
+    wchar_t executablePath[MAX_PATH] = {};
+    GetModuleFileNameW(nullptr, executablePath, MAX_PATH);
+    const std::wstring selfPath = executablePath;
+    if (settings.autoStart != halocap::platform::win32::IsAutoStartEnabled(selfPath)) {
+        std::string autoStartError;
+        if (!halocap::platform::win32::SetAutoStart(settings.autoStart, selfPath, &autoStartError)) {
+            log.Error("autostart: apply failed (" + autoStartError + ")");
+        }
+    }
+    trayState.autoStart = halocap::platform::win32::IsAutoStartEnabled(selfPath);
 
     Win32Tray tray;
     bool trayIcon = false;
@@ -1022,6 +1032,13 @@ int Run(const Options& options) {
                     return false;
                 }
                 liveSettings = updated;
+                std::string autoStartError;
+                if (!halocap::platform::win32::SetAutoStart(updated.autoStart, selfPath,
+                                                            &autoStartError)) {
+                    log.Error("autostart: apply failed (" + autoStartError + ")");
+                }
+                trayState.autoStart = halocap::platform::win32::IsAutoStartEnabled(selfPath);
+                tray.Apply(trayState);
                 log.Info("settings: saved");
                 tray.Notify("HaloCap", "设置已保存（热键与录制参数下次启动生效）");
                 return true;

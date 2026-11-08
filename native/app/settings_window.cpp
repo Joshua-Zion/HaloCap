@@ -21,6 +21,7 @@ namespace {
 constexpr wchar_t kClassName[] = L"HaloCapSettings";
 constexpr int kListWidth = 190;
 constexpr int kTitleBar = 38;
+constexpr int kPageTitleShift = 26;
 
 std::wstring Utf8ToWide(std::string_view text) {
     if (text.empty()) {
@@ -226,6 +227,9 @@ bool SettingsWindow::Create(void* owner, const core::AppSettings& settings,
     font_ = CreateFontW(-15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
                         OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH,
                         L"Microsoft YaHei UI");
+    titleFont_ = CreateFontW(-18, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                             OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                             DEFAULT_PITCH, L"Microsoft YaHei UI");
     // 1.x 设置页的浅色配色：内容底 #F7F7F9、侧栏 #EDEDF1、卡片白、强调 #007AFF。
     background_ = CreateSolidBrush(RGB(247, 247, 249));
     sidebarBrush_ = CreateSolidBrush(RGB(237, 237, 241));
@@ -268,7 +272,7 @@ bool SettingsWindow::Create(void* owner, const core::AppSettings& settings,
                                  static_cast<int>(settings_.screenshotFormat));
     AddLabel(Page::Screenshot, x, 88, 560,
              L"截图热键：" + Utf8ToWide(core::FormatHotkeyText(settings_.screenshotHotkey)) +
-                 L"（热键编辑在下一轮）");
+                 L"（可在「快捷键」页修改）");
 
     // ---- 录制 ----
     AddLabel(Page::Recording, x, 20, labelWidth, L"分辨率");
@@ -407,7 +411,7 @@ bool SettingsWindow::Create(void* owner, const core::AppSettings& settings,
         RECT rect{};
         GetWindowRect(control.handle, &rect);
         MapWindowPoints(HWND_DESKTOP, window_, reinterpret_cast<POINT*>(&rect), 2);
-        SetWindowPos(control.handle, nullptr, rect.left, rect.top + kTitleBar,
+        SetWindowPos(control.handle, nullptr, rect.left, rect.top + kTitleBar + kPageTitleShift,
                      rect.right - rect.left, rect.bottom - rect.top, SWP_NOZORDER);
     }
 
@@ -433,9 +437,11 @@ bool SettingsWindow::Create(void* owner, const core::AppSettings& settings,
 
 void SettingsWindow::ShowPage(Page page) {
     current_ = page;
+    currentPage_ = page;
     for (const PageControl& control : controls_) {
         ShowWindow(control.handle, control.page == page ? SW_SHOW : SW_HIDE);
     }
+    InvalidateRect(window_, nullptr, TRUE);
 }
 
 void SettingsWindow::Save() {
@@ -673,8 +679,19 @@ LRESULT SettingsWindow::Handle(HWND window, UINT message, WPARAM wParam, LPARAM 
         DrawTextW(dc, L"HaloCap 设置", -1, &titleRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
         SelectObject(dc, oldFont);
 
+        static const wchar_t* const kPageTitles[] = { L"截图", L"录制", L"OCR",
+                                                      L"快捷键", L"外观",
+                                                      L"关于 / 诊断" };
+        const int pageIndex = std::clamp(static_cast<int>(currentPage_), 0, 5);
+        HGDIOBJ oldTitleFont = SelectObject(dc, titleFont_);
+        SetTextColor(dc, RGB(29, 29, 31));
+        RECT pageTitle{ 224, 12 + kTitleBar + 6, client.right - 24, 12 + kTitleBar + 32 };
+        DrawTextW(dc, kPageTitles[pageIndex], -1, &pageTitle,
+                  DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+        SelectObject(dc, oldTitleFont);
+
         const RECT card{ 212, 12 + kTitleBar, client.right - 12,
-                         client.bottom - 64 + kTitleBar };
+                     client.bottom - 64 + kTitleBar };
         HGDIOBJ oldPen = SelectObject(dc, cardBorderPen_);
         HGDIOBJ oldBrush = SelectObject(dc, cardBrush_);
         RoundRect(dc, card.left, card.top, card.right, card.bottom, 24, 24);

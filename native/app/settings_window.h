@@ -99,6 +99,8 @@ private:
     HWND menuSize_ = nullptr;
     HWND pinGlow_ = nullptr;
     HWND autoStart_ = nullptr;
+    HGDIOBJ titleFont_ = nullptr;
+    Page currentPage_ = Page::Screenshot;
     HWND hotkeyValues_[5] = {};
     HWND hotkeyButtons_[5] = {};
     int captureIndex_ = -1;

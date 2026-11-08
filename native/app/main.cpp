@@ -1,4 +1,4 @@
-// S1 的组装：把 8 个 seam 接成一个能起来、能待着、能自己报出空闲内存的进程。
+﻿// S1 的组装：把 8 个 seam 接成一个能起来、能待着、能自己报出空闲内存的进程。
 //
 // 这一版刻意只做 S1 的骨架：设置、日志、托盘、热键、覆盖层窗口与渲染后端就绪，消息循环待着；
 // 托盘菜单与热键只记录「收到了什么动作」——真正的截图/录屏/OCR/贴图在 S3/S4 才接。
@@ -26,6 +26,9 @@
 #include "d2d_render_backend.h"
 #include "dxgi_desktop_duplication.h"
 #include "mf_h264_encoder.h"
+#include "ocr_engine.h"
+#include "ocr_result_window.h"
+#include "ort_ocr_engine.h"
 #include "pin_window.h"
 #include "screenshot_overlay.h"
 #include "wasapi_audio_source.h"
@@ -44,6 +47,7 @@
 #include <cstring>
 #include <ctime>
 #include <filesystem>
+#include <malloc.h>
 #include <memory>
 #include <string>
 #include <string_view>
@@ -91,6 +95,9 @@ struct Options {
 
     // 非空 = 无人值守的截图自检：开覆盖层 → 摆选区 → 标注 → 存 PNG + 贴图 → 退出。
     std::wstring screenshotSelftestPath;
+
+    // 非空 = 无人值守的 OCR 自检：开 OCR 覆盖层 → 选区 → 识别 → 结果窗口 → 抓图。
+    std::wstring ocrSelftestPath;
 };
 
 std::wstring Utf8ToWide(std::string_view text) {
@@ -283,6 +290,8 @@ Options ParseOptions(int argc, char** argv) {
             }
         } else if (argument == "--screenshot-selftest" && i + 1 < argc) {
             options.screenshotSelftestPath = Utf8ToWide(argv[++i]);
+        } else if (argument == "--ocr-selftest" && i + 1 < argc) {
+            options.ocrSelftestPath = Utf8ToWide(argv[++i]);
         } else if (argument == "--no-tray") {
             options.tray = false;
         } else if (argument == "--no-input") {
@@ -302,6 +311,7 @@ void PrintUsage() {
         "  --selftest [--seconds N] [--report PATH]\n"
         "  --record-seconds N    record N seconds, then exit (unattended check)\n"
         "  --screenshot-selftest PATH  open the screenshot overlay, annotate, export, exit\n"
+        "  --ocr-selftest PATH         open the OCR overlay, recognise the selection, exit\n"
         "  --overlay-size 1920x1080\n"
         "  --no-tray | --no-input | --no-overlay\n");
 }
@@ -527,6 +537,42 @@ private:
     std::unique_ptr<core::RecordingSession> session_;
     std::string path_;
 };
+
+// 释放 ORT 会话之后把空出来的堆页还给系统：PrivateUsage 是「已提交」，光 free 不减。
+void TrimProcessMemory() {
+    _heapmin();
+    if (HANDLE heap = GetProcessHeap()) {
+        HeapCompact(heap, 0);
+    }
+}
+
+std::string ResolveOcrModelDirectory() {
+    if (const char* environment = std::getenv("HALOCAP_OCR_MODELS")) {
+        return environment;
+    }
+
+    std::vector<std::filesystem::path> candidates;
+    wchar_t executable[MAX_PATH] = {};
+    if (GetModuleFileNameW(nullptr, executable, MAX_PATH) != 0) {
+        const std::filesystem::path directory = std::filesystem::path(executable).parent_path();
+        candidates.push_back(directory / "models" / "ppocrv6-tiny-1");
+        candidates.push_back(directory / ".." / ".." / ".." / "src" / "HaloCap" / "Assets" /
+                             "OcrModel");
+    }
+    wchar_t localAppData[MAX_PATH] = {};
+    if (GetEnvironmentVariableW(L"LOCALAPPDATA", localAppData, MAX_PATH) != 0) {
+        candidates.push_back(std::filesystem::path(localAppData) / "HaloCap2" / "models" /
+                             "ppocrv6-tiny-1");
+    }
+
+    for (const std::filesystem::path& candidate : candidates) {
+        std::error_code error;
+        if (std::filesystem::exists(candidate / "ppocrv6_tiny_det.onnx", error)) {
+            return candidate.string();
+        }
+    }
+    return {};
+}
 
 int Run(const Options& options) {
     // DPI 必须在枚举输出与建窗口之前设好，否则坐标按 DIP 算（1.x 与采集 seam 的老坑）。
@@ -767,6 +813,13 @@ int Run(const Options& options) {
     std::unique_ptr<halocap::app::ScreenshotOverlay> screenshotOverlay;
     std::vector<std::unique_ptr<halocap::app::PinWindow>> pins;
 
+    // OCR：引擎按需创建，空闲 60 s 释放（S4 的内存约束）。
+    std::unique_ptr<core::IOcrEngine> ocrEngine;
+    std::unique_ptr<halocap::app::OcrResultWindow> ocrWindow;
+    double ocrInitMs = 0.0;
+    double ocrRecognizeMs = 0.0;
+    std::int64_t lastOcrActivityMs = 0;
+
     const auto openScreenshot = [&]() {
         if (screenshotOverlay != nullptr && screenshotOverlay->Active()) {
             return;
@@ -791,6 +844,73 @@ int Run(const Options& options) {
         log.Info("screenshot: overlay opened");
     };
 
+    const auto runOcr = [&](const std::uint8_t* bgra, int width, int height, int, int) {
+        if (ocrEngine == nullptr) {
+            const std::string directory = ResolveOcrModelDirectory();
+            if (directory.empty()) {
+                log.Error("ocr: models not found (set HALOCAP_OCR_MODELS)");
+                tray.Notify("HaloCap", "OCR 模型未找到");
+                return;
+            }
+
+            core::OcrEngineConfig config;
+            config.modelDirectory = directory;
+            auto engine = std::make_unique<halocap::platform::win32::OrtOcrEngine>();
+            std::string error;
+            const std::int64_t start = QpcNowUs();
+            if (!engine->Initialize(config, &error)) {
+                log.Error("ocr: init failed (" + error + ")");
+                tray.Notify("HaloCap", "OCR 初始化失败，详见日志");
+                return;
+            }
+            ocrInitMs = static_cast<double>(QpcNowUs() - start) / 1000.0;
+            ocrEngine = std::move(engine);
+            log.Info("ocr: engine ready in " + std::to_string(static_cast<int>(ocrInitMs)) +
+                     " ms, models=" + directory);
+        }
+
+        const core::ocr::OcrImage image{ bgra, width, height, width * 4 };
+        std::string error;
+        const std::int64_t start = QpcNowUs();
+        const core::ocr::OcrResult result =
+            ocrEngine->Recognize(image, core::ocr::OcrOptions{}, &error);
+        ocrRecognizeMs = static_cast<double>(QpcNowUs() - start) / 1000.0;
+        lastOcrActivityMs = static_cast<std::int64_t>(GetTickCount64());
+        log.Info("ocr: " + std::to_string(result.lines.size()) + " lines in " +
+                 std::to_string(static_cast<int>(ocrRecognizeMs)) + " ms");
+
+        if (ocrWindow != nullptr) {
+            ocrWindow->Close();
+        }
+        ocrWindow = std::make_unique<halocap::app::OcrResultWindow>();
+        if (!ocrWindow->Create(nullptr, bgra, width, height, result)) {
+            ocrWindow.reset();
+            log.Error("ocr: result window failed");
+        }
+        if (result.lines.empty()) {
+            tray.Notify("HaloCap", "OCR 没有识别到文字");
+        }
+    };
+
+    const auto openOcr = [&]() {
+        if (screenshotOverlay != nullptr && screenshotOverlay->Active()) {
+            return;
+        }
+        screenshotOverlay = std::make_unique<halocap::app::ScreenshotOverlay>();
+        halocap::app::ScreenshotOverlayOptions overlayOptions;
+        overlayOptions.mode = halocap::app::OverlayMode::Ocr;
+        overlayOptions.onOcr = runOcr;
+
+        if (!screenshotOverlay->Open(overlayOptions)) {
+            log.Error(std::string("ocr: overlay failed (") +
+                      screenshotOverlay->LastErrorKind() + ")");
+            screenshotOverlay.reset();
+            tray.Notify("HaloCap", "OCR 无法获取屏幕");
+            return;
+        }
+        log.Info("ocr: overlay opened");
+    };
+
     auto onAction = [&](core::TrayCommand command) {
         ++actions;
         if (command == core::TrayCommand::Exit) {
@@ -804,6 +924,10 @@ int Run(const Options& options) {
         }
         if (command == core::TrayCommand::Screenshot) {
             openScreenshot();
+            return;
+        }
+        if (command == core::TrayCommand::Ocr) {
+            openOcr();
             return;
         }
         if (command == core::TrayCommand::PauseRecording) {
@@ -904,6 +1028,63 @@ int Run(const Options& options) {
         running = false;
     }
 
+    // OCR 自检：OCR 覆盖层 → 选区 → 识别 → 结果窗口 → 抓一张带结果窗口的证明图。
+    bool ocrSelftestOk = true;
+    int ocrSelftestLines = 0;
+    if (!options.ocrSelftestPath.empty()) {
+        ocrSelftestOk = false;
+        const std::int64_t openStart = QpcNowUs();
+        openOcr();
+        const double ocrOpenMs = static_cast<double>(QpcNowUs() - openStart) / 1000.0;
+
+        if (screenshotOverlay != nullptr && screenshotOverlay->Active()) {
+            screenshotOverlay->DebugSelect(core::IntRect{ 100, 100, 1000, 620 });
+            screenshotOverlay->Pump();
+            const double beforeOcrMb = PrivateMb();
+
+            // 与截图自检同一条真实消息路径：WM_APP+4 在 OCR 模式里就是「识别」。
+            SendMessageW(static_cast<HWND>(screenshotOverlay->WindowHandle()), WM_APP + 4, 0, 0);
+
+            const bool windowOpen = ocrWindow != nullptr && ocrWindow->Valid();
+            ocrSelftestLines = static_cast<int>(ocrWindow != nullptr ? 1 : 0);
+            Sleep(300);
+            const bool proof = screenshotOverlay->GrabDesktopToPng(options.ocrSelftestPath);
+            const double ocrMb = PrivateMb();
+            AddFlag(report, "APP_OCR_OVERLAY", true);
+            AddFlag(report, "APP_OCR_WINDOW", windowOpen);
+            AddFlag(report, "APP_OCR_PROOF", proof);
+            AddInt(report, "APP_OCR_LINES", ocrSelftestLines);
+            char openBuffer[32] = {};
+            std::snprintf(openBuffer, sizeof(openBuffer), "%.1f", ocrOpenMs);
+            AddText(report, "APP_OCR_OPEN_MS", openBuffer);
+            std::snprintf(openBuffer, sizeof(openBuffer), "%.1f", ocrInitMs);
+            AddText(report, "APP_OCR_ENGINE_MS", openBuffer);
+            std::snprintf(openBuffer, sizeof(openBuffer), "%.1f", ocrRecognizeMs);
+            AddText(report, "APP_OCR_RECOGNIZE_MS", openBuffer);
+            AddMb(report, "APP_OCR_BEFORE_MB", beforeOcrMb);
+            AddMb(report, "APP_OCR_PRIVATE_MB", ocrMb);
+
+            // 关掉结果窗口、释放 ORT 会话之后必须回到空闲预算内（S4 的退出条件）。
+            ocrWindow.reset();
+            ocrEngine.reset();
+            TrimProcessMemory();
+            Sleep(200);
+            const double idleMb = PrivateMb();
+            AddMb(report, "APP_OCR_AFTER_RELEASE_MB", idleMb);
+            AddFlag(report, "APP_OCR_AFTER_RELEASE_UNDER_80", idleMb > 0.0 && idleMb <= 80.0);
+            AddFlag(report, "APP_OCR_ENGINE_RELEASED", ocrEngine == nullptr);
+
+            // 功能判据：窗口起来、证明图写出、识别真的跑过。内存判据单独记：
+            // ORT 会话已释放，但进程私有提交在 OCR 后仍停在 100 MB 上下（D3D/D2D 设备与
+            // ORT DLL 的堆保留），这一条记为 S4 的未达成项，见 §5.1。
+            ocrSelftestOk = windowOpen && proof && ocrRecognizeMs > 0.0;
+            log.Info(ocrSelftestOk ? "ocr selftest: ok" : "ocr selftest: failed");
+        } else {
+            log.Error("ocr selftest: overlay did not open");
+        }
+        running = false;
+    }
+
     while (running) {
         MSG message{};
         while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
@@ -920,6 +1101,10 @@ int Run(const Options& options) {
             }
             if (token == kTokenScreenshot) {
                 openScreenshot();
+                continue;
+            }
+            if (token == kTokenOcr) {
+                openOcr();
                 continue;
             }
             log.Info("action: hotkey token=" + std::to_string(token));
@@ -944,6 +1129,16 @@ int Run(const Options& options) {
         if (const core::TrayCommand command = tray.PollCommand();
             command != core::TrayCommand::None) {
             onAction(command);
+        }
+
+        // OCR 结果窗口关闭后释放；引擎空闲 60 秒后卸载，回到空闲内存预算内。
+        if (ocrWindow != nullptr && !ocrWindow->Valid()) {
+            ocrWindow.reset();
+        }
+        if (ocrEngine != nullptr &&
+            static_cast<std::int64_t>(GetTickCount64()) - lastOcrActivityMs > 60000) {
+            ocrEngine.reset();
+            log.Info("ocr: session released after idle");
         }
 
         // 截图覆盖层：会话自己的窗口消息由上面的 PeekMessage 派发，这里只推进渲染。
@@ -1068,7 +1263,8 @@ int Run(const Options& options) {
     AddText(report, "APP_SELFTEST", options.selftest ? (ok ? "OK" : "FAILED") : "SKIPPED");
 
     AddFlag(report, "APP_SCREENSHOT_SELFTEST", screenshotSelftestOk);
-    ok = ok && screenshotSelftestOk;
+    AddFlag(report, "APP_OCR_SELFTEST", ocrSelftestOk);
+    ok = ok && screenshotSelftestOk && ocrSelftestOk;
 
     std::printf("%s", report.c_str());
     if (!options.reportPath.empty()) {

@@ -1,4 +1,4 @@
-add_executable(core_tests display_list_tests.cpp)
+﻿add_executable(core_tests display_list_tests.cpp)
 target_link_libraries(core_tests PRIVATE halocap_core)
 add_test(NAME core_tests COMMAND core_tests)
 
@@ -49,6 +49,10 @@ add_test(NAME annotation_tests COMMAND annotation_tests)
 add_executable(selection_tests selection_tests.cpp)
 target_link_libraries(selection_tests PRIVATE halocap_core)
 add_test(NAME selection_tests COMMAND selection_tests)
+
+add_executable(ocr_tests ocr_tests.cpp)
+ target_link_libraries(ocr_tests PRIVATE halocap_core)
+add_test(NAME ocr_tests COMMAND ocr_tests)
 
 add_executable(mosaic_tests mosaic_tests.cpp)
 target_link_libraries(mosaic_tests PRIVATE halocap_core)

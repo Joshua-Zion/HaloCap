@@ -17,7 +17,13 @@
 
 namespace halocap::app {
 
+enum class OverlayMode {
+    Screenshot,
+    Ocr,
+};
+
 struct ScreenshotOverlayOptions {
+    OverlayMode mode = OverlayMode::Screenshot;
     // 空 = 图片\HaloCap。
     std::wstring saveDirectory;
     bool jpeg = false;
@@ -26,6 +32,10 @@ struct ScreenshotOverlayOptions {
     // 贴图：把合成好的选区交给调用方（由 app 持有 PinWindow 的生命周期）。
     std::function<void(const std::uint8_t* bgra, int width, int height, int screenX, int screenY)>
         onPin;
+
+    // OCR 模式：Enter /「识」把选区合成成 BGRA 交出去，由 app 跑引擎并开结果窗口。
+    std::function<void(const std::uint8_t* bgra, int width, int height, int screenX, int screenY)>
+        onOcr;
 };
 
 // S3 的交互层：全屏覆盖层 + 选区 + 工具栏 + 标注编辑 + 文字输入 + 导出/贴图。
@@ -112,6 +122,7 @@ private:
     void RenderSelection(core::FramePlan& plan);
     void RenderHint(core::FramePlan& plan);
     void UpdateMosaicTile(core::Annotation& annotation);
+    void RunOcr();
     void OpenTextEditor(core::Point localPoint);
     void CommitTextEditor();
     void CancelTextEditor();

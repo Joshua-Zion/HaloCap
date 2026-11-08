@@ -335,7 +335,10 @@ LRESULT ScreenshotOverlay::HandleMessage(HWND window, UINT message, WPARAM wPara
         return 0;
 
     case kMsgCopy:
-        if (CopySelection()) {
+        if (options_.mode == OverlayMode::Ocr) {
+            RunOcr();
+            Close();
+        } else if (CopySelection()) {
             Close();
         }
         return 0;
@@ -536,7 +539,10 @@ void ScreenshotOverlay::HandleToolbar(const ToolbarButton& button) {
         break;
 
     case Action::Copy:
-        if (CopySelection()) {
+        if (options_.mode == OverlayMode::Ocr) {
+            RunOcr();
+            pendingClose_ = true;
+        } else if (CopySelection()) {
             pendingClose_ = true;
         }
         break;
@@ -634,7 +640,10 @@ void ScreenshotOverlay::LayoutToolbar() {
         } else if (actions[i] != Action::CloseOverlay) {
             enabled = !selection.IsEmpty();
         }
-        addButton(actions[i], 0, -1, kActionLabels[i], kToolbarToolWidth, enabled, false);
+        const char* label = (actions[i] == Action::Copy && options_.mode == OverlayMode::Ocr)
+                                ? "识"
+                                : kActionLabels[i];
+        addButton(actions[i], 0, -1, label, kToolbarToolWidth, enabled, false);
     }
 
     toolbarBounds_ = RECT{ x, y, x + width, y + kToolbarHeight };
@@ -741,9 +750,12 @@ void ScreenshotOverlay::RenderHint(core::FramePlan& plan) {
         return;
     }
 
+    const bool ocrMode = options_.mode == OverlayMode::Ocr;
     const char* hint = selection_.Bounds().IsEmpty()
-                           ? "拖动选择区域 · 空格全屏标注 · Esc 退出"
-                           : "标注中 · 1-9 选工具 · Ctrl+Z 撤销 · Ctrl+C 复制 · Ctrl+S 保存";
+                           ? (ocrMode ? "拖动选择区域 · Enter 识别 · Esc 退出"
+                                      : "拖动选择区域 · 空格全屏标注 · Esc 退出")
+                           : (ocrMode ? "OCR · Enter 识别 · Esc 退出"
+                                      : "标注中 · 1-9 选工具 · Ctrl+Z 撤销 · Ctrl+C 复制 · Ctrl+S 保存");
     const core::FontSpec spec{ options_.fontFamily, 400, 13.0f,
                                Color{ 1.0f, 1.0f, 1.0f, 0.92f } };
     const core::TextCell measured = rasterizer_->LayOut(hint, spec, Point{ 0.0f, 0.0f });
@@ -798,6 +810,23 @@ void ScreenshotOverlay::Render() {
 }
 
 // ---- 马赛克与文字 ----
+
+void ScreenshotOverlay::RunOcr() {
+    std::vector<std::uint8_t> bgra;
+    int width = 0;
+    int height = 0;
+    if (!ComposeSelection(bgra, width, height)) {
+        errorKind_ = "compose";
+        return;
+    }
+    if (!options_.onOcr) {
+        errorKind_ = "noocr";
+        return;
+    }
+    const core::Rect selection = selection_.Bounds();
+    options_.onOcr(bgra.data(), width, height, static_cast<int>(selection.left),
+                   static_cast<int>(selection.top));
+}
 
 void ScreenshotOverlay::UpdateMosaicTile(core::Annotation& annotation) {
     if (annotation.tool != AnnotationTool::Mosaic || annotation.points.size() < 2 ||

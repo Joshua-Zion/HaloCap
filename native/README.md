@@ -2,7 +2,7 @@
 
 本目录属于 `2.0` 分支。设计依据见 [../docs/2.0-native-plan.md](../docs/2.0-native-plan.md)，分支约定见其 §10，工具链与构建前提见计划文档的「S1 的工具链」。
 
-当前状态：**S1 / S2 / S3 完成**——十五套测试全绿；`HaloCap.exe` 有设置、日志、托盘、热键、覆盖层、录制与截图（托盘「录屏」/`Ctrl+Alt+R`、托盘「截图」/`Ctrl+Alt+A`、`--record-seconds` 与 `--screenshot-selftest` 两个自检）；桌面复制与 WGC 两条采集、AAC 音频与 4K30（峰值 230.8 MB）都跑通；截图这边九种标注、选区与把手、马赛克、文字、工具栏、贴图与光晕、PNG/JPEG 与剪贴板导出都在，`screenshot_probe` 选区打开 **25.3 ms**、峰值 **101.3 MB**，app 覆盖层打开 **78.2 ms**、私有内存 **107.6 MB**。S4（OCR）未开始。
+当前状态：**S1 / S2 / S3 完成，S4 的 OCR 主链路完成（六页设置与诊断未做）**——十六套测试全绿；`HaloCap.exe` 有设置、日志、托盘、热键、覆盖层、录制、截图与 OCR（托盘「录屏」/`Ctrl+Alt+R`、托盘「截图」/`Ctrl+Alt+A`、托盘「OCR」/`Ctrl+Alt+O`，以及 `--record-seconds` / `--screenshot-selftest` / `--ocr-selftest` 三个自检）；截图九种标注、工具栏、贴图与光晕、PNG/JPEG/剪贴板都在（选区打开 78.2 ms、私有内存 107.6 MB）；OCR 用 ORT + 1.x 的 PP-OCRv6 tiny，合成图 3/3 行命中、识别约 82 ms。S4 剩余：设置六页、诊断页、原生第二引擎、OCR 后的内存回落。
 
 一处环境阻塞要写清：本机现在对**任何**程序都拒绝 `DuplicateOutput`（`E_ACCESSDENIED`；今天早些时候还能跑出吞吐数字的 spike 2 工具现在同样被拒），所以 `ICaptureSource` 的端到端脏矩形量级数字还没拿到。拷贝逻辑本身不依赖复制权，已经单独验过（`rect_copy_test`）。
 
@@ -36,6 +36,8 @@ native/
     annotation.h        S3 标注模型：九种工具、样式、命中测试、快照式撤销/重做、显示列表生成
     selection.h         选区状态机：拖动、八个把手、移动、夹边界、Esc 取消
     mosaic.h            马赛克：块对齐、块平均降采样（每格一个像素）
+    ocr.h               OCR 前后处理：检测输入、DBNet 后处理、裁切、CTC 解码、按行排版与搜索
+    ocr_engine.h        OCR 引擎 seam（IOcrEngine）：模型目录、识别入口
     frame_scheduler.h   帧节奏与丢帧口径：BeginFrame / EndFrame / Stats，时钟由调用方注入微秒
   platform/win32/
     d2d_render_backend.h/.cpp      Direct2D 1.1（ID2D1Device + ID2D1DeviceContext）+ 合成链呈现
@@ -52,6 +54,7 @@ native/
     win32_wgc_capture.h/.cpp           窗口录制：Windows.Graphics.Capture + 常驻纹理（奇数尺寸按偶数裁）
     image_export.h/.cpp                导出：WIC 写 PNG/JPEG、CF_DIB 写剪贴板（调用方需 CoInitializeEx）
     desktop_grab.h/.cpp                截图抓屏：GDI BitBlt 主显示器（本机桌面复制回读全黑，见 §5.1）
+    ort_ocr_engine.h/.cpp              ONNX Runtime 的 PP-OCR 引擎：det + cls + rec，模型来自 1.x assets
   tools/frame_cost/     覆盖层帧成本测量（与 spike 3 同口径，离屏、不上屏）
   tools/surface_probe/  上屏链路验证：A/B 抓屏证「看得见」+ 60 fps 排帧数丢帧
   tools/capture_probe/  采集链路统计：应有/实取、仅鼠标唤醒、脏像素之比、每帧 CPU 与内存
@@ -60,16 +63,18 @@ native/
   tools/input_probe/    输入链路验证：热键投递、两个钩子链量拦截是否真生效、IME 断开恢复、错误分类
   tools/store_probe/    设置链路验证：真实路径、原子替换、日志分份、只读导入 1.x 设置、能力读数
   tools/tray_probe/     托盘验证：HMENU 与 core 模型逐项比对、点击/命令两条消息路径、图标与气泡
+  tools/ocr_probe/       S4 端到端：GDI 画已知文字 → PP-OCR → 3/3 行断言 + 初始化/识别耗时与内存
   tools/screenshot_probe/ S3 端到端：GDI 抓屏 → 选区 → 九种标注 → 离屏合成 → PNG/剪贴板 + 逐像素验证
   tools/record_probe/   S2 端到端：真复制 + 真编码 + RecordingSession，量帧数/拒收/字节/内存；
                         也支持 synthetic:WxH（合成源，用来量 4K30 峰值）与 static/noaudio
   tools/wgc_probe/      窗口录制端到端：自建窗口 → WGC → 常驻纹理 → MP4
   tools/rect_copy_test/ 脏矩形拷贝的功能验证（进 CTest，不碰屏幕也不需要复制权）
-  tests/      core 的单测（无第三方框架，十五个可执行 + CTest）
+  tests/      core 的单测（无第三方框架，十六个可执行 + CTest）
   app/        组装根：DPI → 能力 → 设置 → 日志 → 托盘 → 热键 → 覆盖层 → 消息循环，
               `--selftest` 量空闲内存并给出退出码
     screenshot_overlay.h/.cpp   截图会话：全屏覆盖层、选区/把手、工具栏、鼠标键盘编辑、文字 EDIT、导出
     pin_window.h/.cpp           贴图：WS_EX_LAYERED + UpdateLayeredWindow，白边 + 光晕，拖动/双击关闭
+    ocr_result_window.h/.cpp    OCR 结果：左侧原图 + 红框，右侧按行文本 + 搜索 + 复制全部
   build.cmd   vcvars → cmake configure → build → ctest
 ```
 
@@ -324,3 +329,28 @@ native> build\tools\screenshot_probe\screenshot_probe.exe out.png 1280x720@0,0
 4. **截图改走 GDI**：本机的 `DuplicateOutput` 回读全黑，同一桌面 `BitBlt` 有内容；截图不是逐帧增量，一次 `BitBlt` 就够，也顺带避开「录制占用复制权时截图打不开」。录制仍走桌面复制，它的画面内容要单独复查（见 §9 第 19 条）。
 
 已知差异（不阻塞 S4）：马赛克只平均底图、选区不能整体拖动、工具栏是文字标签、文字提交后才上屏。
+
+## S4 的 OCR（ocr_probe）
+
+```
+native> set HALOCAP_OCR_MODELS=D:\Projects\HaloCap\src\HaloCap\Assets\OcrModel
+native> build\tools\ocr_probe\ocr_probe.exe --png ocr-input.png
+native> build\app\HaloCap.exe --ocr-selftest ocr-selftest.png
+```
+
+模型就是 1.x 的 `Assets/OcrModel`（PP-OCRv6 tiny：det 1.8 MB、rec 4.5 MB、cls 1.0 MB、dict 6904 字），ORT 1.20.1 的 win-x64 二进制 vendored 在 `third_party/onnxruntime`。app 侧模型目录按 `HALOCAP_OCR_MODELS` → `exe\models\ppocrv6-tiny-1` → 开发树 `src/HaloCap/Assets/OcrModel` → `%LOCALAPPDATA%\HaloCap2\models\ppocrv6-tiny-1` 的顺序找。
+
+`ocr_probe` 用 GDI 画三行已知文字（英文/中文/数字），跑完整链路并断言每一行都出现在结果里：
+
+| 项 | 值 |
+| --- | --- |
+| 引擎 init（三本会话） | **87.5 ms** |
+| 识别（900×280，三行） | **82 ms** |
+| 准确率 | **3/3 行命中** |
+| 内存 | init 后 36.5 MB、识别后 70 MB、释放后 13.9 MB |
+
+app 自检（桌面 900×520 区域）：覆盖层打开 84.4 ms、引擎 init 89.7 ms、识别 260.8 ms，结果窗口给出 32 行；`APP_OCR_ENGINE_RELEASED=1`。**内存注意**：模型会话释放后，同进程私有提交仍停在 ~108 MB——那是覆盖层 D3D/D2D 设备的基线（109.4 MB），不是模型常驻；新进程空闲仍是 2.5 MB。若要求「OCR 后也回到 80 MB」，下一步是把 OCR 放进 worker 进程（见 §9 第 21 条）。
+
+一个踩到的坑：rec 的导出已经做了 softmax，再算一次会把置信度算成 1/6906（0.000），所有行被过滤；`DecodeCtc` 现在先看行和，像概率就取最大值、否则才算 softmax。
+
+没做的：六页设置、诊断页、`Windows.Media.Ocr` 第二引擎、结果窗口的命中高亮。

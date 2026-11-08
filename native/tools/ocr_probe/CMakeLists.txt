@@ -1,0 +1,3 @@
+add_executable(ocr_probe main.cpp)
+target_link_libraries(ocr_probe PRIVATE halocap_platform_win32)
+halocap_copy_onnxruntime(ocr_probe)

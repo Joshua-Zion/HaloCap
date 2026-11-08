@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.25)
+﻿cmake_minimum_required(VERSION 3.25)
 
 project(halocap_native LANGUAGES CXX)
 
@@ -14,6 +14,15 @@ enable_testing()
 add_compile_options(/utf-8)
 add_compile_definitions(UNICODE _UNICODE WIN32_LEAN_AND_MEAN NOMINMAX)
 
+# ONNX Runtime 的二进制随仓库走（与 1.x 的模型一样，避免构建时联网）。
+set(HALOCAP_ORT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/onnxruntime")
+function(halocap_copy_onnxruntime target)
+    add_custom_command(TARGET ${target} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${HALOCAP_ORT_DIR}/bin/onnxruntime.dll"
+                "$<TARGET_FILE_DIR:${target}>/onnxruntime.dll")
+endfunction()
+
 add_subdirectory(core)
 add_subdirectory(platform/win32)
 add_subdirectory(app)
@@ -28,5 +37,6 @@ add_subdirectory(tools/tray_probe)
 add_subdirectory(tools/record_probe)
 add_subdirectory(tools/wgc_probe)
 add_subdirectory(tools/screenshot_probe)
+add_subdirectory(tools/ocr_probe)
 add_subdirectory(tools/rect_copy_test)
 add_subdirectory(tests)

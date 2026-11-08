@@ -93,6 +93,7 @@ private:
     int hoverId_ = 0;
     int captureIndex_ = -1;
     HHOOK keyHook_ = nullptr;
+    bool comInitialized_ = false;
     std::vector<Hotspot> hotspots_;
     std::unique_ptr<SettingsBackgroundCache> backgroundCache_;
     void BuildBackgroundCache();

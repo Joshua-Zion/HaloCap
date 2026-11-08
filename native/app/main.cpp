@@ -1,4 +1,4 @@
-﻿// S1 的组装：把 8 个 seam 接成一个能起来、能待着、能自己报出空闲内存的进程。
+// S1 的组装：把 8 个 seam 接成一个能起来、能待着、能自己报出空闲内存的进程。
 //
 // 这一版刻意只做 S1 的骨架：设置、日志、托盘、热键、覆盖层窗口与渲染后端就绪，消息循环待着；
 // 托盘菜单与热键只记录「收到了什么动作」——真正的截图/录屏/OCR/贴图在 S3/S4 才接。
@@ -49,6 +49,8 @@
 #include "win32_surface_window.h"
 #include "win32_wgc_capture.h"
 #include "window_picker.h"
+
+#include <shobjidl.h>
 #include "win32_tray.h"
 
 #include <windows.h>
@@ -1481,7 +1483,8 @@ int Run(const Options& options) {
             };
             click(800, 241);   // 通用页「开机自启」开关（组标签下方第一行）
             const std::int64_t clickStart = QpcNowUs();
-            click(100, 165);   // 切到「快捷键」页
+            click(100, 273);   // 切到「录屏」页
+            click(793, 533);   // 倒计时选「5 秒」
             const double clickMs = static_cast<double>(QpcNowUs() - clickStart) / 1000.0;
             Sleep(120);
 
@@ -1499,9 +1502,21 @@ int Run(const Options& options) {
             AddFlag(report, "APP_SETTINGS_DRAGGABLE", draggable);
             AddFlag(report, "APP_SETTINGS_CLICK_SAVED", saved);
             AddFlag(report, "APP_SETTINGS_CLICK_TOGGLED", captured.autoStart != settings.autoStart);
+            IFileOpenDialog* folderProbe = nullptr;
+            const bool folderDialogOk =
+                SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
+                                           IID_PPV_ARGS(&folderProbe)));
+            if (folderProbe != nullptr) {
+                folderProbe->Release();
+            }
+            AddFlag(report, "APP_SETTINGS_FOLDER_DIALOG", folderDialogOk);
+            const bool countdownOk =
+                captured.recording.countdown == core::RecordingCountdown::FiveSeconds;
+            AddFlag(report, "APP_SETTINGS_COUNTDOWN", countdownOk);
             AddInt(report, "APP_SETTINGS_CLICK_RENDER_MS",
                    static_cast<long long>(std::lround(clickMs)));
-            settingsClickOk = proof && saved && captured.autoStart != settings.autoStart && draggable;
+            settingsClickOk = proof && saved && captured.autoStart != settings.autoStart &&
+                             countdownOk && folderDialogOk && draggable;
             testWindow.reset();
         }
         log.Info(settingsClickOk ? "settings click selftest: ok"

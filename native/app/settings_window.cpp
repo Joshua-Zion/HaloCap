@@ -3,6 +3,7 @@
 #include <dwmapi.h>
 #include <shellapi.h>
 #include <shellscalingapi.h>
+#include <shlobj.h>
 #include <shobjidl.h>
 #include <windowsx.h>
 
@@ -265,6 +266,14 @@ Color WithAlpha(const Color& color, int alpha) {
                  color.GetB());
 }
 
+int CountdownOption(core::RecordingCountdown value) {
+    switch (value) {
+    case core::RecordingCountdown::ThreeSeconds: return 1;
+    case core::RecordingCountdown::FiveSeconds: return 2;
+    default: return 0;
+    }
+}
+
 core::KeySymbol KeyFromVirtualKey(DWORD vk) {
     if (vk >= 'A' && vk <= 'Z') {
         return static_cast<core::KeySymbol>(static_cast<int>(core::KeySymbol::A) + (vk - 'A'));
@@ -385,6 +394,8 @@ bool SettingsWindow::Create(void* owner, const core::AppSettings& settings,
     }
     settings_ = settings;
     facts_ = facts;
+    const HRESULT comResult = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    comInitialized_ = SUCCEEDED(comResult);
     modelsDirectory_ = modelsDirectory;
     onSave_ = std::move(onSave);
     saved_ = false;
@@ -469,6 +480,10 @@ void SettingsWindow::Close() {
         memory_ = nullptr;
     }
     bits_ = nullptr;
+    if (comInitialized_) {
+        CoUninitialize();
+        comInitialized_ = false;
+    }
 }
 
 LRESULT CALLBACK SettingsWindow::HotkeyHook(int code, WPARAM wParam, LPARAM lParam) {
@@ -616,29 +631,58 @@ void SettingsWindow::CheckUpdate() {
 }
 
 void SettingsWindow::ChooseDirectory() {
+    // 顶层设置窗会把文件对话框压到下面；选择期间临时取消 topmost。
+    SetWindowPos(window_, HWND_NOTOPMOST, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+
+    std::wstring chosen;
     IFileOpenDialog* dialog = nullptr;
-    if (FAILED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
-                                IID_PPV_ARGS(&dialog)))) {
-        return;
-    }
-    DWORD options = 0;
-    dialog->GetOptions(&options);
-    dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM);
-    if (SUCCEEDED(dialog->Show(window_))) {
-        IShellItem* item = nullptr;
-        if (SUCCEEDED(dialog->GetResult(&item))) {
-            PWSTR path = nullptr;
-            if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path))) {
-                settings_.recordingDirectory = std::string(Utf8FromWide(path));
-                CoTaskMemFree(path);
+    if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
+                                   IID_PPV_ARGS(&dialog)))) {
+        DWORD options = 0;
+        dialog->GetOptions(&options);
+        dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM);
+        dialog->SetTitle(L"选择录制保存目录");
+        if (SUCCEEDED(dialog->Show(window_))) {
+            IShellItem* item = nullptr;
+            if (SUCCEEDED(dialog->GetResult(&item))) {
+                PWSTR path = nullptr;
+                if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path))) {
+                    chosen = path;
+                    CoTaskMemFree(path);
+                }
+                item->Release();
             }
-            item->Release();
+        }
+        dialog->Release();
+    }
+
+    if (chosen.empty()) {
+        BROWSEINFOW browse{};
+        browse.hwndOwner = window_;
+        browse.lpszTitle = L"选择录制保存目录";
+        browse.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE | BIF_USENEWUI;
+        PIDLIST_ABSOLUTE idList = SHBrowseForFolderW(&browse);
+        if (idList != nullptr) {
+            wchar_t path[MAX_PATH] = {};
+            if (SHGetPathFromIDListW(idList, path)) {
+                chosen = path;
+            }
+            CoTaskMemFree(idList);
         }
     }
-    dialog->Release();
-    Render();
-}
 
+    SetWindowPos(window_, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+
+    if (!chosen.empty()) {
+        // 根目录保留反斜杠，其余去掉末尾分隔符，录制路径再自己拼 "\\"。
+        while (chosen.size() > 3 && (chosen.back() == L'\\' || chosen.back() == L'/')) {
+            chosen.pop_back();
+        }
+        settings_.recordingDirectory = Utf8FromWide(chosen);
+        Render();
+    }
+}
 void SettingsWindow::AddHotspot(const RECT& rect, int id) {
     hotspots_.push_back(Hotspot{ rect, id });
 }
@@ -1154,7 +1198,7 @@ void SettingsWindow::Render() {
 
         divider(scrollX, scrollW);
         segmentAt(scrollX + scrollW - cardPad, y, 62.0f, { L"关", L"3 秒", L"5 秒" },
-                  kGroupCountdown, static_cast<int>(settings_.recording.countdown), 54.0f);
+                  kGroupCountdown, CountdownOption(settings_.recording.countdown), 54.0f);
         DrawText(g, L"倒计时", &fonts->setting, RectF(scrollX + 16.0f, y + 12.0f, 240, 18),
                  textPrimary);
         DrawText(g, L"开始录制前的等待时间，Esc 可取消", &fonts->desc,

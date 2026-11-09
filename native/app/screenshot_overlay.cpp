@@ -740,8 +740,16 @@ void ScreenshotOverlay::OnMouseMove(POINT point) {
         const float dy = local.y - lastMosaicPoint_.y;
         const float brush = MosaicBrushRadius();
         if (dx * dx + dy * dy >= brush * brush * 0.25f) {
+            // 鼠标画快了，两次消息之间可能跳出一大段：按不超过半个笔刷的间距补块，
+            // 否则方块之间会露缝（就是「断触」）。
+            const float distance = std::sqrt(dx * dx + dy * dy);
+            const int steps = std::max(1, static_cast<int>(distance / (brush * 0.4f)));
+            for (int step = 1; step <= steps; ++step) {
+                const float t = static_cast<float>(step) / static_cast<float>(steps);
+                PaintMosaicBlock(core::Point{ lastMosaicPoint_.x + dx * t,
+                                             lastMosaicPoint_.y + dy * t });
+            }
             lastMosaicPoint_ = local;
-            PaintMosaicBlock(local);
             dirty_ = true;
         }
         return;

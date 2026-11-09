@@ -557,6 +557,8 @@ LRESULT CALLBACK SettingsWindow::HotkeyHook(int code, WPARAM wParam, LPARAM lPar
         spec.modifiers |= core::kModWin;
     }
     if (spec.key == core::KeySymbol::None) {
+        // 映射不到的键（例如输入法专用键）以前是静默吞掉，用户完全不知道发生了什么。
+        g_hotkeyOwner->ShowError(L"这个按键不能用作快捷键，请换一个。");
         return 1;
     }
     const core::HotkeyCheck check = core::CheckHotkey(spec);
@@ -668,7 +670,9 @@ void SettingsWindow::ClearError() {
 
 void SettingsWindow::Save() {
     // 捕获中不许保存：这一把还没定下来（1.x 直接把保存按钮禁用）。
+    // 但必须给反馈——静默返回会让用户以为已经保存了。
     if (captureIndex_ >= 0) {
+        ShowError(L"正在等待新的快捷键：按下组合键或按 Esc 取消后，再点保存。");
         return;
     }
     // 捕获时已经挡过冲突，但手改/1.x 迁移进来的文件可能本来就带着两把相同的键。
@@ -1508,18 +1512,17 @@ void SettingsWindow::Render() {
                          static_cast<LONG>(buttonY + buttonH) },
                    kIdCancel);
 
-        // 捕获进行中保存是灰的：那一把还没定下来，Save() 也会直接返回。
+        // 捕获进行中保存是灰的，但**仍然可点**：点下去要给出「先按 Esc 取消」的横幅，
+        // 否则点了没任何反应，用户会以为「保存过了、只是快捷键没注册上」。
         const bool saveEnabled = captureIndex_ < 0;
         FillRoundRect(g, RectF(saveX, buttonY, saveW, buttonH), 7.0f,
                       saveEnabled ? accent : Color(255, 0xB8, 0xD4, 0xF0));
         DrawText(g, L"保存", &fonts->buttonBold, RectF(saveX, buttonY, saveW, buttonH),
                  Color(255, 255, 255, 255), StringAlignmentCenter);
-        if (saveEnabled) {
-            AddHotspot(RECT{ static_cast<LONG>(saveX), static_cast<LONG>(buttonY),
-                             static_cast<LONG>(saveX + saveW),
-                             static_cast<LONG>(buttonY + buttonH) },
-                       kIdSave);
-        }
+        AddHotspot(RECT{ static_cast<LONG>(saveX), static_cast<LONG>(buttonY),
+                         static_cast<LONG>(saveX + saveW),
+                         static_cast<LONG>(buttonY + buttonH) },
+                   kIdSave);
     }
 
     // 拷贝到 DIB 并 UpdateLayeredWindow。

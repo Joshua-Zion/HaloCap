@@ -2,7 +2,7 @@
 
 本目录属于 `2.0` 分支。设计依据见 [../docs/2.0-native-plan.md](../docs/2.0-native-plan.md)，分支约定见其 §10，工具链与构建前提见计划文档的「S1 的工具链」。
 
-当前状态：**S1–S5 完成，S4 收尾项也已补齐**（热键捕获、结果窗口命中高亮/按行跳转、同进程 OCR 后内存回落）——十八套测试全绿；`HaloCap.exe` 有设置、日志、托盘、热键、覆盖层、录制、截图、OCR、六页设置与剪贴板贴图（托盘「录屏」/`Ctrl+Alt+R`、托盘「截图」/`Ctrl+Alt+A`、托盘「OCR」/`Ctrl+Alt+O`、托盘「贴图」/`Ctrl+Alt+P`、托盘「设置」；`--record-seconds` / `--screenshot-selftest` / `--ocr-selftest` / `--ocr-search-selftest` / `--settings-selftest` / `--hotkey-selftest` / `--pin-selftest` 七个自检，另有 `--version` / `--check-update`）。交付：`package.ps1` 产出 win64 zip（目标 ≤ 20 MB）与 SHA-256 清单；空闲 2.9 MB、OCR 后回落 79.5 MB（按抓取面积给预算）、4K30 峰值 230.8 MB、截图选区 78.2 ms。
+当前状态：**S1–S5 完成，S4 收尾项也已补齐**（热键捕获、结果窗口命中高亮/按行跳转、同进程 OCR 后内存回落）——十八套测试全绿；`HaloCap.exe` 有设置、日志、托盘、热键、覆盖层、录制、截图、OCR、六页设置与剪贴板贴图（托盘「录屏」/`Ctrl+Alt+R`、托盘「截图」/`Ctrl+Alt+A`、托盘「OCR」/`Ctrl+Alt+O`、托盘「贴图」/`Ctrl+Alt+P`、托盘「设置」；`--record-seconds` / `--screenshot-selftest` / `--ocr-selftest` / `--ocr-search-selftest` / `--settings-selftest` / `--hotkey-selftest` / `--hotkey-live-selftest` / `--ocr-search-selftest` / `--pin-selftest` 八个自检，另有 `--version` / `--check-update`）。交付：`package.ps1` 产出 win64 zip（目标 ≤ 20 MB）与 SHA-256 清单；空闲 2.9 MB、OCR 后回落 79.5 MB（按抓取面积给预算）、4K30 峰值 230.8 MB、截图选区 78.2 ms。
 
 一处环境阻塞要写清：本机现在对**任何**程序都拒绝 `DuplicateOutput`（`E_ACCESSDENIED`；今天早些时候还能跑出吞吐数字的 spike 2 工具现在同样被拒），所以 `ICaptureSource` 的端到端脏矩形量级数字还没拿到。拷贝逻辑本身不依赖复制权，已经单独验过（`rect_copy_test`）。
 
@@ -379,6 +379,8 @@ native> build\app\HaloCap.exe --ocr-selftest ocr-selftest.png
 **热键捕获**（`--hotkey-selftest`）：点某一行进入捕获态，`WH_KEYBOARD_LL` 收按键，Esc 取消，与其余四把冲突或裸键不安全时只弹底部横幅、留在捕获态。两个坑记一下：①钩子里的 `GetAsyncKeyState` 可能读到「Ctrl 没按住」，把 Ctrl+Alt+D 变成裸 D，所以修饰键状态改由钩子自己按 `WM_(SYS)KEYDOWN/UP` 维护（起捕获时用 async 状态做一次种子）；②LL 钩子的回调跑在装钩子那根线程的消息队列上，自检块没有消息循环，注入之后必须自己抽队列，否则钩子一次都不会被调用。`--hotkey-selftest` 注入真按键验五道闸门：与别的动作冲突、裸键不安全、合法组合被接受、Esc 取消、以及「设置里本来就带着两把相同的键」时保存被挡（既点真按钮、也直接调 `Save()`，命中区与闸门分开判）。
 
 **结果窗口搜索**（`--ocr-search-selftest`）：喂一份合成的识别结果，验 `x/y` 计数、上下双向回绕、大小写不敏感、`无匹配`、清空查询，以及最容易被忽略的一条——清空查询后图上的绿框/蓝框必须消失。高亮画在父窗口上，测试用 `PrintWindow` 印一张窗口位图直接数绿/蓝像素（实测命中态 4860/1620、清空后 0/0）。
+
+**改键之后真的能用**（`--hotkey-live-selftest`）：走 app 自己的设置窗 → 真实保存回调（重新注册五把）→ 再注入新键，断言输入主机交回了对应 token，最后把用户原来的设置写回去。它盖住了 `--hotkey-selftest` 盖不到的那一段。顺带修了两个静默陷阱：捕获中**点保存原来什么都不发生**（按钮灰且没有热点），用户会以为「已经保存了，只是没注册上」——现在会弹「正在等待新的快捷键…」；按到映射不了的键也从不吭声改成弹横幅。
 
 一个踩到的坑：rec 的导出已经做了 softmax，再算一次会把置信度算成 1/6906（0.000），所有行被过滤；`DecodeCtc` 现在先看行和，像概率就取最大值、否则才算 softmax。
 

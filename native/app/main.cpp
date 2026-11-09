@@ -138,6 +138,9 @@ struct Options {
     // 非空 = 无人值守的热键自检：注入真按键走一遍捕获/冲突/取消/保存闸门。
     std::wstring hotkeySelftestPath;
 
+    // 非空 = 「改键之后真的能触发」自检：走 app 自己的设置窗 + 真实保存回调 + 真实注册。
+    std::wstring hotkeyLiveSelftestPath;
+
     // 非空 = 无人值守的 OCR 搜索自检：喂合成识别结果，验计数/回绕/清空与图上高亮重绘。
     std::wstring ocrSearchSelftestPath;
 
@@ -369,6 +372,8 @@ Options ParseOptions(int argc, char** argv) {
             options.settingsClickSelftestPath = Utf8ToWide(argv[++i]);
         } else if (argument == "--hotkey-selftest" && i + 1 < argc) {
             options.hotkeySelftestPath = Utf8ToWide(argv[++i]);
+        } else if (argument == "--hotkey-live-selftest" && i + 1 < argc) {
+            options.hotkeyLiveSelftestPath = Utf8ToWide(argv[++i]);
         } else if (argument == "--ocr-search-selftest" && i + 1 < argc) {
             options.ocrSearchSelftestPath = Utf8ToWide(argv[++i]);
         } else if (argument == "--settings-page" && i + 1 < argc) {
@@ -403,6 +408,7 @@ void PrintUsage() {
         "  --ocr-selftest PATH         open the OCR overlay, recognise the selection, exit\n"
         "  --settings-selftest PATH    open the six settings pages, capture, exit\n"
         "  --hotkey-selftest PATH      inject keys through hotkey capture, capture, exit\n"
+        "  --hotkey-live-selftest PATH change a hotkey through settings, press it, exit\n"
         "  --ocr-search-selftest PATH  drive the result window search on a synthetic result, exit\n"
         "  --pin-selftest PATH         pin the clipboard content, capture, exit\n"
         "  --radial-selftest PATH      open the radial menu, capture, exit\n"
@@ -1915,6 +1921,121 @@ int Run(const Options& options) {
         running = false;
     }
 
+    // 「改完真的能用」自检：走 app 自己的设置窗 → 真实保存回调（重新注册五把）→ 再按新键，
+    // 看输入主机有没有把 token 交回来。--hotkey-selftest 只验到「设置里的值被改了」，
+    // 这一条验的是改完之后按键真的会触发动作（用户报的就是这一段没生效）。
+    bool hotkeyLiveOk = true;
+    if (!options.hotkeyLiveSelftestPath.empty()) {
+        hotkeyLiveOk = false;
+        const core::AppSettings original = liveSettings;
+        const auto pump = [] {
+            MSG message;
+            while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+                TranslateMessage(&message);
+                DispatchMessageW(&message);
+            }
+        };
+        const auto press = [&](WORD virtualKey, bool down) {
+            INPUT event{};
+            event.type = INPUT_KEYBOARD;
+            event.ki.wVk = virtualKey;
+            event.ki.dwFlags = down ? 0 : KEYEVENTF_KEYUP;
+            SendInput(1, &event, sizeof(event));
+            pump();
+            Sleep(20);
+        };
+        const auto drain = [&] {
+            int token = 0;
+            while (input.PollHotkey(token)) {
+            }
+        };
+        const auto tapAndWait = [&](WORD virtualKey, int& tokenOut) {
+            press(virtualKey, true);
+            press(virtualKey, false);
+            tokenOut = 0;
+            for (int i = 0; i < 30; ++i) {
+                input.PumpMessages();
+                if (input.PollHotkey(tokenOut)) {
+                    return true;
+                }
+                Sleep(10);
+            }
+            return false;
+        };
+
+        // 换成 F9：默认里没人用，也不和系统抢。
+        constexpr WORD kNewKey = VK_F9;
+        bool opened = false;
+        bool captured = false;
+        bool saved = false;
+        bool delivered = false;
+        bool restored = false;
+        bool saveBlockedShown = false;
+        int deliveredToken = 0;
+        std::string errorShown;
+
+        if (inputStarted) {
+            openSettings();
+            opened = settingsWindow != nullptr && settingsWindow->Valid();
+            if (opened) {
+                settingsWindow->ShowPageForTest(1);
+                // 捕获中点保存必须给横幅。原来这里静默 return，用户会以为「已经保存了，
+                // 只是快捷键没注册上」——正是这次报上来的现象。
+                settingsWindow->BeginHotkeyCaptureForTest(1);
+                settingsWindow->SaveForTest();
+                pump();
+                saveBlockedShown =
+                    settingsWindow->CaptureIndexForTest() == 1 &&
+                    settingsWindow->ErrorForTest().find(L"正在等待新的快捷键") !=
+                        std::wstring::npos;
+                // 同一行再点一次 = 取消捕获；再点一次进入干净捕获，准备改键。
+                settingsWindow->BeginHotkeyCaptureForTest(1);
+                settingsWindow->BeginHotkeyCaptureForTest(1);
+                press(kNewKey, true);
+                press(kNewKey, false);
+                captured = settingsWindow->CaptureIndexForTest() == -1 &&
+                           settingsWindow->SettingsForTest().screenshotHotkey ==
+                               core::HotkeySpec{ core::KeySymbol::F9, 0 };
+                settingsWindow->SaveForTest();
+                pump();
+                Sleep(250);
+                errorShown = WideToUtf8(settingsWindow->ErrorForTest());
+                // 保存成功才会关窗；关不掉说明闸门或注册把它拦住了。
+                saved = liveSettings.screenshotHotkey ==
+                            core::HotkeySpec{ core::KeySymbol::F9, 0 } &&
+                        !settingsWindow->Valid();
+                drain();
+                delivered = tapAndWait(kNewKey, deliveredToken) &&
+                            deliveredToken == kTokenScreenshot;
+                if (settingsWindow->Valid()) {
+                    settingsWindow->Close();
+                }
+            }
+
+            // 不管成没成，都把用户原来的设置和注册还原回去。
+            liveSettings = original;
+            const bool written = core::SaveSettingsTo(store, original);
+            registerAllHotkeys(original, nullptr);
+            const core::SettingsLoadResult reloaded = core::LoadSettingsFrom(store);
+            restored = written && reloaded.settings.screenshotHotkey == original.screenshotHotkey;
+            drain();
+        }
+
+        AddFlag(report, "APP_HOTKEY_LIVE_INPUT", inputStarted);
+        AddFlag(report, "APP_HOTKEY_LIVE_OPEN", opened);
+        AddFlag(report, "APP_HOTKEY_LIVE_CAPTURED", captured);
+        AddFlag(report, "APP_HOTKEY_LIVE_SAVED", saved);
+        AddFlag(report, "APP_HOTKEY_LIVE_DELIVERED", delivered);
+        AddInt(report, "APP_HOTKEY_LIVE_TOKEN", deliveredToken);
+        AddFlag(report, "APP_HOTKEY_LIVE_RESTORED", restored);
+        AddFlag(report, "APP_HOTKEY_LIVE_SAVE_BLOCKED_HINT", saveBlockedShown);
+        AddText(report, "APP_HOTKEY_LIVE_ERROR", errorShown.empty() ? "none" : errorShown);
+        hotkeyLiveOk = inputStarted && opened && captured && saved && delivered && restored &&
+                       saveBlockedShown;
+        log.Info(hotkeyLiveOk ? "hotkey live selftest: ok" : "hotkey live selftest: failed");
+        running = false;
+    }
+
     // OCR 搜索自检：桌面上真有什么字是不确定的，所以喂一份合成结果，把命中计数、
     // 双向回绕、无匹配、清空查询走一遍。高亮是画在父窗口上的，用 PrintWindow 印一张
     // 窗口位图数绿/蓝像素——这样「清了查询但框还留在图上」这种回归能被抓住。
@@ -2477,13 +2598,15 @@ int Run(const Options& options) {
     AddFlag(report, "APP_SETTINGS_SELFTEST", settingsSelftestOk);
     AddFlag(report, "APP_SETTINGS_CLICK_SELFTEST", settingsClickOk);
     AddFlag(report, "APP_HOTKEY_SELFTEST", hotkeySelftestOk);
+    AddFlag(report, "APP_HOTKEY_LIVE_SELFTEST", hotkeyLiveOk);
     AddFlag(report, "APP_OCR_SEARCH_SELFTEST", ocrSearchSelftestOk);
     AddFlag(report, "APP_PIN_SELFTEST", pinSelftestOk);
     AddFlag(report, "APP_RADIAL_SELFTEST", radialSelftestOk);
     AddFlag(report, "APP_WINDOW_PICKER_SELFTEST", windowPickerSelftestOk);
     AddFlag(report, "APP_RADIAL_CLICK_SELFTEST", radialClickOk);
     ok = ok && screenshotSelftestOk && ocrSelftestOk && settingsSelftestOk && pinSelftestOk &&
-         radialSelftestOk && windowPickerSelftestOk && hotkeySelftestOk && ocrSearchSelftestOk;
+         radialSelftestOk && windowPickerSelftestOk && hotkeySelftestOk && ocrSearchSelftestOk &&
+         hotkeyLiveOk;
 
     std::printf("%s", report.c_str());
     if (!options.reportPath.empty()) {

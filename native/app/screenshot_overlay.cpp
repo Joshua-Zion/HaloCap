@@ -1064,6 +1064,23 @@ void ScreenshotOverlay::OnLeftButtonDown(POINT point) {
         // 马赛克笔：按下就落第一块，之后跟着鼠标一路抹。
         mosaicPainting_ = true;
         lastMosaicPoint_ = local;
+        // 一笔开始时合成一次「底图 + 下方标注」；这一笔的所有块都复用它，
+        // 所以重建窗口最多发生一次（下方没有标注时一次都不发生）。
+        mosaicBaseValid_ = false;
+        mosaicBase_.clear();
+        if (!document_.Items().empty()) {
+            const Rect bounds = selection_.Bounds();
+            const IntRect region{ static_cast<int>(bounds.left) - windowX_,
+                                  static_cast<int>(bounds.top) - windowY_,
+                                  static_cast<int>(bounds.right) - windowX_,
+                                  static_cast<int>(bounds.bottom) - windowY_ };
+            int composedWidth = 0;
+            int composedHeight = 0;
+            mosaicBaseValid_ = ComposeRegion(region, document_.Items(), mosaicBase_,
+                                             composedWidth, composedHeight);
+            mosaicBaseWidth_ = composedWidth;
+            mosaicBaseHeight_ = composedHeight;
+        }
         PaintMosaicBlock(local);
         dirty_ = true;
         return;
@@ -2547,10 +2564,18 @@ void ScreenshotOverlay::UpdateMosaicTile(core::Annotation& annotation) {
                           static_cast<int>(localRect.right + bounds.left) - windowX_,
                           static_cast<int>(localRect.bottom + bounds.top) - windowY_ };
 
-    // 逐块做 GPU 合成会不停 Detach/Attach 窗口，整屏会闪：先只采样底图。
-    // 「包含下方标注」要改成「每一笔开头合成一次、块内复用」，下一步再做。
-    const core::ImageRef base{ baseBgra_.data(), screenWidth_, screenHeight_, screenWidth_ * 4 };
-    const core::IntRect sampleRegion = region;
+    // 采样源：这一笔开头合成好的「底图 + 下方标注」（选区局部坐标），没有就退回底图。
+    const core::Rect selection = selection_.Bounds();
+    core::ImageRef base{ baseBgra_.data(), screenWidth_, screenHeight_, screenWidth_ * 4 };
+    core::IntRect sampleRegion = region;
+    if (mosaicBaseValid_ && !mosaicBase_.empty() && mosaicBaseWidth_ > 0) {
+        base = core::ImageRef{ mosaicBase_.data(), mosaicBaseWidth_, mosaicBaseHeight_,
+                               mosaicBaseWidth_ * 4 };
+        const int originX = static_cast<int>(selection.left) - windowX_;
+        const int originY = static_cast<int>(selection.top) - windowY_;
+        sampleRegion = core::IntRect{ region.left - originX, region.top - originY,
+                                      region.right - originX, region.bottom - originY };
+    }
     // 模糊程度固定（12 px 一块）；选项栏那个数字只决定马赛克笔的大小。
     const int block = core::MosaicBlockPixels(12, 1.0f);
     const core::MosaicTile tile = core::DownsampleRegion(base, sampleRegion, block);

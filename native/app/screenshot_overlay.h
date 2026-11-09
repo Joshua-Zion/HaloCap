@@ -209,6 +209,11 @@ private:
     }
     // 把一块区域合成出来（底图 + 指定的标注），马赛克需要连下方标注一起采样。
     std::vector<core::Annotation> BelowMosaics() const;
+    // 一笔马赛克开始时合成一次「底图 + 当时下方所有标注」，这一笔里的块都从它采样。
+    std::vector<std::uint8_t> mosaicBase_;
+    int mosaicBaseWidth_ = 0;
+    int mosaicBaseHeight_ = 0;
+    bool mosaicBaseValid_ = false;
     bool ComposeRegion(const core::IntRect& region,
                        const std::vector<core::Annotation>& annotations,
                        std::vector<std::uint8_t>& bgra, int& width, int& height);

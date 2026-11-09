@@ -2419,6 +2419,8 @@ int Run(const Options& options) {
         // 贴图标注与菜单：空格进入标注 → 画一笔 → 右键菜单 → Esc 收起菜单。
         bool pinAnnotateOk = false;
         bool pinMenuOk = false;
+        int pinOptionSlack = -1;
+        char pinOptionText[96] = {};
         if (!pins.empty() && pins.back()->Handle() != nullptr) {
             HWND pinWindow = pins.back()->Handle();
             SendMessageW(pinWindow, WM_KEYDOWN, VK_SPACE, 0);
@@ -2431,6 +2433,10 @@ int Run(const Options& options) {
             SendMessageW(pinWindow, WM_LBUTTONUP, 0, MAKELPARAM(cx + 20, cy));
             pinAnnotateOk = pins.back()->AnnotatingForTest() &&
                             !pins.back()->DocumentForTest().Items().empty();
+            const core::IntRect panel = pins.back()->OptionBoundsForTest();
+            pinOptionSlack = panel.right - pins.back()->OptionContentRightForTest();
+            std::snprintf(pinOptionText, sizeof(pinOptionText), "%d..%d top=%d", panel.left,
+                          panel.right, panel.top);
             SendMessageW(pinWindow, WM_RBUTTONDOWN, MK_RBUTTON, MAKELPARAM(cx, cy));
             const bool menuOpened = pins.back()->MenuOpenForTest();
             Sleep(150);
@@ -2452,14 +2458,42 @@ int Run(const Options& options) {
                                                   desktop.width, desktop.height,
                                                   desktop.width * 4);
 
+        // 外描边关掉 = 只剩图像本身：窗口尺寸必须和内容完全一致（和屏幕融在一起）。
+        bool pinPlainOk = false;
+        if (!pins.empty() && pins.back()->Handle() != nullptr) {
+            HWND pinWindow = pins.back()->Handle();
+            SendMessageW(pinWindow, WM_KEYDOWN, VK_ESCAPE, 0);   // 退出标注，不关窗
+            pins.back()->SetOutline(false);
+            Sleep(150);
+            const core::IntRect plainContent = pins.back()->ContentRectForTest();
+            RECT plainWindow{};
+            GetWindowRect(pinWindow, &plainWindow);
+            pinPlainOk = plainContent.left == 0 && plainContent.top == 0 &&
+                         static_cast<int>(plainWindow.right - plainWindow.left) ==
+                             plainContent.right &&
+                         static_cast<int>(plainWindow.bottom - plainWindow.top) ==
+                             plainContent.bottom;
+            halocap::platform::win32::DesktopImage plainDesktop;
+            halocap::platform::win32::GrabPrimaryDesktop(plainDesktop);
+            halocap::platform::win32::SaveBgraPng(options.pinSelftestPath + L".plain.png",
+                                                  plainDesktop.bgra.data(),
+                                                  plainDesktop.width, plainDesktop.height,
+                                                  plainDesktop.width * 4);
+            pins.back()->SetOutline(true);
+        }
+
         AddFlag(report, "APP_PIN_CLIPBOARD", wrote);
         AddFlag(report, "APP_PIN_WINDOW", pinned);
         AddFlag(report, "APP_PIN_ANNOTATE", pinAnnotateOk);
         AddFlag(report, "APP_PIN_MENU", pinMenuOk);
+        AddFlag(report, "APP_PIN_PLAIN", pinPlainOk);
+        AddInt(report, "APP_PIN_OPTION_SLACK", pinOptionSlack);
+        AddText(report, "APP_PIN_OPTIONBAR", pinOptionText);
         AddFlag(report, "APP_PIN_PROOF", proof);
         AddInt(report, "APP_PIN_COUNT", static_cast<long long>(pins.size() - before));
 
-        pinSelftestOk = wrote && pinned && proof && pinAnnotateOk && pinMenuOk;
+        pinSelftestOk = wrote && pinned && proof && pinAnnotateOk && pinMenuOk && pinPlainOk &&
+                        pinOptionSlack >= 0 && pinOptionSlack <= 20;
         log.Info(pinSelftestOk ? "pin selftest: ok" : "pin selftest: failed");
         running = false;
     }

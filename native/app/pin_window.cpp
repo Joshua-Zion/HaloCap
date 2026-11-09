@@ -452,14 +452,26 @@ core::IntRect PinWindow::ContentRectForTest() const {
                           contentTop_ + displayHeight_ };
 }
 
+int PinWindow::OptionContentRightForTest() const {
+    int right = 0;
+    for (const PinButton& button : optionButtons_) {
+        if (!button.separator) {
+            right = std::max(right, static_cast<int>(button.rect.right));
+        }
+    }
+    return right;
+}
+
 void PinWindow::UpdateLayout() {
     if (window_ == nullptr) {
         return;
     }
     displayWidth_ = std::max(1, static_cast<int>(std::lround(contentWidth_ * zoom_)));
     displayHeight_ = std::max(1, static_cast<int>(std::lround(contentHeight_ * zoom_)));
-    glow_ = std::max(4, ScaleInt(10.0f));
-    border_ = std::max(1, ScaleInt(1.0f));
+    // 「外描边」就是这圈阴影（1.x 的 PinGlowEnabled）：关掉之后窗口只剩图像本身，
+    // 和屏幕上的原内容完全重合，看起来就是「融进去了」。
+    glow_ = options_.outline ? std::max(4, ScaleInt(10.0f)) : 0;
+    border_ = options_.outline ? std::max(1, ScaleInt(1.0f)) : 0;
 
     const int pad = ScaleInt(4.0f);
     const int gap = ScaleInt(6.0f);
@@ -705,7 +717,9 @@ void PinWindow::LayoutToolbar(int originX, int originY) {
     addButton(PinAction::CloseEdit, "Close", false, true);
     addButton(PinAction::Done, "Done", false, true);
 
-    toolbarWidth_ = x - gap + pad;
+    // 宽度是「内容宽度」，必须减掉 originX：第二次按居中位置重排时 originX 不再是 0，
+    // 不减就会把面板撑大 originX 那么多（二级栏右边那截空白的来源）。
+    toolbarWidth_ = (x - originX) - gap + pad;
     toolbarBounds_ =
         RECT{ originX, originY, originX + toolbarWidth_, originY + toolbarHeight_ };
 }
@@ -822,7 +836,7 @@ void PinWindow::LayoutOptionBar(int originX, int originY) {
         break;
     }
 
-    optionWidth_ = x - gap + pad;
+    optionWidth_ = (x - originX) - gap + pad;
     optionBounds_ =
         RECT{ originX, originY, originX + optionWidth_, originY + optionHeight_ };
 }
@@ -1104,7 +1118,7 @@ void PinWindow::Render() {
         graphics.SetInterpolationMode(Gdiplus::InterpolationModeNearestNeighbor);
         graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
         Gdiplus::Bitmap source(contentWidth_, contentHeight_, contentWidth_ * 4,
-                               PixelFormat32bppPARGB, content_.data());
+                               PixelFormat32bppRGB, content_.data());
         graphics.DrawImage(&source,
                            Gdiplus::RectF(0.0f, 0.0f, static_cast<float>(displayWidth_),
                                           static_cast<float>(displayHeight_)));
@@ -1117,40 +1131,30 @@ void PinWindow::Render() {
         }
     }
 
-    // 2. 圆角内容 + 描边 + 光晕，拼进分层窗口缓冲。
+    // 2. 内容 + 描边 + 阴影，拼进分层窗口缓冲。贴图是矩形（1.x 也不切圆角），
+    //    外描边关掉时 border/glow 都是 0，这一圈完全不画。
     std::vector<std::uint8_t> layered(
         static_cast<std::size_t>(windowWidth_) * windowHeight_ * 4, 0);
-    const float radius = Scale(10.0f);
-    const float centerX = static_cast<float>(displayWidth_) * 0.5f;
-    const float centerY = static_cast<float>(displayHeight_) * 0.5f;
-    const auto roundedDistance = [](float px, float py, float halfWidth, float halfHeight,
-                                    float round) {
-        const float qx = std::fabs(px) - halfWidth + round;
-        const float qy = std::fabs(py) - halfHeight + round;
-        const float outsideX = std::max(qx, 0.0f);
-        const float outsideY = std::max(qy, 0.0f);
-        return std::sqrt(outsideX * outsideX + outsideY * outsideY) +
-               std::min(std::max(qx, qy), 0.0f) - round;
-    };
-    const std::uint8_t borderB = options_.outline ? 0xFF : 0xFF;
-    const std::uint8_t borderG = options_.outline ? 0xA8 : 0xFF;
-    const std::uint8_t borderR = options_.outline ? 0x6F : 0xFF;
-    const std::uint8_t borderA = options_.outline ? 0x99 : 0xFF;
+    const std::uint8_t borderB = 0xFF;
+    const std::uint8_t borderG = 0xFF;
+    const std::uint8_t borderR = 0xFF;
+    const std::uint8_t borderA = 0xFF;
 
     for (int y = 0; y < windowHeight_; ++y) {
         for (int x = 0; x < windowWidth_; ++x) {
             const int contentX = x - contentLeft_;
             const int contentY = y - contentTop_;
-            const float px = static_cast<float>(contentX);
-            const float py = static_cast<float>(contentY);
-            const float contentDistance =
-                roundedDistance(px - centerX, py - centerY, centerX, centerY, radius);
-            const float outerDistance =
-                roundedDistance(px - centerX, py - centerY, centerX + border_, centerY + border_,
-                                radius + border_);
-            const bool insideContent = contentDistance < 0.0f && contentX >= 0 &&
-                                       contentX < displayWidth_ && contentY >= 0 &&
-                                       contentY < displayHeight_;
+            const bool insideContent = contentX >= 0 && contentX < displayWidth_ &&
+                                       contentY >= 0 && contentY < displayHeight_;
+            const int outsideX = contentX < 0
+                                     ? -contentX
+                                     : (contentX >= displayWidth_ ? contentX - displayWidth_ + 1
+                                                                  : 0);
+            const int outsideY = contentY < 0
+                                     ? -contentY
+                                     : (contentY >= displayHeight_ ? contentY - displayHeight_ + 1
+                                                                   : 0);
+            const int distance = std::max(outsideX, outsideY);
 
             std::uint8_t b = 0;
             std::uint8_t g = 0;
@@ -1163,13 +1167,14 @@ void PinWindow::Render() {
                 g = display[sourceIndex + 1];
                 r = display[sourceIndex + 2];
                 a = display[sourceIndex + 3];
-            } else if (outerDistance <= 0.0f) {
+            } else if (border_ > 0 && distance <= border_) {
                 b = borderB;
                 g = borderG;
                 r = borderR;
                 a = borderA;
-            } else if (outerDistance < static_cast<float>(glow_)) {
-                const float t = 1.0f - outerDistance / static_cast<float>(glow_);
+            } else if (glow_ > 0 && distance <= border_ + glow_) {
+                const float t = 1.0f - static_cast<float>(distance - border_) /
+                                           static_cast<float>(glow_);
                 a = static_cast<std::uint8_t>(72.0f * t * t);
             }
 
@@ -1241,7 +1246,7 @@ void PinWindow::PaintMosaicAt(core::Point local) {
         graphics.SetInterpolationMode(Gdiplus::InterpolationModeNearestNeighbor);
         graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
         Gdiplus::Bitmap source(contentWidth_, contentHeight_, contentWidth_ * 4,
-                               PixelFormat32bppPARGB, content_.data());
+                               PixelFormat32bppRGB, content_.data());
         graphics.DrawImage(&source,
                            Gdiplus::RectF(0.0f, 0.0f, static_cast<float>(contentWidth_),
                                           static_cast<float>(contentHeight_)));
@@ -2041,7 +2046,7 @@ std::vector<std::uint8_t> PinWindow::ComposeImage(int* width, int* height) {
     graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
     graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
     Gdiplus::Bitmap source(contentWidth_, contentHeight_, contentWidth_ * 4,
-                           PixelFormat32bppPARGB, content_.data());
+                           PixelFormat32bppRGB, content_.data());
     graphics.DrawImage(&source, Gdiplus::RectF(0.0f, 0.0f,
                                                static_cast<float>(contentWidth_),
                                                static_cast<float>(contentHeight_)));
@@ -2201,6 +2206,8 @@ void PinWindow::ShowMenu(POINT screen) {
         top = screen.y - menuHeight_;
     }
     top = std::clamp(top, workTop, std::max(workTop, workBottom - menuHeight_));
+    menuScreenX_ = x;
+    menuScreenY_ = top;
     SetWindowPos(static_cast<HWND>(menuWindow_), HWND_TOPMOST, x, top, menuWidth_, menuHeight_,
                  SWP_NOACTIVATE);
 
@@ -2475,9 +2482,13 @@ LRESULT PinWindow::Handle(HWND window, UINT message, WPARAM wParam, LPARAM lPara
     case WM_LBUTTONUP:
         OnLeftButtonUp(window);
         return 0;
-    case WM_RBUTTONDOWN:
-        ShowMenu(POINT{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) });
+    case WM_RBUTTONDOWN: {
+        // 鼠标消息给的是客户区坐标，菜单要贴光标放，先换成屏幕坐标。
+        POINT screen{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        ClientToScreen(window, &screen);
+        ShowMenu(screen);
         return 0;
+    }
     case WM_MOUSEWHEEL: {
         POINT cursor{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
         ScreenToClient(window, &cursor);

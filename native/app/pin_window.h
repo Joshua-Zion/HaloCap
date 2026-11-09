@@ -62,6 +62,18 @@ public:
     bool MenuOpenForTest() const { return menuWindow_ != nullptr; }
     const core::AnnotationDocument& DocumentForTest() const { return document_; }
     core::IntRect ContentRectForTest() const;
+    core::IntRect ToolbarBoundsForTest() const {
+        return core::IntRect{ toolbarBounds_.left, toolbarBounds_.top, toolbarBounds_.right,
+                              toolbarBounds_.bottom };
+    }
+    core::IntRect OptionBoundsForTest() const {
+        return core::IntRect{ optionBounds_.left, optionBounds_.top, optionBounds_.right,
+                              optionBounds_.bottom };
+    }
+    // 二级栏最后一个按钮的右边缘：和面板右边缘比一下就知道有没有留空。
+    int OptionContentRightForTest() const;
+    int MenuRectLeftForTest() const { return menuScreenX_; }
+    int MenuRectTopForTest() const { return menuScreenY_; }
 
 private:
     enum class PinAction : int {
@@ -246,6 +258,8 @@ private:
     int hoveredMenuIndex_ = -1;
     int menuWidth_ = 0;
     int menuHeight_ = 0;
+    int menuScreenX_ = 0;
+    int menuScreenY_ = 0;
 
     // SetFocus(EDIT) 会让贴图自己收到一次 WM_KILLFOCUS，别把它当成「切走了」。
     bool startingEditor_ = false;

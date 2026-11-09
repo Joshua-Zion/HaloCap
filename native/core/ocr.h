@@ -32,7 +32,8 @@ struct OcrOptions {
     float minBoxHeight = 6.0f;
     int detTargetSide = 960;      // 最长边
     int recHeight = 48;           // 识别输入高
-    float minLineConfidence = 0.10f;
+    // 1.x 的 RapidOcr 用 TextScore=0.4；低于这个值的行基本都是噪点/乱码。
+    float minLineConfidence = 0.35f;
     int maxLines = 200;
 };
 

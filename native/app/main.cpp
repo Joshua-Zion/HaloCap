@@ -1148,6 +1148,12 @@ int Run(const Options& options) {
         if (screenshotOverlay != nullptr && screenshotOverlay->Active()) {
             return;
         }
+        // 上一次的识别结果窗口就挡在屏幕上，下一次截图会把它截进去（结果里出现
+        // 上一次的文本）；开始新的选区前先收掉。
+        if (ocrWindow != nullptr) {
+            ocrWindow->Close();
+            ocrWindow.reset();
+        }
         screenshotOverlay = std::make_unique<halocap::app::ScreenshotOverlay>();
         halocap::app::ScreenshotOverlayOptions overlayOptions;
         overlayOptions.jpeg = settings.screenshotFormat == core::ScreenshotFormat::Jpeg;
@@ -1179,6 +1185,10 @@ int Run(const Options& options) {
     const auto openOcr = [&]() {
         if (screenshotOverlay != nullptr && screenshotOverlay->Active()) {
             return;
+        }
+        if (ocrWindow != nullptr) {
+            ocrWindow->Close();
+            ocrWindow.reset();
         }
         screenshotOverlay = std::make_unique<halocap::app::ScreenshotOverlay>();
         halocap::app::ScreenshotOverlayOptions overlayOptions;
@@ -2316,10 +2326,12 @@ int Run(const Options& options) {
         }
         const char* const texts[] = {
             "HaloCap 截图工具", "HaloCap 支持贴图", "文字识别 halocap",
-            "录屏与音频",       "HALOCAP 离线运行", "设置与快捷键"
+            "录屏与音频",       "HALOCAP 离线运行", "设置与快捷键",
+            // 长行：逐行视图必须自动换行，不能用省略号把后半段截掉。
+            "这是一段很长的识别结果内容，用来验证逐行视图会自动换行，而不会把后半段截掉。"
         };
         std::vector<core::ocr::OcrLine> lines;
-        for (int i = 0; i < 6; ++i) {
+        for (int i = 0; i < static_cast<int>(std::size(texts)); ++i) {
             core::ocr::OcrLine line;
             line.text = texts[i];
             line.box = core::Rect{ 20.0f, 20.0f + i * 46.0f, 420.0f, 52.0f + i * 46.0f };
@@ -2389,6 +2401,7 @@ int Run(const Options& options) {
         halocap::app::OcrResultOptions searchOptions;
         searchOptions.showImage = true;
         searchOptions.skipRecognition = true;
+        searchOptions.anchor = core::IntRect{ 200, 300, 900, 700 };
         const bool opened = searchWindow->Create(nullptr, image.data(), kImageWidth, kImageHeight,
                                                  searchOptions, halocap::app::OcrRunner{});
         if (opened) {
@@ -2400,6 +2413,7 @@ int Run(const Options& options) {
         bool noneOk = false;
         bool clearOk = false;
         bool repaintOk = false;
+        bool lineViewOk = false;
         HighlightCounts highlighted;
         HighlightCounts cleared;
         if (opened) {
@@ -2448,7 +2462,19 @@ int Run(const Options& options) {
             repaintOk = highlighted.green > 0 && highlighted.blue > 0 && cleared.green == 0 &&
                         cleared.blue == 0;
             clearOk = searchWindow->MatchesForTest().empty() &&
-                      status().find(L"左侧为识别区域") == 0;
+                      status() == L"输入关键词";
+
+            // 逐行视图：长行要换行显示（原来用 DT_END_ELLIPSIS 会被截掉）。
+            searchWindow->SetLineViewForTest(true);
+            UpdateWindow(searchWindow->Handle());
+            Sleep(300);
+            lineViewOk = searchWindow->LineViewForTest();
+            halocap::platform::win32::DesktopImage linesDesktop;
+            if (halocap::platform::win32::GrabPrimaryDesktop(linesDesktop)) {
+                halocap::platform::win32::SaveBgraPng(
+                    options.ocrSearchSelftestPath + L".lines.png", linesDesktop.bgra.data(),
+                    linesDesktop.width, linesDesktop.height, linesDesktop.width * 4);
+            }
             searchWindow.reset();
         }
 
@@ -2459,12 +2485,13 @@ int Run(const Options& options) {
         AddFlag(report, "APP_OCR_SEARCH_NONE", noneOk);
         AddFlag(report, "APP_OCR_SEARCH_CLEAR", clearOk);
         AddFlag(report, "APP_OCR_SEARCH_REPAINT", repaintOk);
+        AddFlag(report, "APP_OCR_SEARCH_LINEVIEW", lineViewOk);
         AddInt(report, "APP_OCR_SEARCH_GREEN_ON", highlighted.green);
         AddInt(report, "APP_OCR_SEARCH_BLUE_ON", highlighted.blue);
         AddInt(report, "APP_OCR_SEARCH_GREEN_OFF", cleared.green);
         AddInt(report, "APP_OCR_SEARCH_BLUE_OFF", cleared.blue);
         ocrSearchSelftestOk = opened && counterOk && wrapOk && caseOk && noneOk && clearOk &&
-                              repaintOk;
+                              repaintOk && lineViewOk;
         log.Info(ocrSearchSelftestOk ? "ocr search selftest: ok" : "ocr search selftest: failed");
         running = false;
     }

@@ -166,6 +166,22 @@ void TestBuildResult() {
                "no match is empty");
 }
 
+void TestBuildResultSanitize() {
+    std::vector<ocr::OcrLine> lines;
+    // "A◆B�C"（◆=U+25C6，�=U+FFFD）→ 去掉假字符后再去首尾空白。
+    lines.push_back({ "  A" "\xE2\x97\x86" "B" "\xEF\xBF\xBD" "C  ",
+                      core::Rect{ 10.0f, 10.0f, 120.0f, 30.0f }, 0.9f });
+    // 只有符号 / 只有空白的行整行丢掉。
+    lines.push_back({ "\xE2\x97\x86", core::Rect{ 10.0f, 40.0f, 60.0f, 60.0f }, 0.9f });
+    lines.push_back({ "   ", core::Rect{ 10.0f, 70.0f, 60.0f, 90.0f }, 0.9f });
+
+    const ocr::OcrResult result = ocr::BuildResult(lines);
+    CheckEqual(static_cast<long long>(result.lines.size()), 1, "junk-only lines dropped");
+    if (!result.lines.empty()) {
+        CheckTrue(result.lines[0].text == "ABC", "junk characters stripped and trimmed");
+    }
+}
+
 }
 
 int main() {
@@ -176,6 +192,7 @@ int main() {
     TestPrepareRecInput();
     TestDecodeCtc();
     TestBuildResult();
+    TestBuildResultSanitize();
 
     if (failures != 0) {
         std::printf("OCR_TESTS=FAILED %d/%d\n", failures, checks);

@@ -138,7 +138,7 @@ bool OcrResultWindow::Create(void* owner, const std::uint8_t* bgra, int width, i
     imageWidth_ = width;
     imageHeight_ = height;
     showImage_ = options_.showImage;
-    searchLabel_ = L"左侧为识别区域，框出的每一段即为右侧的一行";
+    searchLabel_ = L"输入关键词";
 
     const std::wstring title = options_.fromPin ? L"HaloCap 贴图识别" : L"HaloCap 文字识别";
     window_ = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, kClassName, title.c_str(),
@@ -258,7 +258,7 @@ void OcrResultWindow::StartRecognition() {
     result_ = core::ocr::OcrResult{};
     plainText_.clear();
     elapsedMs_ = 0.0;
-    lineScroll_ = 0;
+    lineScrollY_ = 0;
     hoveredLine_ = -1;
     if (text_ != nullptr) {
         SetWindowTextW(text_, L"");
@@ -280,7 +280,7 @@ void OcrResultWindow::ApplyOutcome(const OcrOutcome& outcome) {
     elapsedMs_ = outcome.elapsedMs;
     result_ = outcome.result;
     plainText_ = Utf8ToWide(result_.plainText);
-    lineScroll_ = 0;
+    lineScrollY_ = 0;
     hoveredLine_ = -1;
     if (!outcome.error.empty()) {
         stage_ = Stage::Failed;
@@ -417,6 +417,8 @@ void OcrResultWindow::SetImageVisible(bool visible) {
 
 void OcrResultWindow::SetImageVisibleForTest(bool visible) { SetImageVisible(visible); }
 
+void OcrResultWindow::SetLineViewForTest(bool lineView) { SetLineView(lineView); }
+
 core::IntRect OcrResultWindow::PreviewRectForTest() const {
     return core::IntRect{ previewImage_.left, previewImage_.top, previewImage_.right,
                           previewImage_.bottom };
@@ -453,7 +455,7 @@ void OcrResultWindow::CloseSearch(bool focusWindow) {
         SetWindowTextW(search_, L"");
         ShowWindow(search_, SW_HIDE);
     }
-    searchLabel_ = L"左侧为识别区域，框出的每一段即为右侧的一行";
+    searchLabel_ = L"输入关键词";
     Layout();
     InvalidateRect(window_, nullptr, FALSE);
     if (focusWindow) {
@@ -475,7 +477,7 @@ std::wstring OcrResultWindow::CurrentQuery() const {
 void OcrResultWindow::RefreshSearchStatus() {
     // 1.x 的状态文本就是 "3/17"；命中单位是「行」，上一处/下一处走的也是行。
     searchLabel_ = lastQuery_.empty()
-                       ? L"左侧为识别区域，框出的每一段即为右侧的一行"
+                       ? L"输入关键词"
                        : (matches_.empty()
                               ? L"无匹配"
                               : std::to_wstring(matchIndex_ + 1) + L"/" +
@@ -608,7 +610,7 @@ void OcrResultWindow::Layout() {
         searchNext_ = RECT{ right - buttonWidth, editTop, right, editTop + editHeight };
         right = searchNext_.left - ScaleInt(6.0f);
         searchPrev_ = RECT{ right - buttonWidth, editTop, right, editTop + editHeight };
-        right = searchPrev_.left - ScaleInt(68.0f);
+        right = searchPrev_.left - ScaleInt(88.0f);
         searchEditRect_ = RECT{ searchBar_.left + ScaleInt(10.0f), editTop, right,
                                 editTop + editHeight };
         y += searchHeight + ScaleInt(10.0f);
@@ -650,6 +652,30 @@ void OcrResultWindow::Layout() {
     contentRect_ = RECT{ pad, y, width_ - pad, y + contentHeight };
     y += contentHeight + ScaleInt(10.0f);
 
+    // 逐行视图：每行按可用宽度量一次换行后的高度（长行不再省略号截断）。
+    lineHeights_.clear();
+    lineTotalHeight_ = 0;
+    if (stage_ == Stage::Success) {
+        HDC measureDc = GetDC(window_);
+        const int textWidth = std::max(
+            ScaleInt(40.0f), static_cast<int>(contentRect_.right) -
+                                 static_cast<int>(contentRect_.left) - ScaleInt(4.0f) * 2 -
+                                 ScaleInt(26.0f) - ScaleInt(30.0f));
+        const int count =
+            std::min<int>(static_cast<int>(result_.lines.size()), kMaxLines);
+        lineHeights_.reserve(static_cast<std::size_t>(count));
+        for (int i = 0; i < count; ++i) {
+            const int measured =
+                MeasureTextHeight(measureDc, Utf8ToWide(result_.lines[i].text), fontBody_,
+                                  textWidth);
+            const int row =
+                std::max(ScaleInt(kRowDip), measured + ScaleInt(6.0f));
+            lineHeights_.push_back(row);
+            lineTotalHeight_ += row;
+        }
+        ReleaseDC(window_, measureDc);
+    }
+
     if (previewHeight > 0) {
         previewCard_ = RECT{ pad, y, width_ - pad, y + previewHeight };
         previewImage_ = Inset(previewCard_, ScaleInt(6.0f), ScaleInt(6.0f));
@@ -686,9 +712,14 @@ void OcrResultWindow::Layout() {
         const RECT edit = Inset(contentRect_, ScaleInt(6.0f), ScaleInt(6.0f));
         MoveWindow(text_, edit.left, edit.top, edit.right - edit.left, edit.bottom - edit.top,
                    TRUE);
-        RECT format{ ScaleInt(6.0f), ScaleInt(4.0f), edit.right - edit.left,
-                     edit.bottom - edit.top };
+        // 底部/左右留出内边距：格式化矩形贴到底会被最后一行「遮住」半行。
+        RECT format{ ScaleInt(8.0f), ScaleInt(4.0f),
+                     edit.right - edit.left - ScaleInt(10.0f),
+                     edit.bottom - edit.top - ScaleInt(8.0f) };
         SendMessageW(text_, EM_SETRECT, 0, reinterpret_cast<LPARAM>(&format));
+        SendMessageW(text_, EM_SETMARGINS,
+                     EC_LEFTMARGIN | EC_RIGHTMARGIN,
+                     MAKELPARAM(ScaleInt(4.0f), ScaleInt(4.0f)));
         ShowWindow(text_, stage_ == Stage::Success && !lineView_ ? SW_SHOW : SW_HIDE);
     }
     if (search_ != nullptr) {
@@ -784,16 +815,18 @@ int OcrResultWindow::LineAt(POINT client) const {
     if (!lineView_ || stage_ != Stage::Success || !PointIn(contentRect_, client)) {
         return -1;
     }
-    const int rowHeight = ScaleInt(kRowDip);
-    const int row = (client.y - contentRect_.top - ScaleInt(6.0f)) / rowHeight;
-    if (row < 0) {
-        return -1;
+    // 行高是按换行后的实际高度算的，命中也要按同一套累计高度走。
+    int y = contentRect_.top + ScaleInt(6.0f) - lineScrollY_;
+    for (std::size_t index = 0; index < lineHeights_.size(); ++index) {
+        if (client.y >= y && client.y < y + lineHeights_[index]) {
+            return static_cast<int>(index);
+        }
+        y += lineHeights_[index];
+        if (y > client.y) {
+            break;
+        }
     }
-    const int index = lineScroll_ + row;
-    if (index < 0 || index >= static_cast<int>(result_.lines.size())) {
-        return -1;
-    }
-    return index;
+    return -1;
 }
 
 void OcrResultWindow::HandleClick(Hit hit) {
@@ -1029,9 +1062,10 @@ LRESULT OcrResultWindow::Handle(HWND window, UINT message, WPARAM wParam, LPARAM
             ScreenToClient(window, &point);
             if (PointIn(contentRect_, point)) {
                 const int delta = GET_WHEEL_DELTA_WPARAM(wParam);
-                const int rows = (contentRect_.bottom - contentRect_.top) / ScaleInt(kRowDip) - 1;
-                const int maxScroll = std::max(0, static_cast<int>(result_.lines.size()) - rows);
-                lineScroll_ = std::clamp(lineScroll_ + (delta > 0 ? -3 : 3), 0, maxScroll);
+                const int view = contentRect_.bottom - contentRect_.top - ScaleInt(12.0f);
+                const int maxScroll = std::max(0, lineTotalHeight_ - view);
+                lineScrollY_ = std::clamp(lineScrollY_ + (delta > 0 ? -3 : 3) * ScaleInt(kRowDip),
+                                          0, maxScroll);
                 InvalidateRect(window_, &contentRect_, FALSE);
                 return 0;
             }
@@ -1193,51 +1227,73 @@ void OcrResultWindow::DrawPreview(HDC dc) {
 }
 
 void OcrResultWindow::DrawLines(HDC dc) {
-    const int rowHeight = ScaleInt(kRowDip);
     const int left = contentRect_.left + ScaleInt(4.0f);
     const int right = contentRect_.right - ScaleInt(4.0f);
-    const int rows = (contentRect_.bottom - contentRect_.top - ScaleInt(12.0f)) / rowHeight;
     const int numberWidth = ScaleInt(26.0f);
-    int y = contentRect_.top + ScaleInt(6.0f);
-    for (int row = 0; row < rows; ++row) {
-        const int index = lineScroll_ + row;
-        if (index < 0 || index >= static_cast<int>(result_.lines.size())) {
+    const int clipTop = contentRect_.top + ScaleInt(6.0f);
+    const int clipBottom = contentRect_.bottom - ScaleInt(6.0f);
+    int y = clipTop - lineScrollY_;
+    for (std::size_t index = 0; index < lineHeights_.size(); ++index) {
+        const int height = lineHeights_[index];
+        if (y + height >= clipTop && y <= clipBottom) {
+            RECT rowRect{ left, y, right, y + height };
+            if (static_cast<int>(index) == hoveredLine_) {
+                RECT hover = rowRect;
+                hover.top = std::max<LONG>(hover.top, clipTop);
+                hover.bottom = std::min<LONG>(hover.bottom, clipBottom);
+                FillRounded(dc, hover, ScaleInt(8.0f), RGB(255, 255, 255),
+                            RGB(231, 231, 236), 1);
+            }
+            RECT numberRect{ rowRect.left + ScaleInt(10.0f), rowRect.top + ScaleInt(4.0f),
+                             rowRect.left + numberWidth, rowRect.bottom };
+            DrawTextIn(dc, std::to_wstring(index + 1), fontSmall_, RGB(0xA8, 0xA8, 0xAD),
+                       numberRect, DT_LEFT | DT_TOP | DT_SINGLELINE);
+            // 长行按实际宽度换行，不再用省略号截断（「文字被遮挡」就是这个）。
+            RECT textRect{ rowRect.left + numberWidth, rowRect.top + ScaleInt(2.0f),
+                           rowRect.right - ScaleInt(30.0f), rowRect.bottom - ScaleInt(2.0f) };
+            DrawTextIn(dc, Utf8ToWide(result_.lines[index].text), fontBody_, kTextPrimary,
+                       textRect, DT_LEFT | DT_TOP | DT_WORDBREAK);
+
+            const int iconX = rowRect.right - ScaleInt(20.0f);
+            const int iconY = rowRect.top + ScaleInt(4.0f);
+            HPEN pen = CreatePen(PS_SOLID, 1, RGB(0xB0, 0xB0, 0xB5));
+            HGDIOBJ oldPen = SelectObject(dc, pen);
+            HGDIOBJ oldBrush = SelectObject(dc, GetStockObject(HOLLOW_BRUSH));
+            Rectangle(dc, iconX, iconY + ScaleInt(3.0f), iconX + ScaleInt(8.0f),
+                      iconY + ScaleInt(12.0f));
+            Rectangle(dc, iconX + ScaleInt(3.0f), iconY, iconX + ScaleInt(11.0f),
+                      iconY + ScaleInt(9.0f));
+            SelectObject(dc, oldBrush);
+            SelectObject(dc, oldPen);
+            DeleteObject(pen);
+        }
+        y += height;
+        if (y > clipBottom) {
             break;
         }
-        RECT rowRect{ left, y, right, y + rowHeight };
-        if (index == hoveredLine_) {
-            FillRounded(dc, rowRect, ScaleInt(8.0f), RGB(255, 255, 255), RGB(231, 231, 236),
-                        1);
-        }
-        RECT numberRect{ rowRect.left + ScaleInt(10.0f), rowRect.top,
-                         rowRect.left + numberWidth, rowRect.bottom };
-        DrawTextIn(dc, std::to_wstring(index + 1), fontSmall_, RGB(0xA8, 0xA8, 0xAD),
-                   numberRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-        RECT textRect{ rowRect.left + numberWidth, rowRect.top, rowRect.right - ScaleInt(30.0f),
-                       rowRect.bottom };
-        DrawTextIn(dc, Utf8ToWide(result_.lines[index].text), fontBody_, kTextPrimary,
-                   textRect, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-
-        const int iconX = rowRect.right - ScaleInt(20.0f);
-        const int iconY = rowRect.top + rowHeight / 2 - ScaleInt(6.0f);
-        HPEN pen = CreatePen(PS_SOLID, 1, RGB(0xB0, 0xB0, 0xB5));
-        HGDIOBJ oldPen = SelectObject(dc, pen);
-        HGDIOBJ oldBrush = SelectObject(dc, GetStockObject(HOLLOW_BRUSH));
-        Rectangle(dc, iconX, iconY + ScaleInt(3.0f), iconX + ScaleInt(8.0f),
-                  iconY + ScaleInt(12.0f));
-        Rectangle(dc, iconX + ScaleInt(3.0f), iconY, iconX + ScaleInt(11.0f),
-                  iconY + ScaleInt(9.0f));
-        SelectObject(dc, oldBrush);
-        SelectObject(dc, oldPen);
-        DeleteObject(pen);
-
-        y += rowHeight;
     }
     if (static_cast<int>(result_.lines.size()) > kMaxLines) {
-        RECT hint{ left, y, right, y + rowHeight };
+        RECT hint{ left, y, right, y + ScaleInt(kRowDip) };
         DrawTextIn(dc, L"还有 " + std::to_wstring(result_.lines.size() - kMaxLines) +
                              L" 行，切换回「文本」视图查看和复制。",
                    fontSmall_, kTextTertiary, hint, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    }
+
+    // 滚动指示：内容超出一屏时在右侧画一个细滑块。
+    const int view = clipBottom - clipTop;
+    if (lineTotalHeight_ > view && view > 0) {
+        const int trackWidth = ScaleInt(4.0f);
+        const int trackLeft = contentRect_.right - ScaleInt(8.0f);
+        const int thumbHeight = std::max(ScaleInt(24.0f),
+                                         view * view / std::max(1, lineTotalHeight_));
+        const int travel = view - thumbHeight;
+        const int maxScroll = std::max(1, lineTotalHeight_ - view);
+        const int thumbTop = clipTop + travel * lineScrollY_ / maxScroll;
+        FillRounded(dc, RECT{ trackLeft, clipTop, trackLeft + trackWidth, clipBottom },
+                    trackWidth, RGB(0xEC, 0xEC, 0xEF), RGB(0xEC, 0xEC, 0xEF), 0);
+        FillRounded(dc,
+                    RECT{ trackLeft, thumbTop, trackLeft + trackWidth, thumbTop + thumbHeight },
+                    trackWidth, RGB(0xB8, 0xB8, 0xBE), RGB(0xB8, 0xB8, 0xBE), 0);
     }
 }
 
@@ -1306,7 +1362,23 @@ void OcrResultWindow::DrawEmpty(HDC dc) {
 void OcrResultWindow::Paint() {
     PAINTSTRUCT paint{};
     HDC dc = BeginPaint(window_, &paint);
-    PaintContent(dc);
+    RECT client{};
+    GetClientRect(window_, &client);
+    const int width = std::max(1, static_cast<int>(client.right));
+    const int height = std::max(1, static_cast<int>(client.bottom));
+    // 双缓冲：鼠标在窗口上移动会触发整窗重绘，直接画到屏幕会闪。
+    HDC memory = CreateCompatibleDC(dc);
+    HBITMAP bitmap = CreateCompatibleBitmap(dc, width, height);
+    if (bitmap != nullptr) {
+        HGDIOBJ old = SelectObject(memory, bitmap);
+        PaintContent(memory);
+        BitBlt(dc, 0, 0, width, height, memory, 0, 0, SRCCOPY);
+        SelectObject(memory, old);
+        DeleteObject(bitmap);
+    } else {
+        PaintContent(dc);
+    }
+    DeleteDC(memory);
     EndPaint(window_, &paint);
 }
 
@@ -1409,7 +1481,7 @@ void OcrResultWindow::PaintContent(HDC dc) {
         FillRounded(dc, searchBar_, ScaleInt(9.0f), kCardBg, kCardBorder, 1);
         FillRounded(dc, searchEditRect_, ScaleInt(7.0f), RGB(255, 255, 255),
                     RGB(0xDC, 0xDC, 0xE1), 1);
-        RECT statusRect{ searchPrev_.left - ScaleInt(68.0f), searchBar_.top,
+        RECT statusRect{ searchPrev_.left - ScaleInt(88.0f), searchBar_.top,
                          searchPrev_.left - ScaleInt(8.0f), searchBar_.bottom };
         DrawTextIn(dc, searchLabel_, fontSmall_, kTextTertiary, statusRect,
                    DT_RIGHT | DT_VCENTER | DT_SINGLELINE);

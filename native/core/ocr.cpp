@@ -50,6 +50,70 @@ int RoundUpTo(int value, int multiple) {
     return (value + multiple - 1) / multiple * multiple;
 }
 
+// 识别结果里常见的「假字符」：替换符、控制符、几何符号（◆ 之类）、变体选择符、
+// 零宽字符。它们多半来自图标/分隔线被当成字，留着只会让复制出来的文本变脏。
+bool IsJunkCodePoint(std::uint32_t code) {
+    return code == 0xFFFD || code == 0x7F || code < 0x20 || code == 0x200B ||
+           code == 0x200C || code == 0x200D || code == 0x200E || code == 0x200F ||
+           (code >= 0x25A0 && code <= 0x25FF) || (code >= 0x2B00 && code <= 0x2BFF) ||
+           (code >= 0xFE00 && code <= 0xFE0F) || (code >= 0xE000 && code <= 0xF8FF);
+}
+
+std::string SanitizeLine(std::string_view text) {
+    std::string out;
+    out.reserve(text.size());
+    std::size_t index = 0;
+    while (index < text.size()) {
+        const auto lead = static_cast<unsigned char>(text[index]);
+        std::uint32_t code = lead;
+        std::size_t length = 1;
+        if ((lead & 0x80) == 0) {
+            code = lead;
+            length = 1;
+        } else if ((lead & 0xE0) == 0xC0) {
+            code = lead & 0x1F;
+            length = 2;
+        } else if ((lead & 0xF0) == 0xE0) {
+            code = lead & 0x0F;
+            length = 3;
+        } else if ((lead & 0xF8) == 0xF0) {
+            code = lead & 0x07;
+            length = 4;
+        } else {
+            ++index;   // 非法首字节，丢掉
+            continue;
+        }
+        if (index + length > text.size()) {
+            break;
+        }
+        bool valid = true;
+        for (std::size_t offset = 1; offset < length; ++offset) {
+            const auto continuation = static_cast<unsigned char>(text[index + offset]);
+            if ((continuation & 0xC0) != 0x80) {
+                valid = false;
+                break;
+            }
+            code = (code << 6) | (continuation & 0x3F);
+        }
+        if (!valid || IsJunkCodePoint(code)) {
+            index += length;
+            continue;
+        }
+        out.append(text.substr(index, length));
+        index += length;
+    }
+
+    const auto isSpace = [](char c) { return c == ' ' || c == '\t'; };
+    while (!out.empty() && isSpace(out.back())) {
+        out.pop_back();
+    }
+    std::size_t start = 0;
+    while (start < out.size() && isSpace(out[start])) {
+        ++start;
+    }
+    return out.substr(start);
+}
+
 }  // namespace
 
 DetInput PrepareDetInput(const OcrImage& image, int targetSide) {
@@ -313,8 +377,20 @@ std::string DecodeCtc(const float* logits, int timeSteps, int classes,
 OcrResult BuildResult(std::vector<OcrLine> lines, float lineTolerance) {
     OcrResult result;
 
-    for (OcrLine& line : lines) {
-        line.box = line.box.Normalized();
+    // 先按 1.x 的做法逐行清一遍：去首尾空白 + 丢掉图标/分隔线识别出来的假字符。
+    // 过滤后为空的整行直接扔掉，避免结果里出现只有 ◆ 的「空行」。
+    {
+        std::vector<OcrLine> kept;
+        kept.reserve(lines.size());
+        for (OcrLine& line : lines) {
+            line.box = line.box.Normalized();
+            line.text = SanitizeLine(line.text);
+            if (line.text.empty()) {
+                continue;
+            }
+            kept.push_back(std::move(line));
+        }
+        lines = std::move(kept);
     }
 
     std::sort(lines.begin(), lines.end(), [](const OcrLine& a, const OcrLine& b) {

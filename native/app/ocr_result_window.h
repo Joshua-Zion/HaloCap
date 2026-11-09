@@ -65,6 +65,8 @@ public:
     double ElapsedMsForTest() const { return elapsedMs_; }
     core::IntRect PreviewRectForTest() const;
     void SetImageVisibleForTest(bool visible);
+    void SetLineViewForTest(bool lineView);
+    bool LineViewForTest() const { return lineView_; }
 
     // 搜索自检（原有签名保持不变）。
     void SetQueryForTest(const std::wstring& query);
@@ -160,7 +162,10 @@ private:
     bool lineView_ = false;
     bool showImage_ = true;
     bool searchOpen_ = false;
-    int lineScroll_ = 0;
+    // 逐行视图按「换行后的实际高度」排：长行不会被省略号截断。
+    int lineScrollY_ = 0;
+    std::vector<int> lineHeights_;
+    int lineTotalHeight_ = 0;
     int hoveredLine_ = -1;
     Hit hoveredHit_ = Hit::None;
 

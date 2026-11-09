@@ -202,8 +202,11 @@ private:
     void UpdateMosaicTile(core::Annotation& annotation);
     // 马赛克笔：拖到哪就把哪一小块像素化，一笔由若干小方块组成。
     void PaintMosaicBlock(core::Point local);
-    // 笔刷半径是固定的：选项栏里那个数字是「马赛克的粗细/模糊程度」，不是笔刷大小。
-    float MosaicBrushRadius() const { return Scale(26.0f); }
+    // 选项栏的数字 = 马赛克笔的大小；模糊程度固定用一个合适的默认值。
+    float MosaicBrushRadius() const {
+        const float base = static_cast<float>(style_.mosaicBlockPx) * 2.0f;
+        return (base < 10.0f ? 10.0f : base) * uiScale_;
+    }
     // 把一块区域合成出来（底图 + 指定的标注），马赛克需要连下方标注一起采样。
     std::vector<core::Annotation> BelowMosaics() const;
     bool ComposeRegion(const core::IntRect& region,

@@ -2539,21 +2539,12 @@ void ScreenshotOverlay::UpdateMosaicTile(core::Annotation& annotation) {
                           static_cast<int>(localRect.right + bounds.left) - windowX_,
                           static_cast<int>(localRect.bottom + bounds.top) - windowY_ };
 
-    // 采样源要包含「这条马赛克下面的标注」：先合成底图 + 前面那些标注，再降采样。
-    // 马赛克永远是最后一条，所以「下面的」就是除它以外的全部。
-    std::vector<std::uint8_t> composed;
-    int composedWidth = 0;
-    int composedHeight = 0;
-    const bool composedOk = ComposeRegion(region, BelowMosaics(), composed, composedWidth,
-                                          composedHeight);
-    const core::ImageRef base =
-        composedOk ? core::ImageRef{ composed.data(), composedWidth, composedHeight,
-                                     composedWidth * 4 }
-                   : core::ImageRef{ baseBgra_.data(), screenWidth_, screenHeight_,
-                                     screenWidth_ * 4 };
-    const core::IntRect sampleRegion =
-        composedOk ? core::IntRect{ 0, 0, composedWidth, composedHeight } : region;
-    const int block = core::MosaicBlockPixels(annotation.style.mosaicBlockPx, 1.0f);
+    // 逐块做 GPU 合成会不停 Detach/Attach 窗口，整屏会闪：先只采样底图。
+    // 「包含下方标注」要改成「每一笔开头合成一次、块内复用」，下一步再做。
+    const core::ImageRef base{ baseBgra_.data(), screenWidth_, screenHeight_, screenWidth_ * 4 };
+    const core::IntRect sampleRegion = region;
+    // 模糊程度固定（12 px 一块）；选项栏那个数字只决定马赛克笔的大小。
+    const int block = core::MosaicBlockPixels(12, 1.0f);
     const core::MosaicTile tile = core::DownsampleRegion(base, sampleRegion, block);
     if (tile.width <= 0 || tile.height <= 0) {
         return;

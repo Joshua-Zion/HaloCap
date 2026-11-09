@@ -39,8 +39,8 @@ public:
     bool Create(const std::uint8_t* bgra, int width, int height, int screenX, int screenY,
                 const PinWindowOptions& options = PinWindowOptions{});
 
-    // 贴图上的 OCR：把原始图像交给调用方识别（1.x 同语义，标注不参与识别）。
-    using OcrHandler = std::function<void(const std::uint8_t*, int, int)>;
+    // 贴图上的 OCR：把原始图像与它的屏幕位置交给调用方（1.x 同语义，标注不参与识别）。
+    using OcrHandler = std::function<void(const std::uint8_t*, int, int, int, int)>;
     void SetOcrHandler(OcrHandler handler) { onOcr_ = std::move(handler); }
 
     // 「全部关闭」由 app 统一收口：它持有所有贴图，回调里逐个 Close，消息循环里再收尸。

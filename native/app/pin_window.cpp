@@ -2127,7 +2127,7 @@ void PinWindow::RequestOcr() {
         return;
     }
     // 1.x 的 OcrImage 是原始图像：标注不参与识别。
-    onOcr_(content_.data(), contentWidth_, contentHeight_);
+    onOcr_(content_.data(), contentWidth_, contentHeight_, contentScreenX_, contentScreenY_);
     ShowHud(L"正在识别文字…");
 }
 

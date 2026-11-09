@@ -67,6 +67,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <unordered_map>
 
 namespace core = halocap::core;
@@ -1033,10 +1034,6 @@ int Run(const Options& options) {
     std::unique_ptr<halocap::app::SettingsWindow> settingsWindow;
     int settingsPageOverride = options.settingsSelftestPage;
     std::unique_ptr<halocap::app::RadialMenu> radialMenu;
-    double ocrRecognizeMs = 0.0;
-    std::string ocrWorkerEngine = "pp";
-    std::function<void(const std::uint8_t*, int, int, int, int)> ocrRunner;
-
     // 贴图窗口的公共接线：右键菜单里的 OCR / 全部关闭 / 外描边都要落到 app 这一层。
     const auto pinOptions = [&]() {
         halocap::app::PinWindowOptions options;
@@ -1045,12 +1042,90 @@ int Run(const Options& options) {
         options.jpeg = settings.screenshotFormat == core::ScreenshotFormat::Jpeg;
         return options;
     };
-    const auto wirePin = [&](halocap::app::PinWindow& pin) {
-        pin.SetOcrHandler([&ocrRunner](const std::uint8_t* image, int imageWidth,
-                                       int imageHeight) {
-            if (ocrRunner) {
-                ocrRunner(image, imageWidth, imageHeight, 0, 0);
+
+    // OCR 识别在后台线程跑 worker，完成后 PostMessage 回结果窗口。结果窗口一打开就显示
+    // 「正在识别」，切换引擎/重试走的都是这条路径。
+    const auto startOcr = [](core::OcrEngine engine, int token, const std::uint8_t* bgra,
+                             int width, int height, HWND notify) {
+        auto pixels = std::make_shared<std::vector<std::uint8_t>>(
+            bgra, bgra + static_cast<std::size_t>(width) * height * 4);
+        const std::string engineName = engine == core::OcrEngine::Native ? "winrt" : "pp";
+        std::string models = ResolveOcrModelDirectory();
+        std::thread([pixels, width, height, engine, token, notify, engineName,
+                     models]() mutable {
+            auto* outcome = new halocap::app::OcrOutcome();
+            outcome->token = token;
+            outcome->engine = engine;
+            wchar_t executable[MAX_PATH] = {};
+            wchar_t temporary[MAX_PATH] = {};
+            if (GetModuleFileNameW(nullptr, executable, MAX_PATH) == 0 ||
+                GetTempPathW(MAX_PATH, temporary) == 0) {
+                outcome->error = "无法定位程序或临时目录";
+            } else {
+                const std::filesystem::path directory =
+                    std::filesystem::path(temporary) / "HaloCap2";
+                std::error_code directoryError;
+                std::filesystem::create_directories(directory, directoryError);
+                const std::wstring stem = L"ocr-" + std::to_wstring(GetCurrentProcessId()) +
+                                          L"-" + std::to_wstring(GetTickCount64());
+                const std::wstring inputPath = (directory / (stem + L".raw")).wstring();
+                const std::wstring outputPath = (directory / (stem + L".txt")).wstring();
+                const std::string inputUtf8 = WideToUtf8(inputPath);
+                const std::string outputUtf8 = WideToUtf8(outputPath);
+                if (!models.empty()) {
+                    SetEnvironmentVariableW(L"HALOCAP_OCR_MODELS",
+                                            Utf8ToWide(models).c_str());
+                }
+                if (!halocap::app::WriteOcrWorkerInput(inputUtf8, pixels->data(), width,
+                                                       height)) {
+                    outcome->error = "无法写入识别输入";
+                } else {
+                    std::string error;
+                    const std::int64_t start = QpcNowUs();
+                    const bool spawned = halocap::app::SpawnOcrWorker(
+                        WideToUtf8(executable), inputUtf8, outputUtf8, engineName, &error);
+                    halocap::app::OcrWorkerResult worker;
+                    const bool parsed =
+                        spawned && halocap::app::ReadOcrWorkerOutput(outputUtf8, &worker);
+                    outcome->elapsedMs =
+                        static_cast<double>(QpcNowUs() - start) / 1000.0;
+                    DeleteFileW(inputPath.c_str());
+                    DeleteFileW(outputPath.c_str());
+                    if (!parsed) {
+                        outcome->error = worker.error.empty() ? error : worker.error;
+                    } else {
+                        outcome->result = core::ocr::BuildResult(std::move(worker.lines));
+                    }
+                }
             }
+            if (!PostMessageW(notify, halocap::app::kOcrOutcomeMessage,
+                              reinterpret_cast<WPARAM>(outcome), 0)) {
+                delete outcome;
+            }
+        }).detach();
+    };
+
+    const auto openOcrResult = [&](const std::uint8_t* bgra, int width, int height, int x,
+                                   int y, bool fromPin) {
+        if (ocrWindow != nullptr) {
+            ocrWindow->Close();
+        }
+        ocrWindow = std::make_unique<halocap::app::OcrResultWindow>();
+        halocap::app::OcrResultOptions resultOptions;
+        resultOptions.engine = liveSettings.ocr.engine;
+        resultOptions.autoCopy = liveSettings.ocr.autoCopy;
+        resultOptions.fromPin = fromPin;
+        resultOptions.anchor = core::IntRect{ x, y, x + width, y + height };
+        if (!ocrWindow->Create(nullptr, bgra, width, height, resultOptions, startOcr)) {
+            ocrWindow.reset();
+            log.Error("ocr: result window failed");
+        }
+    };
+
+    const auto wirePin = [&](halocap::app::PinWindow& pin) {
+        pin.SetOcrHandler([&openOcrResult](const std::uint8_t* image, int imageWidth,
+                                           int imageHeight, int screenX, int screenY) {
+            openOcrResult(image, imageWidth, imageHeight, screenX, screenY, true);
         });
         // 回调在某个贴图的窗口过程里跑：这里只关窗口，不在回调里删 pins（对象还在栈上）。
         pin.SetCloseAllHandler([&pins] {
@@ -1095,80 +1170,6 @@ int Run(const Options& options) {
         log.Info("screenshot: overlay opened");
     };
 
-    const auto runOcr = [&](const std::uint8_t* bgra, int width, int height, int, int) {
-        wchar_t executable[MAX_PATH] = {};
-        if (GetModuleFileNameW(nullptr, executable, MAX_PATH) == 0) {
-            log.Error("ocr: cannot resolve own path");
-            return;
-        }
-
-        wchar_t temporary[MAX_PATH] = {};
-        if (GetTempPathW(MAX_PATH, temporary) == 0) {
-            log.Error("ocr: no temp directory");
-            return;
-        }
-        const std::filesystem::path directory =
-            std::filesystem::path(temporary) / "HaloCap2";
-        std::error_code directoryError;
-        std::filesystem::create_directories(directory, directoryError);
-
-        const std::wstring stem = L"ocr-" + std::to_wstring(GetCurrentProcessId()) + L"-" +
-                                  std::to_wstring(GetTickCount64());
-        const std::wstring inputPath = (directory / (stem + L".raw")).wstring();
-        const std::wstring outputPath = (directory / (stem + L".txt")).wstring();
-
-        const std::string inputUtf8 = WideToUtf8(inputPath);
-        const std::string outputUtf8 = WideToUtf8(outputPath);
-        const std::string engineName =
-            settings.ocr.engine == core::OcrEngine::Native ? "winrt" : "pp";
-        ocrWorkerEngine = engineName;
-
-        // 子进程靠环境变量找模型；如果 app 自己找得到，就把它传下去。
-        if (const std::string models = ResolveOcrModelDirectory(); !models.empty()) {
-            SetEnvironmentVariableW(L"HALOCAP_OCR_MODELS", Utf8ToWide(models).c_str());
-        }
-
-        if (!halocap::app::WriteOcrWorkerInput(inputUtf8, bgra, width, height)) {
-            log.Error("ocr: cannot write worker input");
-            return;
-        }
-
-        std::string error;
-        const std::int64_t start = QpcNowUs();
-        const bool spawned = halocap::app::SpawnOcrWorker(WideToUtf8(executable), inputUtf8,
-                                                          outputUtf8, engineName, &error);
-        halocap::app::OcrWorkerResult worker;
-        const bool parsed = spawned && halocap::app::ReadOcrWorkerOutput(outputUtf8, &worker);
-        ocrRecognizeMs = static_cast<double>(QpcNowUs() - start) / 1000.0;
-
-        DeleteFileW(inputPath.c_str());
-        DeleteFileW(outputPath.c_str());
-
-        if (!parsed) {
-            const std::string reason = worker.error.empty() ? error : worker.error;
-            log.Error("ocr: worker failed (" + reason + ")");
-            tray.Notify("HaloCap", "OCR 失败，详见日志");
-            return;
-        }
-
-        const core::ocr::OcrResult result = core::ocr::BuildResult(std::move(worker.lines));
-        log.Info("ocr: " + std::to_string(result.lines.size()) + " lines in " +
-                 std::to_string(static_cast<int>(ocrRecognizeMs)) + " ms, engine=" + engineName);
-
-        if (ocrWindow != nullptr) {
-            ocrWindow->Close();
-        }
-        ocrWindow = std::make_unique<halocap::app::OcrResultWindow>();
-        if (!ocrWindow->Create(nullptr, bgra, width, height, result)) {
-            ocrWindow.reset();
-            log.Error("ocr: result window failed");
-        }
-        if (result.lines.empty()) {
-            tray.Notify("HaloCap", "OCR 没有识别到文字");
-        }
-    };
-
-    ocrRunner = runOcr;
 
     const auto openOcr = [&]() {
         if (screenshotOverlay != nullptr && screenshotOverlay->Active()) {
@@ -1177,7 +1178,10 @@ int Run(const Options& options) {
         screenshotOverlay = std::make_unique<halocap::app::ScreenshotOverlay>();
         halocap::app::ScreenshotOverlayOptions overlayOptions;
         overlayOptions.mode = halocap::app::OverlayMode::Ocr;
-        overlayOptions.onOcr = runOcr;
+        overlayOptions.onOcr = [&openOcrResult](const std::uint8_t* image, int imageWidth,
+                                               int imageHeight, int x, int y) {
+            openOcrResult(image, imageWidth, imageHeight, x, y, false);
+        };
         overlayOptions.pinHotkey = liveSettings.pinHotkey;
 
         if (!screenshotOverlay->Open(overlayOptions)) {
@@ -1764,15 +1768,76 @@ int Run(const Options& options) {
             const double beforeOcrMb = PrivateMb();
 
             // 与截图自检同一条真实消息路径：WM_APP+4 在 OCR 模式里就是「识别」。
+            // 识别在后台线程跑 worker：结果窗口先以 loading 打开，等它进结果态再断言。
             SendMessageW(static_cast<HWND>(screenshotOverlay->WindowHandle()), WM_APP + 4, 0, 0);
-
             const bool windowOpen = ocrWindow != nullptr && ocrWindow->Valid();
-            ocrSelftestLines = static_cast<int>(ocrWindow != nullptr ? 1 : 0);
-            Sleep(300);
+            const std::uint64_t waitStart = GetTickCount64();
+            while (ocrWindow != nullptr && ocrWindow->Valid() && !ocrWindow->ReadyForTest() &&
+                   GetTickCount64() - waitStart < 8000) {
+                MSG message;
+                while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+                    TranslateMessage(&message);
+                    DispatchMessageW(&message);
+                }
+                Sleep(20);
+            }
+            const bool recognized = ocrWindow != nullptr && ocrWindow->ReadyForTest();
+            ocrSelftestLines = ocrWindow != nullptr ? ocrWindow->LineCountForTest() : 0;
+            const double ocrRecognizeMs = ocrWindow != nullptr ? ocrWindow->ElapsedMsForTest() : 0.0;
+            Sleep(400);
+            RECT ocrWindowRect{};
+            bool ocrWindowVisible = false;
+            bool ocrWindowOnTop = false;
+            if (ocrWindow != nullptr && ocrWindow->Valid()) {
+                GetWindowRect(ocrWindow->Handle(), &ocrWindowRect);
+                ocrWindowVisible = IsWindowVisible(ocrWindow->Handle()) != FALSE;
+                POINT center{ (ocrWindowRect.left + ocrWindowRect.right) / 2,
+                              (ocrWindowRect.top + ocrWindowRect.bottom) / 2 };
+                ocrWindowOnTop = WindowFromPoint(center) == ocrWindow->Handle() ||
+                                 GetAncestor(WindowFromPoint(center), GA_ROOT) ==
+                                     ocrWindow->Handle();
+            }
+            AddFlag(report, "APP_OCR_WINDOW_VISIBLE", ocrWindowVisible);
+            AddFlag(report, "APP_OCR_WINDOW_ON_TOP", ocrWindowOnTop);
+            AddText(report, "APP_OCR_WINDOW_RECT",
+                    (std::to_string(ocrWindowRect.left) + "," + std::to_string(ocrWindowRect.top) +
+                     " " + std::to_string(ocrWindowRect.right - ocrWindowRect.left) + "x" +
+                     std::to_string(ocrWindowRect.bottom - ocrWindowRect.top)).c_str());
             const bool proof = screenshotOverlay->GrabDesktopToPng(options.ocrSelftestPath);
+            // 结果窗口自身再印一张：桌面抓图看不到它时，用这张判断是「没画」还是「被遮」。
+            if (ocrWindow != nullptr && ocrWindow->Valid()) {
+                RECT wr{};
+                GetWindowRect(ocrWindow->Handle(), &wr);
+                const int ww = wr.right - wr.left;
+                const int wh = wr.bottom - wr.top;
+                HDC windowDc = GetWindowDC(ocrWindow->Handle());
+                HDC memory = CreateCompatibleDC(windowDc);
+                BITMAPINFO wbmi{};
+                wbmi.bmiHeader.biSize = sizeof(wbmi.bmiHeader);
+                wbmi.bmiHeader.biWidth = ww;
+                wbmi.bmiHeader.biHeight = -wh;
+                wbmi.bmiHeader.biPlanes = 1;
+                wbmi.bmiHeader.biBitCount = 32;
+                wbmi.bmiHeader.biCompression = BI_RGB;
+                void* wbits = nullptr;
+                HBITMAP wbitmap =
+                    CreateDIBSection(windowDc, &wbmi, DIB_RGB_COLORS, &wbits, nullptr, 0);
+                if (wbitmap != nullptr && wbits != nullptr) {
+                    HGDIOBJ oldW = SelectObject(memory, wbitmap);
+                    PrintWindow(ocrWindow->Handle(), memory, 0);
+                    halocap::platform::win32::SaveBgraPng(
+                        options.ocrSelftestPath + L".window.png",
+                        static_cast<const std::uint8_t*>(wbits), ww, wh, ww * 4);
+                    SelectObject(memory, oldW);
+                    DeleteObject(wbitmap);
+                }
+                DeleteDC(memory);
+                ReleaseDC(ocrWindow->Handle(), windowDc);
+            }
             const double ocrMb = PrivateMb();
             AddFlag(report, "APP_OCR_OVERLAY", true);
             AddFlag(report, "APP_OCR_WINDOW", windowOpen);
+            AddFlag(report, "APP_OCR_RECOGNIZED", recognized);
             AddFlag(report, "APP_OCR_PROOF", proof);
             AddInt(report, "APP_OCR_LINES", ocrSelftestLines);
             char openBuffer[32] = {};
@@ -1803,7 +1868,7 @@ int Run(const Options& options) {
             AddMb(report, "APP_OCR_AFTER_OVERLAY_CLOSE_MB", afterOverlayMb);
             AddFlag(report, "APP_OVERLAY_PREWARMED", overlayReady);
             AddFlag(report, "APP_OCR_WORKER", true);
-            AddText(report, "APP_OCR_ENGINE", ocrWorkerEngine.c_str());
+            AddText(report, "APP_OCR_ENGINE", core::OcrEngineName(liveSettings.ocr.engine));
             AddFlag(report, "APP_OCR_AFTER_RELEASE_UNDER_80", idleMb > 0.0 && idleMb <= 80.0);
             // 跨屏之后覆盖层是一整块虚拟桌面的纹理，驱动侧回收按面积走；判据也按面积给预算。
             const double desktopMegapixels =
@@ -1823,7 +1888,8 @@ int Run(const Options& options) {
             // 功能判据：窗口起来、证明图写出、识别真的跑过；内存判据也进闸门——
             // 关掉覆盖层与结果窗口之后必须回到预算内（S4 的退出条件）。
             // 这条能拦住「又把某台设备/某个图集常驻起来」这类回归。
-            ocrSelftestOk = windowOpen && proof && ocrRecognizeMs > 0.0 && overlayMemoryOk;
+            ocrSelftestOk =
+                windowOpen && recognized && proof && ocrRecognizeMs > 0.0 && overlayMemoryOk;
             log.Info(ocrSelftestOk ? "ocr selftest: ok" : "ocr selftest: failed");
         } else {
             log.Error("ocr selftest: overlay did not open");
@@ -2236,7 +2302,7 @@ int Run(const Options& options) {
             int green = 0;
             int blue = 0;
         };
-        const auto renderWindow = [](HWND window, const std::wstring& path) {
+        const auto renderWindow = [](HWND window, core::IntRect preview, const std::wstring& path) {
             HighlightCounts counts;
             RECT client{};
             GetClientRect(window, &client);
@@ -2259,10 +2325,13 @@ int Run(const Options& options) {
             HGDIOBJ old = SelectObject(memory, bitmap);
             if (bitmap != nullptr && bits != nullptr && PrintWindow(window, memory, PW_CLIENTONLY)) {
                 const auto* pixels = static_cast<const std::uint8_t*>(bits);
-                // 只数预览区：右侧「复制全部」按钮本来就是 #007AFF，会污染蓝色计数。
-                const int previewRight = width * 58 / 100 - 12;
-                for (int y = 52; y < height - 12; ++y) {
-                    for (int x = 12; x < previewRight; ++x) {
+                // 只数预览图区域：「复制全部」按钮本来就是 #007AFF，会污染蓝色计数。
+                const int previewLeft = std::max(0, preview.left);
+                const int previewTop = std::max(0, preview.top);
+                const int previewRight = std::min(width, preview.right);
+                const int previewBottom = std::min(height, preview.bottom);
+                for (int y = previewTop; y < previewBottom; ++y) {
+                    for (int x = previewLeft; x < previewRight; ++x) {
                         const std::uint8_t* pixel =
                             pixels + (static_cast<std::size_t>(y) * width + x) * 4;
                         if (pixel[0] == 113 && pixel[1] == 204 && pixel[2] == 46) {
@@ -2287,8 +2356,14 @@ int Run(const Options& options) {
         };
 
         auto searchWindow = std::make_unique<halocap::app::OcrResultWindow>();
+        halocap::app::OcrResultOptions searchOptions;
+        searchOptions.showImage = true;
+        searchOptions.skipRecognition = true;
         const bool opened = searchWindow->Create(nullptr, image.data(), kImageWidth, kImageHeight,
-                                                 result);
+                                                 searchOptions, halocap::app::OcrRunner{});
+        if (opened) {
+            searchWindow->PresentResultForTest(result, 0.0);
+        }
         bool counterOk = false;
         bool wrapOk = false;
         bool caseOk = false;
@@ -2333,10 +2408,12 @@ int Run(const Options& options) {
 
             searchWindow->SetQueryForTest(L"halocap");
             Sleep(200);
-            highlighted = renderWindow(searchWindow->Handle(), options.ocrSearchSelftestPath);
+            const core::IntRect preview = searchWindow->PreviewRectForTest();
+            highlighted = renderWindow(searchWindow->Handle(), preview,
+                                       options.ocrSearchSelftestPath);
             searchWindow->SetQueryForTest(L"");
             Sleep(200);
-            cleared = renderWindow(searchWindow->Handle(),
+            cleared = renderWindow(searchWindow->Handle(), preview,
                                    options.ocrSearchSelftestPath + L".cleared.png");
             repaintOk = highlighted.green > 0 && highlighted.blue > 0 && cleared.green == 0 &&
                         cleared.blue == 0;

@@ -277,8 +277,16 @@ bool ScreenshotOverlay::Open(const ScreenshotOverlayOptions& options) {
         Close();
         return false;
     }
-    window_->SetMessageHandler([this](HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
-        return HandleMessage(window, message, wParam, lParam);
+    // UI 尺寸按 DIP 给，实际绘制是物理像素：先记住这台显示器的缩放。
+    {
+        const UINT dpi = GetDpiForWindow(static_cast<HWND>(window_->Handle()));
+        uiScale_ = static_cast<float>(dpi >= 48 ? dpi : 96) / 96.0f;
+        if (uiScale_ < 1.0f) {
+            uiScale_ = 1.0f;
+        }
+    }
+
+    window_->SetMessageHandler([this](HWND window, UINT message, WPARAM wParam, LPARAM lParam) {        return HandleMessage(window, message, wParam, lParam);
     });
     if (!backend_->AttachWindow(window_->Handle(), screenWidth_, screenHeight_)) {
         errorKind_ = "attach";
@@ -573,11 +581,14 @@ void ScreenshotOverlay::OnMouseMove(POINT point) {
     }
 
     int hovered = -1;
+    // 工具栏/选项栏的矩形是**客户区坐标**，鼠标消息给的是屏幕坐标——多屏时窗口原点不是 (0,0)，
+    // 不换算就会永远命不中（现象就是「工具栏点不了、还会拖出新选区」）。
+    const POINT client{ point.x - windowX_, point.y - windowY_ };
     if (toolbarVisible_) {
         for (std::size_t i = 0; i < toolbar_.size(); ++i) {
             const RECT& rect = toolbar_[i].rect;
-            if (point.x >= rect.left && point.x < rect.right && point.y >= rect.top &&
-                point.y < rect.bottom) {
+            if (client.x >= rect.left && client.x < rect.right && client.y >= rect.top &&
+                client.y < rect.bottom) {
                 hovered = static_cast<int>(i);
                 break;
             }
@@ -713,13 +724,15 @@ core::IntRect ScreenshotOverlay::MonitorBoundsAt(POINT point) const {
 }
 
 bool ScreenshotOverlay::IsOverChrome(POINT point) const {
-    if (toolbarVisible_ && point.x >= toolbarBounds_.left && point.x < toolbarBounds_.right &&
-        point.y >= toolbarBounds_.top && point.y < toolbarBounds_.bottom) {
+    // point 是屏幕坐标；工具栏/选项栏是客户区坐标。
+    const int x = point.x - windowX_;
+    const int y = point.y - windowY_;
+    if (toolbarVisible_ && x >= toolbarBounds_.left && x < toolbarBounds_.right &&
+        y >= toolbarBounds_.top && y < toolbarBounds_.bottom) {
         return true;
     }
-    if (optionBounds_.right > optionBounds_.left && point.x >= optionBounds_.left &&
-        point.x < optionBounds_.right && point.y >= optionBounds_.top &&
-        point.y < optionBounds_.bottom) {
+    if (optionBounds_.right > optionBounds_.left && x >= optionBounds_.left &&
+        x < optionBounds_.right && y >= optionBounds_.top && y < optionBounds_.bottom) {
         return true;
     }
     return false;
@@ -839,13 +852,16 @@ void ScreenshotOverlay::OnLeftButtonDown(POINT point) {
         return;
     }
 
+    // 选项栏/工具栏的矩形是客户区坐标，这里是屏幕坐标，先换算。
+    const POINT client{ point.x - windowX_, point.y - windowY_ };
+
     // 选项栏在当前工具下展开时优先命中。
-    if (optionBounds_.right > optionBounds_.left && point.x >= optionBounds_.left &&
-        point.x < optionBounds_.right && point.y >= optionBounds_.top &&
-        point.y < optionBounds_.bottom) {
+    if (optionBounds_.right > optionBounds_.left && client.x >= optionBounds_.left &&
+        client.x < optionBounds_.right && client.y >= optionBounds_.top &&
+        client.y < optionBounds_.bottom) {
         for (const OptionButton& option : optionButtons_) {
-            if (point.x >= option.rect.left && point.x < option.rect.right &&
-                point.y >= option.rect.top && point.y < option.rect.bottom) {
+            if (client.x >= option.rect.left && client.x < option.rect.right &&
+                client.y >= option.rect.top && client.y < option.rect.bottom) {
                 HandleOption(option.action);
                 return;
             }
@@ -854,11 +870,11 @@ void ScreenshotOverlay::OnLeftButtonDown(POINT point) {
     }
 
     // 工具栏优先：它在选区之上，点按钮不能落成标注。
-    if (toolbarVisible_ && point.x >= toolbarBounds_.left && point.x < toolbarBounds_.right &&
-        point.y >= toolbarBounds_.top && point.y < toolbarBounds_.bottom) {
+    if (toolbarVisible_ && client.x >= toolbarBounds_.left && client.x < toolbarBounds_.right &&
+        client.y >= toolbarBounds_.top && client.y < toolbarBounds_.bottom) {
         for (const ToolbarButton& button : toolbar_) {
-            if (point.x >= button.rect.left && point.x < button.rect.right &&
-                point.y >= button.rect.top && point.y < button.rect.bottom) {
+            if (client.x >= button.rect.left && client.x < button.rect.right &&
+                client.y >= button.rect.top && client.y < button.rect.bottom) {
                 if (button.enabled) {
                     HandleToolbar(button);
                 }
@@ -885,7 +901,7 @@ void ScreenshotOverlay::OnLeftButtonDown(POINT point) {
 
     // 完成之后默认是「移动/选择」态；只有标注态里鼠标才画图。
     if (!annotating_) {
-        const core::SelectionHandle handle = selection_.HitTest(screen);
+        const core::SelectionHandle handle = selection_.HitTest(screen, core::SelectionModel::kHandleTolerance * uiScale_);
         if (handle != core::SelectionHandle::None && handle != core::SelectionHandle::Move) {
             resizing_ = true;
             resizeHandle_ = handle;
@@ -1231,13 +1247,18 @@ void ScreenshotOverlay::LayoutOptionBar() {
         return;
     }
 
-    const auto addIcon = [&](Action action, ToolbarIcon icon, const char* text, int width,
-                             bool active) {
+    const int optionButton = Scale(kOptionButton);
+    const int optionHeight = Scale(kOptionHeight);
+    const int colorWidth = Scale(kColorWidth);
+    const int gap = Scale(kToolbarGap);
+    const int padding = Scale(kToolbarPadding);
+    const int separatorMargin = Scale(kSeparatorMargin);
+
+    const auto addIcon = [&](Action action, ToolbarIcon icon, int width, bool active) {
         OptionButton button;
         button.action = action;
         button.icon = icon;
-        button.text = text ? text : "";
-        button.rect = RECT{ 0, 0, width, kOptionButton };
+        button.rect = RECT{ 0, 0, width, optionButton };
         button.active = active;
         optionButtons_.push_back(button);
     };
@@ -1245,14 +1266,14 @@ void ScreenshotOverlay::LayoutOptionBar() {
         OptionButton button;
         button.action = action;
         button.text = text;
-        button.rect = RECT{ 0, 0, width, kOptionButton };
+        button.rect = RECT{ 0, 0, width, optionButton };
         button.active = active;
         optionButtons_.push_back(button);
     };
     const auto addSeparator = [&] {
         OptionButton button;
         button.action = Action::None;
-        button.rect = RECT{ 0, 0, 1, kOptionButton };
+        button.rect = RECT{ 0, 0, 1, optionButton };
         optionButtons_.push_back(button);
     };
 
@@ -1260,7 +1281,7 @@ void ScreenshotOverlay::LayoutOptionBar() {
     for (int i = 0; i < core::annotation_defaults::kPaletteCount; ++i) {
         OptionButton button;
         button.action = Action::Color;
-        button.rect = RECT{ 0, 0, kColorWidth, kOptionButton };
+        button.rect = RECT{ 0, 0, colorWidth, optionButton };
         button.colorIndex = i;
         button.active = style_.color == core::annotation_defaults::PaletteColor(i);
         optionButtons_.push_back(button);
@@ -1270,46 +1291,46 @@ void ScreenshotOverlay::LayoutOptionBar() {
     switch (tool_) {
     case AnnotationTool::Rectangle:
     case AnnotationTool::Ellipse:
-        addIcon(Action::ShapeRectangle, ToolbarIcon::Rectangle, "", kOptionButton,
+        addIcon(Action::ShapeRectangle, ToolbarIcon::Rectangle, optionButton,
                 tool_ == AnnotationTool::Rectangle);
-        addIcon(Action::ShapeEllipse, ToolbarIcon::Ellipse, "", kOptionButton,
+        addIcon(Action::ShapeEllipse, ToolbarIcon::Ellipse, optionButton,
                 tool_ == AnnotationTool::Ellipse);
-        addIcon(Action::FillOff, ToolbarIcon::Outline, "", kOptionButton, !style_.filled);
-        addIcon(Action::FillOn, ToolbarIcon::Fill, "", kOptionButton, style_.filled);
+        addIcon(Action::FillOff, ToolbarIcon::Outline, optionButton, !style_.filled);
+        addIcon(Action::FillOn, ToolbarIcon::Fill, optionButton, style_.filled);
         break;
     case AnnotationTool::Pen:
     case AnnotationTool::Highlighter:
-        addText(Action::ThicknessDown, "-", kOptionButton, false);
+        addText(Action::ThicknessDown, "-", optionButton, false);
         addText(Action::None, std::to_string(static_cast<int>(std::lround(style_.thickness))),
-                30, false);
-        addText(Action::ThicknessUp, "+", kOptionButton, false);
+                Scale(30), false);
+        addText(Action::ThicknessUp, "+", optionButton, false);
         break;
     case AnnotationTool::Arrow:
-        addIcon(Action::ArrowEnd, ToolbarIcon::Arrow, "", kOptionButton,
+        addIcon(Action::ArrowEnd, ToolbarIcon::Arrow, optionButton,
                 style_.arrowHead == core::ArrowHeadMode::End);
-        addText(Action::ArrowBoth, "\u2194", kOptionButton,
+        addText(Action::ArrowBoth, "\u2194", optionButton,
                 style_.arrowHead == core::ArrowHeadMode::Both);
-        addText(Action::ArrowNone, "\u2014", kOptionButton,
+        addText(Action::ArrowNone, "\u2014", optionButton,
                 style_.arrowHead == core::ArrowHeadMode::None);
         break;
     case AnnotationTool::Text:
-        addText(Action::TextSizeDown, "-", kOptionButton, false);
+        addText(Action::TextSizeDown, "-", optionButton, false);
         addText(Action::None, std::to_string(static_cast<int>(std::lround(style_.textSize))),
-                30, false);
-        addText(Action::TextSizeUp, "+", kOptionButton, false);
-        addText(Action::Bold, "B", kOptionButton, style_.bold);
-        addText(Action::Italic, "I", kOptionButton, style_.italic);
+                Scale(30), false);
+        addText(Action::TextSizeUp, "+", optionButton, false);
+        addText(Action::Bold, "B", optionButton, style_.bold);
+        addText(Action::Italic, "I", optionButton, style_.italic);
         break;
     case AnnotationTool::Mosaic:
-        addText(Action::MosaicDown, "-", kOptionButton, false);
-        addText(Action::None, std::to_string(style_.mosaicBlockPx), 30, false);
-        addText(Action::MosaicUp, "+", kOptionButton, false);
+        addText(Action::MosaicDown, "-", optionButton, false);
+        addText(Action::None, std::to_string(style_.mosaicBlockPx), Scale(30), false);
+        addText(Action::MosaicUp, "+", optionButton, false);
         break;
     case AnnotationTool::Eraser:
-        addText(Action::EraserDown, "-", kOptionButton, false);
-        addText(Action::None, std::to_string(static_cast<int>(std::lround(eraserSize_))), 30,
-                false);
-        addText(Action::EraserUp, "+", kOptionButton, false);
+        addText(Action::EraserDown, "-", optionButton, false);
+        addText(Action::None, std::to_string(static_cast<int>(std::lround(eraserSize_))),
+                Scale(30), false);
+        addText(Action::EraserUp, "+", optionButton, false);
         break;
     default:
         break;
@@ -1319,46 +1340,47 @@ void ScreenshotOverlay::LayoutOptionBar() {
         return;
     }
 
-    int width = kToolbarPadding;
+    int width = padding;
     for (std::size_t i = 0; i < optionButtons_.size(); ++i) {
         width += optionButtons_[i].rect.right;
         if (i + 1 < optionButtons_.size()) {
-            width += optionButtons_[i + 1].rect.right > 0 ? kToolbarGap : 0;
+            width += optionButtons_[i + 1].rect.right > 0 ? gap : 0;
         }
-        // 分隔符两侧各留 4 px。
         if (optionButtons_[i].rect.right == 1) {
-            width += kSeparatorMargin - kToolbarGap;
+            width += separatorMargin - gap;
         }
     }
 
     int x = static_cast<int>(toolbarBounds_.left);
-    int y = static_cast<int>(toolbarBounds_.bottom) + 6;
-    if (y + kOptionHeight > screenHeight_ - 8) {
-        y = static_cast<int>(toolbarBounds_.top) - kOptionHeight - 6;
+    int y = static_cast<int>(toolbarBounds_.bottom) + Scale(6);
+    if (y + optionHeight > screenHeight_ - Scale(8)) {
+        y = static_cast<int>(toolbarBounds_.top) - optionHeight - Scale(6);
     }
-    x = std::clamp(x, 8, std::max(8, screenWidth_ - width - 8));
-    y = std::clamp(y, 8, std::max(8, screenHeight_ - kOptionHeight - 8));
+    x = std::clamp(x, Scale(8), std::max(Scale(8), screenWidth_ - width - Scale(8)));
+    y = std::clamp(y, Scale(8), std::max(Scale(8), screenHeight_ - optionHeight - Scale(8)));
 
-    int cursor = x + kToolbarPadding;
+    int cursor = x + padding;
     for (OptionButton& option : optionButtons_) {
         const int w = option.rect.right;
-        option.rect = RECT{ cursor, y + 4, cursor + w, y + 4 + kOptionButton };
-        cursor += w + (w == 1 ? kSeparatorMargin * 2 - kToolbarGap : kToolbarGap);
+        option.rect = RECT{ cursor, y + Scale(4), cursor + w, y + Scale(4) + optionButton };
+        cursor += w + (w == 1 ? separatorMargin * 2 - gap : gap);
     }
-    optionBounds_ = RECT{ x, y, x + width, y + kOptionHeight };
+    optionBounds_ = RECT{ x, y, x + width, y + optionHeight };
 }
 
 void ScreenshotOverlay::RenderOptionBar(core::FramePlan& plan) {
     if (optionButtons_.empty() || rasterizer_ == nullptr) {
         return;
     }
-    // 布局产出的是客户区坐标，这里不再减窗口原点。
+    const float radius = Scale(10.0f);
     const Rect background{ static_cast<float>(optionBounds_.left),
                            static_cast<float>(optionBounds_.top),
                            static_cast<float>(optionBounds_.right),
                            static_cast<float>(optionBounds_.bottom) };
-    plan.Add(core::FillRoundedRect{ background, 10.0f, Color{ 0.98f, 0.976f, 0.984f, 0.98f } });
-    plan.Add(core::StrokeRoundedRect{ background, 10.0f, Color{ 0.0f, 0.0f, 0.0f, 0.13f }, 1.0f });
+    plan.Add(core::FillRoundedRect{ background, radius,
+                                    Color{ 0.98f, 0.976f, 0.984f, 0.98f } });
+    plan.Add(core::StrokeRoundedRect{ background, radius, Color{ 0.0f, 0.0f, 0.0f, 0.13f },
+                                      Scale(1.0f) });
 
     for (const OptionButton& option : optionButtons_) {
         const Rect rect{ static_cast<float>(option.rect.left),
@@ -1367,33 +1389,39 @@ void ScreenshotOverlay::RenderOptionBar(core::FramePlan& plan) {
                          static_cast<float>(option.rect.bottom) };
 
         if (option.colorIndex >= 0) {
-            // 1.x 的色板：22×22，内圈 12×12 圆点，选中时外面套 2 px 环。
+            // 1.x 的色板：12 DIP 圆点，选中时外面套 2 DIP 环。
             const Color color = core::annotation_defaults::PaletteColor(option.colorIndex);
             const float cx = (rect.left + rect.right) * 0.5f;
             const float cy = (rect.top + rect.bottom) * 0.5f;
-            const Rect dot{ cx - 6.0f, cy - 6.0f, cx + 6.0f, cy + 6.0f };
-            plan.Add(core::FillEllipse{ dot, color });
+            const float dot = Scale(6.0f);
+            const Rect dotRect{ cx - dot, cy - dot, cx + dot, cy + dot };
+            plan.Add(core::FillEllipse{ dotRect, color });
             if (option.colorIndex == 6 || option.colorIndex == 7) {
-                plan.Add(core::StrokeEllipse{ dot, Color{ 0.0f, 0.0f, 0.0f, 0.15f }, 1.0f });
+                plan.Add(core::StrokeEllipse{ dotRect, Color{ 0.0f, 0.0f, 0.0f, 0.15f },
+                                              Scale(1.0f) });
             }
             if (option.active) {
-                plan.Add(core::StrokeEllipse{ Rect{ rect.left + 1.0f, rect.top + 2.0f,
-                                                    rect.right - 1.0f, rect.bottom - 2.0f },
-                                              Color{ 0.184f, 0.486f, 0.965f, 1.0f }, 2.0f });
+                const float ring = Scale(1.0f);
+                plan.Add(core::StrokeEllipse{ Rect{ rect.left + ring, rect.top + Scale(2.0f),
+                                                    rect.right - ring,
+                                                    rect.bottom - Scale(2.0f) },
+                                              Color{ 0.184f, 0.486f, 0.965f, 1.0f },
+                                              Scale(2.0f) });
             }
             continue;
         }
 
         if (option.rect.right - option.rect.left == 1) {
             const float dividerX = rect.left + 0.5f;
-            plan.Add(core::FillRect{ Rect{ dividerX, rect.top + 4.0f, dividerX + 1.0f,
-                                           rect.bottom - 4.0f },
+            plan.Add(core::FillRect{ Rect{ dividerX, rect.top + Scale(4.0f), dividerX + 1.0f,
+                                           rect.bottom - Scale(4.0f) },
                                      Color{ 0.0f, 0.0f, 0.0f, 0.10f } });
             continue;
         }
 
         if (option.active) {
-            plan.Add(core::FillRoundedRect{ rect, 7.0f, Color{ 0.184f, 0.486f, 0.965f, 1.0f } });
+            plan.Add(core::FillRoundedRect{ rect, Scale(7.0f),
+                                            Color{ 0.184f, 0.486f, 0.965f, 1.0f } });
         }
 
         if (option.text.empty() && option.icon != ToolbarIcon::None) {
@@ -1405,7 +1433,7 @@ void ScreenshotOverlay::RenderOptionBar(core::FramePlan& plan) {
         }
 
         const bool valueOnly = option.action == Action::None;
-        const core::FontSpec spec{ options_.fontFamily, valueOnly ? 400 : 600, 12.0f,
+        const core::FontSpec spec{ options_.fontFamily, valueOnly ? 400 : 600, Scale(12.0f),
                                    option.active ? Color{ 1.0f, 1.0f, 1.0f, 1.0f }
                                                  : Color{ 0.235f, 0.259f, 0.314f, 1.0f } };
         const core::TextCell measured =
@@ -1448,29 +1476,34 @@ void ScreenshotOverlay::RenderSizeBadge(core::FramePlan& plan) {
 
     const std::string text = std::to_string(rectPx.right - rectPx.left) + " × " +
                              std::to_string(rectPx.bottom - rectPx.top);
-    const core::FontSpec spec{ options_.fontFamily, 400, 11.0f,
+    const core::FontSpec spec{ options_.fontFamily, 400, Scale(11.0f),
                                Color{ 0x3C / 255.0f, 0x42 / 255.0f, 0x50 / 255.0f, 1.0f } };
     const core::TextCell measured = rasterizer_->LayOut(text, spec, core::Point{ 0.0f, 0.0f });
     if (measured.atlas == 0) {
         return;
     }
-    const float width = measured.destination.Width() + 16.0f;
-    const float height = 24.0f;
-    const float left = std::clamp(static_cast<float>(rectPx.left) - windowX_, 6.0f,
-                                  std::max(6.0f, static_cast<float>(screenWidth_) - width - 6.0f));
-    // 1.x：贴选区左边、上边再往上 8 px；放不下就挪到上边线下面 9 px。
-    float top = static_cast<float>(rectPx.top) - windowY_ - 8.0f - height;
-    if (top < 6.0f) {
-        top = static_cast<float>(rectPx.top) - windowY_ + 9.0f;
+    const float width = measured.destination.Width() + Scale(16.0f);
+    const float height = Scale(24.0f);
+    const float margin = Scale(6.0f);
+    const float left = std::clamp(static_cast<float>(rectPx.left) - windowX_, margin,
+                                  std::max(margin,
+                                           static_cast<float>(screenWidth_) - width - margin));
+    // 1.x：贴选区左边、上边再往上 8 DIP；放不下就挪到上边线下面 9 DIP。
+    float top = static_cast<float>(rectPx.top) - windowY_ - Scale(8.0f) - height;
+    if (top < margin) {
+        top = static_cast<float>(rectPx.top) - windowY_ + Scale(9.0f);
     }
-    top = std::clamp(top, 6.0f, std::max(6.0f, static_cast<float>(screenHeight_) - height - 6.0f));
+    top = std::clamp(top, margin,
+                     std::max(margin, static_cast<float>(screenHeight_) - height - margin));
 
-    plan.Add(core::FillRoundedRect{ core::Rect{ left, top, left + width, top + height }, 6.0f,
-                                    Color{ 1.0f, 1.0f, 1.0f, 0xF2 / 255.0f } });
-    plan.Add(core::StrokeRoundedRect{ core::Rect{ left, top, left + width, top + height }, 6.0f,
-                                      Color{ 0.0f, 0.0f, 0.0f, 0x1F / 255.0f }, 1.0f });
-    const core::TextCell cell =
-        rasterizer_->LayOut(text, spec, core::Point{ left + 8.0f, top + 5.0f });
+    plan.Add(core::FillRoundedRect{ core::Rect{ left, top, left + width, top + height },
+                                    Scale(6.0f), Color{ 1.0f, 1.0f, 1.0f, 0xF2 / 255.0f } });
+    plan.Add(core::StrokeRoundedRect{ core::Rect{ left, top, left + width, top + height },
+                                      Scale(6.0f), Color{ 0.0f, 0.0f, 0.0f, 0x1F / 255.0f },
+                                      Scale(1.0f) });
+    const core::TextCell cell = rasterizer_->LayOut(
+        text, spec,
+        core::Point{ left + Scale(8.0f), top + (height - measured.destination.Height()) * 0.5f });
     if (cell.atlas != 0) {
         plan.Add(cell.ToBlit());
     }
@@ -1488,45 +1521,52 @@ void ScreenshotOverlay::RenderMagnifier(core::FramePlan& plan) {
         return;
     }
 
-    // 1.x 的放大镜：136×136 取景框（深色底、内描边）+ 间隔 5 px 的信息面板。
-    constexpr float kSize = 136.0f;
-    constexpr float kInfoHeight = 46.0f;
-    constexpr float kGap = 5.0f;
-    const float cardWidth = kSize;
-    const float cardHeight = kSize + kGap + kInfoHeight;
+    // 1.x 的放大镜：136 DIP 取景框（深色底、内描边）+ 间隔 5 DIP 的信息面板。
+    const float size = Scale(136.0f);
+    const float infoHeight = Scale(46.0f);
+    const float gap = Scale(5.0f);
+    const float cardWidth = size;
+    const float cardHeight = size + gap + infoHeight;
+    const float offset = Scale(24.0f);
     // 一律换算到窗口本地坐标再夹紧：多屏时窗口原点不是 (0,0)。
     const float sampleX = static_cast<float>(lastMouse_.x - windowX_);
     const float sampleY = static_cast<float>(lastMouse_.y - windowY_);
-    // 1.x：光标右下 24 px；靠边就翻到左上。
-    float x = sampleX + 24.0f;
-    float y = sampleY + 24.0f;
-    if (x + cardWidth > static_cast<float>(screenWidth_) - 6.0f) {
-        x = sampleX - 24.0f - cardWidth;
+    float x = sampleX + offset;
+    float y = sampleY + offset;
+    if (x + cardWidth > static_cast<float>(screenWidth_) - Scale(6.0f)) {
+        x = sampleX - offset - cardWidth;
     }
-    if (y + cardHeight > static_cast<float>(screenHeight_) - 6.0f) {
-        y = sampleY - 24.0f - cardHeight;
+    if (y + cardHeight > static_cast<float>(screenHeight_) - Scale(6.0f)) {
+        y = sampleY - offset - cardHeight;
     }
-    x = std::clamp(x, 6.0f, std::max(6.0f, static_cast<float>(screenWidth_) - cardWidth - 6.0f));
-    y = std::clamp(y, 6.0f, std::max(6.0f, static_cast<float>(screenHeight_) - cardHeight - 6.0f));
+    const float margin = Scale(6.0f);
+    x = std::clamp(x, margin,
+                   std::max(margin, static_cast<float>(screenWidth_) - cardWidth - margin));
+    y = std::clamp(y, margin,
+                   std::max(margin, static_cast<float>(screenHeight_) - cardHeight - margin));
 
-    // 取景框：17×17 的设备像素放进 136 px，约 8 倍放大。
-    const core::Rect viewport{ x, y, x + kSize, y + kSize };
-    plan.Add(core::FillRoundedRect{ viewport, 10.0f,
+    // 取景框：17×17 的设备像素放进 136 DIP，约 8 倍放大。
+    const core::Rect viewport{ x, y, x + size, y + size };
+    plan.Add(core::FillRoundedRect{ viewport, Scale(10.0f),
                                     Color{ 0x0B / 255.0f, 0x0F / 255.0f, 0x16 / 255.0f, 1.0f } });
     plan.Add(core::Blit{ capturedHandle_,
                          core::Rect{ sampleX - 8.0f, sampleY - 8.0f, sampleX + 9.0f,
                                      sampleY + 9.0f },
-                         core::Rect{ x + 1.0f, y + 1.0f, x + kSize - 1.0f, y + kSize - 1.0f },
+                         core::Rect{ x + Scale(1.0f), y + Scale(1.0f), x + size - Scale(1.0f),
+                                     y + size - Scale(1.0f) },
                          1.0f });
-    // 中心像素：9×9 的模式色方环（1.x 的 63.5,63.5 那一圈）。
-    const float centerX = x + kSize * 0.5f;
-    const float centerY = y + kSize * 0.5f;
-    plan.Add(core::StrokeRect{ core::Rect{ centerX - 4.5f, centerY - 4.5f, centerX + 4.5f,
-                                           centerY + 4.5f },
-                               SelectionAccent(), 1.5f });
-    plan.Add(core::StrokeRoundedRect{ core::Rect{ x + 1.0f, y + 1.0f, x + kSize - 1.0f,
-                                                  y + kSize - 1.0f },
-                                      9.0f, Color{ 1.0f, 1.0f, 1.0f, 0x5C / 255.0f }, 1.0f });
+    // 中心像素：9 DIP 的模式色方环。
+    const float centerX = x + size * 0.5f;
+    const float centerY = y + size * 0.5f;
+    const float ring = Scale(4.5f);
+    plan.Add(core::StrokeRect{ core::Rect{ centerX - ring, centerY - ring, centerX + ring,
+                                           centerY + ring },
+                               SelectionAccent(), Scale(1.5f) });
+    plan.Add(core::StrokeRoundedRect{ core::Rect{ x + Scale(1.0f), y + Scale(1.0f),
+                                                  x + size - Scale(1.0f),
+                                                  y + size - Scale(1.0f) },
+                                      Scale(9.0f), Color{ 1.0f, 1.0f, 1.0f, 0x5C / 255.0f },
+                                      Scale(1.0f) });
 
     std::uint8_t r = 0;
     std::uint8_t g = 0;
@@ -1546,33 +1586,38 @@ void ScreenshotOverlay::RenderMagnifier(core::FramePlan& plan) {
     // 坐标读数是屏幕坐标（虚拟桌面），不是窗口本地坐标。
     std::snprintf(coordinates, sizeof(coordinates), "%d, %d", px + windowX_, py + windowY_);
 
-    // 信息面板：#F210141C 底、#33FFFFFF 边、8 px 圆角。
-    const core::Rect info{ x, y + kSize + kGap, x + cardWidth, y + cardHeight };
-    plan.Add(core::FillRoundedRect{ info, 8.0f,
+    // 信息面板：#F210141C 底、#33FFFFFF 边、8 DIP 圆角。
+    const core::Rect info{ x, y + size + gap, x + cardWidth, y + cardHeight };
+    plan.Add(core::FillRoundedRect{ info, Scale(8.0f),
                                     Color{ 0x10 / 255.0f, 0x14 / 255.0f, 0x1C / 255.0f,
                                            0xF2 / 255.0f } });
-    plan.Add(core::StrokeRoundedRect{ info, 8.0f, Color{ 1.0f, 1.0f, 1.0f, 0x33 / 255.0f },
-                                      1.0f });
-    const float swatchX = x + 8.0f;
-    const float swatchY = y + kSize + kGap + 8.0f;
-    plan.Add(core::FillRoundedRect{ core::Rect{ swatchX, swatchY, swatchX + 11.0f,
-                                                swatchY + 11.0f },
-                                    3.0f, Color{ r / 255.0f, g / 255.0f, b / 255.0f, 1.0f } });
-    plan.Add(core::StrokeRoundedRect{ core::Rect{ swatchX, swatchY, swatchX + 11.0f,
-                                                  swatchY + 11.0f },
-                                      3.0f, Color{ 1.0f, 1.0f, 1.0f, 0.18f }, 1.0f });
+    plan.Add(core::StrokeRoundedRect{ info, Scale(8.0f),
+                                      Color{ 1.0f, 1.0f, 1.0f, 0x33 / 255.0f }, Scale(1.0f) });
+    const float swatchX = x + Scale(8.0f);
+    const float swatchY = y + size + gap + Scale(8.0f);
+    const float swatch = Scale(11.0f);
+    plan.Add(core::FillRoundedRect{ core::Rect{ swatchX, swatchY, swatchX + swatch,
+                                                swatchY + swatch },
+                                    Scale(3.0f),
+                                    Color{ r / 255.0f, g / 255.0f, b / 255.0f, 1.0f } });
+    plan.Add(core::StrokeRoundedRect{ core::Rect{ swatchX, swatchY, swatchX + swatch,
+                                                  swatchY + swatch },
+                                      Scale(3.0f), Color{ 1.0f, 1.0f, 1.0f, 0.18f },
+                                      Scale(1.0f) });
 
-    const core::FontSpec hexSpec{ options_.fontFamily, 600, 11.0f,
+    const core::FontSpec hexSpec{ options_.fontFamily, 600, Scale(11.0f),
                                   Color{ 0xE8 / 255.0f, 0xED / 255.0f, 0xF6 / 255.0f, 1.0f } };
-    const core::FontSpec coordSpec{ options_.fontFamily, 400, 10.0f,
+    const core::FontSpec coordSpec{ options_.fontFamily, 400, Scale(10.0f),
                                     Color{ 0x8D / 255.0f, 0x9A / 255.0f, 0xAF / 255.0f, 1.0f } };
     const core::TextCell hexCell =
-        rasterizer_->LayOut(hex, hexSpec, core::Point{ swatchX + 17.0f, swatchY - 2.0f });
+        rasterizer_->LayOut(hex, hexSpec,
+                            core::Point{ swatchX + Scale(17.0f), swatchY - Scale(2.0f) });
     if (hexCell.atlas != 0) {
         plan.Add(hexCell.ToBlit());
     }
     const core::TextCell coordCell = rasterizer_->LayOut(
-        coordinates, coordSpec, core::Point{ swatchX + 17.0f, swatchY + 13.0f });
+        coordinates, coordSpec,
+        core::Point{ swatchX + Scale(17.0f), swatchY + Scale(13.0f) });
     if (coordCell.atlas != 0) {
         plan.Add(coordCell.ToBlit());
     }
@@ -1635,23 +1680,25 @@ void ScreenshotOverlay::RenderToast(core::FramePlan& plan) {
         return;
     }
     const std::string text = WideToUtf8(toast_);
-    const core::FontSpec spec{ options_.fontFamily, 500, 12.0f,
+    const core::FontSpec spec{ options_.fontFamily, 500, Scale(12.0f),
                                Color{ 0.91f, 0.93f, 0.96f, 1.0f } };
     const core::TextCell measured = rasterizer_->LayOut(text, spec, Point{ 0.0f, 0.0f });
     if (measured.atlas == 0) {
         return;
     }
-    const float width = measured.destination.Width() + 20.0f;
-    const float height = 30.0f;
-    float x = static_cast<float>(lastMouse_.x - windowX_) + 20.0f;
-    float y = static_cast<float>(lastMouse_.y - windowY_) + 40.0f;
-    x = std::clamp(x, 8.0f, std::max(8.0f, static_cast<float>(screenWidth_) - width - 8.0f));
-    y = std::clamp(y, 8.0f, std::max(8.0f, static_cast<float>(screenHeight_) - height - 8.0f));
-    plan.Add(core::FillRoundedRect{ Rect{ x, y, x + width, y + height }, 8.0f,
+    const float width = measured.destination.Width() + Scale(20.0f);
+    const float height = Scale(30.0f);
+    float x = static_cast<float>(lastMouse_.x - windowX_) + Scale(20.0f);
+    float y = static_cast<float>(lastMouse_.y - windowY_) + Scale(40.0f);
+    const float margin = Scale(8.0f);
+    x = std::clamp(x, margin, std::max(margin, static_cast<float>(screenWidth_) - width - margin));
+    y = std::clamp(y, margin,
+                   std::max(margin, static_cast<float>(screenHeight_) - height - margin));
+    plan.Add(core::FillRoundedRect{ Rect{ x, y, x + width, y + height }, Scale(8.0f),
                                     Color{ 0.086f, 0.102f, 0.133f, 0.94f } });
     const core::TextCell cell = rasterizer_->LayOut(
         text, spec,
-        Point{ x + 10.0f, y + (height - measured.destination.Height()) * 0.5f });
+        Point{ x + Scale(10.0f), y + (height - measured.destination.Height()) * 0.5f });
     if (cell.atlas != 0) {
         plan.Add(cell.ToBlit());
     }
@@ -1670,27 +1717,29 @@ void ScreenshotOverlay::RenderTooltip(core::FramePlan& plan) {
     if (button.label.empty() || button.icon == ToolbarIcon::Separator) {
         return;
     }
-    const core::FontSpec spec{ options_.fontFamily, 400, 12.0f,
+    const core::FontSpec spec{ options_.fontFamily, 400, Scale(12.0f),
                                Color{ 0x3C / 255.0f, 0x42 / 255.0f, 0x50 / 255.0f, 1.0f } };
     const core::TextCell measured = rasterizer_->LayOut(button.label, spec, Point{ 0.0f, 0.0f });
     if (measured.atlas == 0) {
         return;
     }
-    const float width = measured.destination.Width() + 16.0f;
-    const float height = measured.destination.Height() + 10.0f;
+    const float width = measured.destination.Width() + Scale(16.0f);
+    const float height = measured.destination.Height() + Scale(10.0f);
+    const float margin = Scale(8.0f);
     float x = static_cast<float>(button.rect.left) +
               (button.rect.right - button.rect.left - static_cast<LONG>(width)) * 0.5f;
-    float y = static_cast<float>(button.rect.bottom) + 8.0f;
-    if (y + height > static_cast<float>(screenHeight_) - 8.0f) {
-        y = static_cast<float>(button.rect.top) - height - 8.0f;
+    float y = static_cast<float>(button.rect.bottom) + Scale(8.0f);
+    if (y + height > static_cast<float>(screenHeight_) - margin) {
+        y = static_cast<float>(button.rect.top) - height - Scale(8.0f);
     }
-    x = std::clamp(x, 8.0f, std::max(8.0f, static_cast<float>(screenWidth_) - width - 8.0f));
-    plan.Add(core::FillRoundedRect{ Rect{ x, y, x + width, y + height }, 6.0f,
+    x = std::clamp(x, margin, std::max(margin, static_cast<float>(screenWidth_) - width - margin));
+    plan.Add(core::FillRoundedRect{ Rect{ x, y, x + width, y + height }, Scale(6.0f),
                                     Color{ 1.0f, 1.0f, 1.0f, 0.98f } });
-    plan.Add(core::StrokeRoundedRect{ Rect{ x, y, x + width, y + height }, 6.0f,
-                                      Color{ 0.0f, 0.0f, 0.0f, 0.14f }, 1.0f });
+    plan.Add(core::StrokeRoundedRect{ Rect{ x, y, x + width, y + height }, Scale(6.0f),
+                                      Color{ 0.0f, 0.0f, 0.0f, 0.14f }, Scale(1.0f) });
     const core::TextCell cell = rasterizer_->LayOut(
-        button.label, spec, Point{ x + 8.0f, y + (height - measured.destination.Height()) * 0.5f });
+        button.label, spec,
+        Point{ x + Scale(8.0f), y + (height - measured.destination.Height()) * 0.5f });
     if (cell.atlas != 0) {
         plan.Add(cell.ToBlit());
     }
@@ -1703,30 +1752,35 @@ void ScreenshotOverlay::LayoutToolbar() {
     const bool recordMode = options_.mode == OverlayMode::RecordRegion;
     const bool ocrMode = options_.mode == OverlayMode::Ocr;
 
-    // 先在「工具栏左上角 = (0,0)」的坐标系里排好，最后整体平移到锚点，
-    // 这样宽度和命中区天然一致。
-    int cursorX = kToolbarPadding;
-    const int top = kToolbarPadding;
+    // 1.x 的尺寸是 DIP，这里按屏幕缩放换算成物理像素（150% 时 30 → 45）。
+    const int button = Scale(kToolbarButton);
+    const int gap = Scale(kToolbarGap);
+    const int padding = Scale(kToolbarPadding);
+
+    int cursorX = padding;
+    const int top = padding;
 
     const auto add = [&](Action action, ToolbarIcon icon, const char* label, bool enabled,
                          bool active) {
-        ToolbarButton button;
-        button.rect = RECT{ cursorX, top, cursorX + kToolbarButton, top + kToolbarButton };
-        button.action = action;
-        button.icon = icon;
-        button.label = label;
-        button.enabled = enabled;
-        button.active = active;
-        toolbar_.push_back(button);
-        cursorX += kToolbarButton + kToolbarGap;
+        ToolbarButton entry;
+        entry.rect = RECT{ cursorX, top, cursorX + button, top + button };
+        entry.action = action;
+        entry.icon = icon;
+        entry.label = label;
+        entry.enabled = enabled;
+        entry.active = active;
+        toolbar_.push_back(entry);
+        cursorX += button + gap;
     };
     const auto separator = [&] {
-        cursorX += kSeparatorMargin - kToolbarGap;
-        ToolbarButton button;
-        button.rect = RECT{ cursorX, top, cursorX + kSeparatorWidth, top + kToolbarButton };
-        button.icon = ToolbarIcon::Separator;
-        toolbar_.push_back(button);
-        cursorX += kSeparatorWidth + kSeparatorMargin;
+        const int margin = Scale(kSeparatorMargin);
+        const int width = std::max(1, Scale(kSeparatorWidth));
+        cursorX += margin - gap;
+        ToolbarButton entry;
+        entry.rect = RECT{ cursorX, top, cursorX + width, top + button };
+        entry.icon = ToolbarIcon::Separator;
+        toolbar_.push_back(entry);
+        cursorX += width + margin;
     };
     const auto isShape = [&] {
         return tool_ == AnnotationTool::Rectangle || tool_ == AnnotationTool::Ellipse;
@@ -1777,7 +1831,10 @@ void ScreenshotOverlay::LayoutToolbar() {
         }
     }
 
-    const int width = cursorX - kToolbarGap + kToolbarPadding;
+    const int width = cursorX - gap + padding;
+    const int height = button + padding * 2;
+    const int gapToSelection = Scale(12);
+    const int screenEdge = Scale(8);
 
     const Rect selection = selection_.Bounds();
     const int localRight = static_cast<int>(selection.right) - windowX_;
@@ -1787,39 +1844,39 @@ void ScreenshotOverlay::LayoutToolbar() {
     int y = 0;
     if (selection.IsEmpty()) {
         x = (screenWidth_ - width) / 2;
-        y = 20;
+        y = Scale(20);
     } else {
-        // 1.x：贴选区右下角、往下 12 px；下面放不下就翻到上面，再放不下就压进选区底部。
+        // 1.x：贴选区右下角、往下 12 DIP；下面放不下就翻到上面，再放不下就压进选区底部。
         // 横向只夹紧、不翻到左边。
         x = localRight - width;
-        y = localBottom + 12;
-        if (y + kToolbarHeight > screenHeight_ - 8) {
-            y = localTop - kToolbarHeight - 12;
+        y = localBottom + gapToSelection;
+        if (y + height > screenHeight_ - screenEdge) {
+            y = localTop - height - gapToSelection;
         }
-        if (y < 8) {
-            y = std::clamp(localBottom - kToolbarHeight - 10, 8,
-                           std::max(8, screenHeight_ - kToolbarHeight - 8));
+        if (y < screenEdge) {
+            y = std::clamp(localBottom - height - Scale(10), screenEdge,
+                           std::max(screenEdge, screenHeight_ - height - screenEdge));
         }
-        x = std::clamp(x, 8, std::max(8, screenWidth_ - width - 8));
-        y = std::clamp(y, 8, std::max(8, screenHeight_ - kToolbarHeight - 8));
+        x = std::clamp(x, screenEdge, std::max(screenEdge, screenWidth_ - width - screenEdge));
+        y = std::clamp(y, screenEdge, std::max(screenEdge, screenHeight_ - height - screenEdge));
     }
 
-    // 1.x：刚拖完的选区不算「完成」，工具栏等松手之后才出现；出现时从下往上滑 6 px。
+    // 1.x：刚拖完的选区不算「完成」，工具栏等松手之后才出现；出现时从下往上滑 6 DIP。
     const bool visible = phase_ == Phase::Annotating && !selection.IsEmpty();
     if (visible && !toolbarVisible_) {
         toolbarAnim_ = 0.0f;
         SetTimer(static_cast<HWND>(window_->Handle()), 3, 16, nullptr);
     }
     toolbarVisible_ = visible;
-    y += static_cast<int>((1.0f - toolbarAnim_) * 6.0f);
+    y += static_cast<int>((1.0f - toolbarAnim_) * Scale(6.0f));
 
-    for (ToolbarButton& button : toolbar_) {
-        button.rect.left += x;
-        button.rect.right += x;
-        button.rect.top += y;
-        button.rect.bottom += y;
+    for (ToolbarButton& entry : toolbar_) {
+        entry.rect.left += x;
+        entry.rect.right += x;
+        entry.rect.top += y;
+        entry.rect.bottom += y;
     }
-    toolbarBounds_ = RECT{ x, y, x + width, y + kToolbarHeight };
+    toolbarBounds_ = RECT{ x, y, x + width, y + height };
 }
 
 void ScreenshotOverlay::RenderToolbarIcon(core::FramePlan& plan, const core::Rect& rect,
@@ -1827,21 +1884,25 @@ void ScreenshotOverlay::RenderToolbarIcon(core::FramePlan& plan, const core::Rec
     if (icon == ToolbarIcon::None || icon == ToolbarIcon::Separator) {
         return;
     }
-    // 1.x：禁用态整块 0.32 不透明度。
+    // 1.x：禁用态整块 0.32 不透明度；图标按 20 DIP 画，这里乘屏幕缩放。
+    const float k = uiScale_;
     const float alpha = enabled ? 1.0f : 0.32f;
     const Color ink = active ? Color{ 1.0f, 1.0f, 1.0f, alpha }
                              : Color{ 0.235f, 0.259f, 0.314f, alpha };
     const float cx = (rect.left + rect.right) * 0.5f;
     const float cy = (rect.top + rect.bottom) * 0.5f;
     const auto line = [&](float x1, float y1, float x2, float y2, float thickness) {
-        plan.Add(core::Segment{ core::Point{ cx + x1, cy + y1 }, core::Point{ cx + x2, cy + y2 },
-                                ink, thickness });
+        plan.Add(core::Segment{ core::Point{ cx + x1 * k, cy + y1 * k },
+                                core::Point{ cx + x2 * k, cy + y2 * k }, ink, thickness * k });
+    };
+    const auto box = [&](float left, float top, float right, float bottom) {
+        return core::Rect{ cx + left * k, cy + top * k, cx + right * k, cy + bottom * k };
     };
     const auto addGlyph = [&](const char* text, float size) {
         if (rasterizer_ == nullptr) {
             return;
         }
-        const core::FontSpec spec{ options_.fontFamily, 700, size, ink };
+        const core::FontSpec spec{ options_.fontFamily, 700, size * k, ink };
         const core::TextCell measured =
             rasterizer_->LayOut(text, spec, core::Point{ 0.0f, 0.0f });
         if (measured.atlas == 0) {
@@ -1862,19 +1923,14 @@ void ScreenshotOverlay::RenderToolbarIcon(core::FramePlan& plan, const core::Rec
         line(6.0f, -6.0f, 9.0f, -9.0f, 2.2f);
         break;
     case ToolbarIcon::Rectangle:
-        plan.Add(core::StrokeRect{ core::Rect{ cx - 8.0f, cy - 6.0f, cx + 8.0f, cy + 6.0f }, ink,
-                                   1.8f });
+        plan.Add(core::StrokeRect{ box(-8.0f, -6.0f, 8.0f, 6.0f), ink, 1.8f * k });
         break;
     case ToolbarIcon::Ellipse:
-        plan.Add(core::StrokeEllipse{ core::Rect{ cx - 8.0f, cy - 6.0f, cx + 8.0f, cy + 6.0f },
-                                      ink, 1.8f });
+        plan.Add(core::StrokeEllipse{ box(-8.0f, -6.0f, 8.0f, 6.0f), ink, 1.8f * k });
         break;
     case ToolbarIcon::Shape:
-        // 1.x 的「形状」：矩形与椭圆叠在一起。
-        plan.Add(core::StrokeRect{ core::Rect{ cx - 9.0f, cy - 8.0f, cx + 3.0f, cy + 2.0f }, ink,
-                                   1.6f });
-        plan.Add(core::StrokeEllipse{ core::Rect{ cx - 2.0f, cy - 2.0f, cx + 9.0f, cy + 8.0f },
-                                      ink, 1.6f });
+        plan.Add(core::StrokeRect{ box(-9.0f, -8.0f, 3.0f, 2.0f), ink, 1.6f * k });
+        plan.Add(core::StrokeEllipse{ box(-2.0f, -2.0f, 9.0f, 8.0f), ink, 1.6f * k });
         break;
     case ToolbarIcon::Arrow:
         line(-8.0f, 8.0f, 7.0f, -7.0f, 2.0f);
@@ -1887,23 +1943,22 @@ void ScreenshotOverlay::RenderToolbarIcon(core::FramePlan& plan, const core::Rec
     case ToolbarIcon::Highlighter: {
         Color highlight = ink;
         highlight.a = alpha * 0.55f;
-        plan.Add(core::Segment{ core::Point{ cx - 8.0f, cy + 3.0f },
-                                core::Point{ cx + 8.0f, cy - 3.0f }, highlight, 6.0f });
+        plan.Add(core::Segment{ core::Point{ cx - 8.0f * k, cy + 3.0f * k },
+                                core::Point{ cx + 8.0f * k, cy - 3.0f * k }, highlight, 6.0f * k });
         line(-8.0f, 8.0f, 8.0f, 2.0f, 1.4f);
         break;
     }
     case ToolbarIcon::Mosaic:
         for (int row = 0; row < 2; ++row) {
             for (int column = 0; column < 3; ++column) {
-                const float x = cx - 8.0f + column * 6.0f;
-                const float y = cy - 6.0f + row * 6.0f;
-                plan.Add(core::FillRect{ core::Rect{ x, y, x + 4.5f, y + 4.5f }, ink });
+                const float x = cx + (-8.0f + column * 6.0f) * k;
+                const float y = cy + (-6.0f + row * 6.0f) * k;
+                plan.Add(core::FillRect{ core::Rect{ x, y, x + 4.5f * k, y + 4.5f * k }, ink });
             }
         }
         break;
     case ToolbarIcon::Step:
-        plan.Add(core::StrokeEllipse{ core::Rect{ cx - 8.0f, cy - 8.0f, cx + 8.0f, cy + 8.0f },
-                                      ink, 1.8f });
+        plan.Add(core::StrokeEllipse{ box(-8.0f, -8.0f, 8.0f, 8.0f), ink, 1.8f * k });
         addGlyph("1", 10.0f);
         break;
     case ToolbarIcon::Eraser:
@@ -1922,16 +1977,12 @@ void ScreenshotOverlay::RenderToolbarIcon(core::FramePlan& plan, const core::Rec
         line(7.0f, -2.0f, 3.0f, 2.0f, 2.0f);
         break;
     case ToolbarIcon::Clear:
-        // 一个带斜杠的圆：清空标注。
-        plan.Add(core::StrokeEllipse{ core::Rect{ cx - 7.0f, cy - 7.0f, cx + 7.0f, cy + 7.0f },
-                                      ink, 1.6f });
+        plan.Add(core::StrokeEllipse{ box(-7.0f, -7.0f, 7.0f, 7.0f), ink, 1.6f * k });
         line(-5.0f, 5.0f, 5.0f, -5.0f, 1.8f);
         break;
     case ToolbarIcon::Copy:
-        plan.Add(core::StrokeRect{ core::Rect{ cx - 8.0f, cy - 8.0f, cx + 3.0f, cy + 3.0f }, ink,
-                                   1.6f });
-        plan.Add(core::StrokeRect{ core::Rect{ cx - 3.0f, cy - 3.0f, cx + 8.0f, cy + 8.0f }, ink,
-                                   1.6f });
+        plan.Add(core::StrokeRect{ box(-8.0f, -8.0f, 3.0f, 3.0f), ink, 1.6f * k });
+        plan.Add(core::StrokeRect{ box(-3.0f, -3.0f, 8.0f, 8.0f), ink, 1.6f * k });
         break;
     case ToolbarIcon::Save:
         line(0.0f, -8.0f, 0.0f, 3.0f, 2.0f);
@@ -1942,15 +1993,12 @@ void ScreenshotOverlay::RenderToolbarIcon(core::FramePlan& plan, const core::Rec
         line(8.0f, 5.0f, 8.0f, 8.0f, 1.6f);
         break;
     case ToolbarIcon::Pin:
-        plan.Add(core::FillEllipse{ core::Rect{ cx - 4.0f, cy - 9.0f, cx + 4.0f, cy - 1.0f },
-                                    ink });
+        plan.Add(core::FillEllipse{ box(-4.0f, -9.0f, 4.0f, -1.0f), ink });
         line(0.0f, -1.0f, 0.0f, 6.0f, 2.0f);
         line(0.0f, 6.0f, 4.0f, 9.0f, 2.0f);
         break;
     case ToolbarIcon::Ocr:
-        // 「识别文字」：一个取景框里放个 T。
-        plan.Add(core::StrokeRect{ core::Rect{ cx - 9.0f, cy - 7.0f, cx + 9.0f, cy + 7.0f }, ink,
-                                   1.4f });
+        plan.Add(core::StrokeRect{ box(-9.0f, -7.0f, 9.0f, 7.0f), ink, 1.4f * k });
         addGlyph("T", 11.0f);
         break;
     case ToolbarIcon::Close:
@@ -1958,18 +2006,16 @@ void ScreenshotOverlay::RenderToolbarIcon(core::FramePlan& plan, const core::Rec
         line(7.0f, -7.0f, -7.0f, 7.0f, 2.0f);
         break;
     case ToolbarIcon::Outline:
-        plan.Add(core::StrokeRect{ core::Rect{ cx - 7.0f, cy - 6.0f, cx + 7.0f, cy + 6.0f }, ink,
-                                   1.6f });
+        plan.Add(core::StrokeRect{ box(-7.0f, -6.0f, 7.0f, 6.0f), ink, 1.6f * k });
         break;
     case ToolbarIcon::Fill:
-        plan.Add(core::FillRect{ core::Rect{ cx - 7.0f, cy - 6.0f, cx + 7.0f, cy + 6.0f }, ink });
+        plan.Add(core::FillRect{ box(-7.0f, -6.0f, 7.0f, 6.0f), ink });
         break;
     case ToolbarIcon::Done:
         line(-7.0f, 0.0f, -2.0f, 6.0f, 2.2f);
         line(-2.0f, 6.0f, 8.0f, -7.0f, 2.2f);
         break;
     case ToolbarIcon::Select:
-        // 1.x 的箭头光标。
         line(-5.0f, -8.0f, -5.0f, 5.0f, 1.8f);
         line(-5.0f, 5.0f, -1.0f, 2.0f, 1.8f);
         line(-1.0f, 2.0f, 3.0f, 8.0f, 1.8f);
@@ -1988,9 +2034,19 @@ void ScreenshotOverlay::RenderToolbar(core::FramePlan& plan) {
                            static_cast<float>(toolbarBounds_.top),
                            static_cast<float>(toolbarBounds_.right),
                            static_cast<float>(toolbarBounds_.bottom) };
-    // 1.x 的工具栏：浅色 #FAF8F9FB、10 px 圆角、#22000000 边框。
-    plan.Add(core::FillRoundedRect{ background, 10.0f, Color{ 0.98f, 0.976f, 0.984f, 0.98f } });
-    plan.Add(core::StrokeRoundedRect{ background, 10.0f, Color{ 0.0f, 0.0f, 0.0f, 0.13f }, 1.0f });
+    // 1.x 的工具栏：浅色 #FAF8F9FB、10 px 圆角、#22000000 边框 + 一层柔和投影。
+    for (int i = 3; i >= 1; --i) {
+        const float grow = Scale(static_cast<float>(i) * 2.0f);
+        const float drop = Scale(static_cast<float>(i) * 1.5f);
+        plan.Add(core::FillRoundedRect{
+            Rect{ background.left - grow, background.top - grow + drop,
+                  background.right + grow, background.bottom + grow + drop },
+            Scale(10.0f) + grow, Color{ 0.0f, 0.0f, 0.0f, 0.05f } });
+    }
+    plan.Add(core::FillRoundedRect{ background, Scale(10.0f),
+                                    Color{ 0.98f, 0.976f, 0.984f, 0.98f } });
+    plan.Add(core::StrokeRoundedRect{ background, Scale(10.0f), Color{ 0.0f, 0.0f, 0.0f, 0.13f },
+                                      Scale(1.0f) });
 
     for (std::size_t i = 0; i < toolbar_.size(); ++i) {
         const ToolbarButton& button = toolbar_[i];
@@ -2001,17 +2057,18 @@ void ScreenshotOverlay::RenderToolbar(core::FramePlan& plan) {
 
         if (button.icon == ToolbarIcon::Separator) {
             const float dividerX = (rect.left + rect.right) * 0.5f;
-            plan.Add(core::FillRect{ Rect{ dividerX, rect.top + 4.0f, dividerX + 1.0f,
-                                           rect.bottom - 4.0f },
+            plan.Add(core::FillRect{ Rect{ dividerX, rect.top + Scale(4.0f), dividerX + 1.0f,
+                                           rect.bottom - Scale(4.0f) },
                                      Color{ 0.0f, 0.0f, 0.0f, 0.10f } });
             continue;
         }
 
         // 1.x：悬停 #14000000、按下 #22000000、激活工具/选择态用强调色实底。
         if (button.active) {
-            plan.Add(core::FillRoundedRect{ rect, 7.0f, Color{ 0.184f, 0.486f, 0.965f, 1.0f } });
+            plan.Add(core::FillRoundedRect{ rect, Scale(7.0f),
+                                            Color{ 0.184f, 0.486f, 0.965f, 1.0f } });
         } else if (i < 32 && hoverAlpha_[i] > 0.01f) {
-            plan.Add(core::FillRoundedRect{ rect, 7.0f,
+            plan.Add(core::FillRoundedRect{ rect, Scale(7.0f),
                                             Color{ 0.0f, 0.0f, 0.0f, 0.08f * hoverAlpha_[i] } });
         }
 
@@ -2029,17 +2086,18 @@ void ScreenshotOverlay::RenderSelection(core::FramePlan& plan) {
     const Color hoverDim{ 0.0f, 0.0f, 0.0f, 0x5C / 255.0f };
     const Color activeDim{ 0.0f, 0.0f, 0.0f, 0x8C / 255.0f };
     const Color accent = SelectionAccent();
+    const float border = Scale(1.5f);
 
     const Rect selection = selection_.Bounds();
     if (selection.IsEmpty()) {
-        // 悬停窗口：把那块挖出来（同 hover 暗度）+ 1.5 px 描边，其余压暗。
+        // 悬停窗口：把那块挖出来（同 hover 暗度）+ 1.5 DIP 描边，其余压暗。
         if (hoverWindow_ != nullptr && !hoverRect_.IsEmpty()) {
             const Rect hole{ static_cast<float>(hoverRect_.left) - ox,
                              static_cast<float>(hoverRect_.top) - oy,
                              static_cast<float>(hoverRect_.right) - ox,
                              static_cast<float>(hoverRect_.bottom) - oy };
             AddDimAround(plan, hole, hoverDim, width, height);
-            plan.Add(core::StrokeRect{ hole, accent, 1.5f });
+            plan.Add(core::StrokeRect{ hole, accent, border });
             return;
         }
         plan.Add(core::FillRect{ Rect{ 0.0f, 0.0f, width, height }, hoverDim });
@@ -2049,7 +2107,7 @@ void ScreenshotOverlay::RenderSelection(core::FramePlan& plan) {
     const Rect local{ selection.left - ox, selection.top - oy, selection.right - ox,
                       selection.bottom - oy };
     AddDimAround(plan, local, activeDim, width, height);
-    plan.Add(core::StrokeRect{ local, accent, 1.5f });
+    plan.Add(core::StrokeRect{ local, accent, border });
 
     // 1.x：标注态不画把手，其余时候（拖选中 / 完成后移动缩放）都画。
     if (annotating_) {
@@ -2058,7 +2116,7 @@ void ScreenshotOverlay::RenderSelection(core::FramePlan& plan) {
 
     const float cx = (local.left + local.right) * 0.5f;
     const float cy = (local.top + local.bottom) * 0.5f;
-    const float half = kHandleSize * 0.5f;
+    const float half = Scale(3.5f);
     const Point handles[] = { { local.left, local.top },     { cx, local.top },
                               { local.right, local.top },    { local.right, cy },
                               { local.right, local.bottom }, { cx, local.bottom },
@@ -2128,8 +2186,9 @@ void ScreenshotOverlay::RenderHint(core::FramePlan& plan) {
     default:
         break;
     }
-    const core::FontSpec spec{ options_.fontFamily, 400, 12.0f,
-                               Color{ 0.235f, 0.259f, 0.314f, 1.0f } };
+    // 文案尺寸也按 DIP：150% 屏上 12 DIP 就是 18 px，之前按 12 px 画所以显得小。
+    const core::FontSpec spec{ options_.fontFamily, 400, Scale(12.0f),
+                               Color{ 0x3C / 255.0f, 0x42 / 255.0f, 0x50 / 255.0f, 1.0f } };
     const core::TextCell measured = rasterizer_->LayOut(hint, spec, Point{ 0.0f, 0.0f });
     if (measured.atlas == 0) {
         return;
@@ -2138,25 +2197,27 @@ void ScreenshotOverlay::RenderHint(core::FramePlan& plan) {
     // 1.x 的提示条：白色圆角、左边一个模式色圆点、深色文字；贴在光标所在那块屏的顶部。
     const float textWidth = measured.destination.Width();
     const float textHeight = measured.destination.Height();
-    const float chipWidth = textWidth + 36.0f;
-    const float chipHeight = textHeight + 18.0f;
+    const float chipWidth = textWidth + Scale(36.0f);
+    const float chipHeight = textHeight + Scale(18.0f);
     const IntRect monitor = MonitorBoundsAt(lastMouse_);
-    const float chipLeft = static_cast<float>(monitor.left) + (monitor.right - monitor.left -
-                                                              chipWidth) * 0.5f - windowX_;
-    const float chipTop = static_cast<float>(monitor.top) + 26.0f - windowY_;
+    const float chipLeft = static_cast<float>(monitor.left) +
+                           (monitor.right - monitor.left - chipWidth) * 0.5f - windowX_;
+    const float chipTop = static_cast<float>(monitor.top) + Scale(26.0f) - windowY_;
 
     plan.Add(core::FillRoundedRect{ Rect{ chipLeft, chipTop, chipLeft + chipWidth,
                                          chipTop + chipHeight },
-                                    10.0f, Color{ 1.0f, 1.0f, 1.0f, 0.97f } });
+                                    Scale(10.0f), Color{ 1.0f, 1.0f, 1.0f, 0xF7 / 255.0f } });
     plan.Add(core::StrokeRoundedRect{ Rect{ chipLeft, chipTop, chipLeft + chipWidth,
                                             chipTop + chipHeight },
-                                     10.0f, Color{ 0.0f, 0.0f, 0.0f, 0.12f }, 1.0f });
-    const float dotX = chipLeft + 14.0f;
+                                      Scale(10.0f), Color{ 0.0f, 0.0f, 0.0f, 0x1F / 255.0f },
+                                      Scale(1.0f) });
+    const float dotX = chipLeft + Scale(14.0f);
     const float dotY = chipTop + chipHeight * 0.5f;
-    plan.Add(core::FillEllipse{ Rect{ dotX - 3.0f, dotY - 3.0f, dotX + 3.0f, dotY + 3.0f },
+    const float dot = Scale(3.0f);
+    plan.Add(core::FillEllipse{ Rect{ dotX - dot, dotY - dot, dotX + dot, dotY + dot },
                                 SelectionAccent() });
-    const core::TextCell cell =
-        rasterizer_->LayOut(hint, spec, Point{ dotX + 9.0f, chipTop + 9.0f });
+    const core::TextCell cell = rasterizer_->LayOut(
+        hint, spec, Point{ dotX + Scale(9.0f), chipTop + (chipHeight - textHeight) * 0.5f });
     if (cell.atlas != 0) {
         plan.Add(cell.ToBlit());
     }

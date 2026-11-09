@@ -90,8 +90,16 @@ public:
                               toolbarBounds_.bottom };
     }
     int OptionButtonCountForTest() const { return static_cast<int>(optionButtons_.size()); }
+    core::IntRect ToolbarButtonRectForTest(int index) const {
+        if (index < 0 || index >= static_cast<int>(toolbar_.size())) {
+            return core::IntRect{};
+        }
+        const RECT& rect = toolbar_[static_cast<std::size_t>(index)].rect;
+        return core::IntRect{ rect.left, rect.top, rect.right, rect.bottom };
+    }
     const std::wstring& ToastForTest() const { return toast_; }
     bool AnnotatingForTest() const { return annotating_; }
+    int UiScalePercentForTest() const { return static_cast<int>(uiScale_ * 100.0f + 0.5f); }
 
     const char* LastErrorKind() const { return errorKind_; }
     core::IntRect SelectionRectPx() const;
@@ -215,6 +223,12 @@ private:
     bool drawing_ = false;
     POINT lastPoint_{};
     POINT moveOrigin_{};
+
+    // 整块覆盖层是按物理像素画的，而 1.x 的尺寸全是 DIP；在 150% 的屏上必须乘 1.5，
+    // 否则工具栏、文字、放大镜都会比 1.x 小三分之一（「整体偏小」「提示字太小」就是这条）。
+    float uiScale_ = 1.0f;
+    int Scale(int dip) const { return static_cast<int>(dip * uiScale_ + 0.5f); }
+    float Scale(float dip) const { return dip * uiScale_; }
 
     // 工具栏
     std::vector<ToolbarButton> toolbar_;

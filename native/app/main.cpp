@@ -1419,7 +1419,7 @@ int Run(const Options& options) {
             const int baseY = -static_cast<int>(overlayRect.top);
             const int x0 = baseX + 200;
             const int y0 = baseY + 200;
-            const int x1 = baseX + 800;
+            const int x1 = baseX + 2000;
             const int y1 = baseY + 600;
 
             // 0) 空闲悬停：十字线 + 光标下窗口描边 + 放大镜，抓一张证明图。
@@ -1445,7 +1445,7 @@ int Run(const Options& options) {
             sendMouse(WM_LBUTTONUP, x0 + 350, y0 + 230);
             const core::IntRect moved = toClient(screenshotOverlay->SelectionRectPx());
             const bool moveOk = moved.left == x0 + 50 && moved.top == y0 + 30 &&
-                                moved.right - moved.left == 600 && moved.bottom - moved.top == 400;
+                                moved.right - moved.left == 1800 && moved.bottom - moved.top == 400;
 
             // 3) 右下把手缩放 +40/+20。
             sendMouse(WM_LBUTTONDOWN, moved.right, moved.bottom);
@@ -1453,27 +1453,39 @@ int Run(const Options& options) {
             sendMouse(WM_LBUTTONUP, moved.right + 40, moved.bottom + 20);
             const core::IntRect resized = toClient(screenshotOverlay->SelectionRectPx());
             const bool resizeOk = resized.left == x0 + 50 && resized.top == y0 + 30 &&
-                                  resized.right - resized.left == 640 &&
+                                  resized.right - resized.left == 1840 &&
                                   resized.bottom - resized.top == 420;
 
             // 4) 方向键微调 1 px（Shift 才是 10 px）。
             PostMessageW(overlayWindow, kMsgNudgeForTest, VK_RIGHT, 1);
             pumpMessages();
             const core::IntRect nudged = toClient(screenshotOverlay->SelectionRectPx());
-            const bool nudgeOk = nudged.left == x0 + 51 && nudged.right - nudged.left == 640;
+            const bool nudgeOk = nudged.left == x0 + 51 && nudged.right - nudged.left == 1840;
 
             // 5) 工具栏按 1.x 对齐：拖完才出现、高 38、右边缘贴选区右边缘，
             //    按钮顺序 = 选择 | 形状 箭头 | 笔 荧光 橡皮 文字 马赛克 序号 |
             //    撤 重 清空 | 存 贴 识别 | 取消 完成（共 17 个 + 5 条分隔线）。
             screenshotOverlay->Pump();
             const core::IntRect toolbar = screenshotOverlay->ToolbarBoundsForTest();
+            const int uiScalePct = screenshotOverlay->UiScalePercentForTest();
             const bool toolbarOk = screenshotOverlay->ToolbarVisibleForTest() &&
-                                   toolbar.bottom - toolbar.top == 38 &&
+                                   toolbar.bottom - toolbar.top == 38 * uiScalePct / 100 &&
                                    toolbar.right == nudged.right &&
                                    screenshotOverlay->ToolbarButtonCountForTest() == 22;
+            AddInt(report, "APP_SCREENSHOT_UI_SCALE_PCT", uiScalePct);
             // 形状工具：选项栏应当出现（8 色 + 分隔 + 矩形/椭圆/空心/实心）。
-            PostMessageW(overlayWindow, WM_APP + 6, 1, 0);
-            pumpMessages();
+            // 直接点工具栏里的「形状」按钮（第 3 个条目），验证工具栏真的能点。
+            const core::IntRect shapeButton = screenshotOverlay->ToolbarButtonRectForTest(2);
+            bool clickShapeOk = false;
+            if (!shapeButton.IsEmpty()) {
+                // 按钮矩形是客户区坐标，WM_* 的 lParam 也是客户区坐标，直接送。
+                const int shapeX = shapeButton.left + (shapeButton.right - shapeButton.left) / 2;
+                const int shapeY = shapeButton.top + (shapeButton.bottom - shapeButton.top) / 2;
+                sendMouse(WM_LBUTTONDOWN, shapeX, shapeY);
+                sendMouse(WM_LBUTTONUP, shapeX, shapeY);
+                pumpMessages();
+                clickShapeOk = screenshotOverlay->AnnotatingForTest();
+            }
             screenshotOverlay->Pump();
             const bool optionsOk = screenshotOverlay->AnnotatingForTest() &&
                                    screenshotOverlay->OptionButtonCountForTest() == 13;
@@ -1590,6 +1602,7 @@ int Run(const Options& options) {
             AddFlag(report, "APP_SCREENSHOT_SELECT_RIGHT_CLICK", rightClickOk);
             AddFlag(report, "APP_SCREENSHOT_SELECT_CLICK", clickSelectOk);
             AddFlag(report, "APP_SCREENSHOT_TOOLBAR", toolbarOk);
+            AddFlag(report, "APP_SCREENSHOT_TOOLBAR_CLICK", clickShapeOk);
             AddFlag(report, "APP_SCREENSHOT_OPTIONBAR", optionsOk);
             AddFlag(report, "APP_SCREENSHOT_ANNOTATE", annotated);
             AddFlag(report, "APP_SCREENSHOT_HOVER_PROOF", hoverProof);
@@ -1607,7 +1620,7 @@ int Run(const Options& options) {
             screenshotSelftestOk = proof && pinProof && saved && pinned && !pins.empty() &&
                                    latencyOk && overlayMemoryOk && afterCloseOk && dragOk &&
                                    moveOk && resizeOk && nudgeOk && rightClickOk && clickSelectOk &&
-                                   annotated && toolbarOk && optionsOk;
+                                   annotated && toolbarOk && optionsOk && clickShapeOk;
             log.Info(screenshotSelftestOk ? "screenshot selftest: ok"
                                           : "screenshot selftest: failed");
         }

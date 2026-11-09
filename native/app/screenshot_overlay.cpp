@@ -1674,12 +1674,13 @@ void ScreenshotOverlay::RenderOptionBar(core::FramePlan& plan) {
                                               Scale(1.0f) });
             }
             if (option.active) {
-                const float ring = Scale(1.0f);
-                plan.Add(core::StrokeEllipse{ Rect{ rect.left + ring, rect.top + Scale(2.0f),
-                                                    rect.right - ring,
-                                                    rect.bottom - Scale(2.0f) },
+                // 选中环要套在圆点上并保持正圆：按按钮整块套椭圆会被拉成竖椭圆，
+                // 看起来就是「颜色不圆」。
+                const float ring = Scale(3.0f);
+                plan.Add(core::StrokeEllipse{ Rect{ cx - dot - ring, cy - dot - ring,
+                                                    cx + dot + ring, cy + dot + ring },
                                               Color{ 0.184f, 0.486f, 0.965f, 1.0f },
-                                              Scale(2.0f) });
+                                              Scale(1.5f) });
             }
             continue;
         }

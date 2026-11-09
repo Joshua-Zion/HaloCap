@@ -211,8 +211,9 @@ void AddPathCommands(Gdiplus::GraphicsPath& path, const std::vector<core::PathCo
 }
 
 // 1.x 的图标是 160 单位的路径装进 200×200 的盒子，再缩到 20 DIP（App.xaml 的 Viewbox）。
+// 图标尺寸和按钮尺寸分开传：覆盖层的二级栏是 26 DIP 按钮，图标仍是 20 DIP。
 void DrawIcon(Gdiplus::Graphics& graphics, const RECT& rect, const char* name,
-              const Gdiplus::Color& color) {
+              const Gdiplus::Color& color, float iconSize) {
     if (name == nullptr) {
         return;
     }
@@ -220,11 +221,9 @@ void DrawIcon(Gdiplus::Graphics& graphics, const RECT& rect, const char* name,
     if (parsed == nullptr || !parsed->valid) {
         return;
     }
-    const float buttonSize = static_cast<float>(rect.bottom - rect.top);
-    const float size = buttonSize * (20.0f / 30.0f);
-    const float scale = size / 200.0f;
-    const float originX = (rect.left + rect.right) * 0.5f - size * 0.5f;
-    const float originY = (rect.top + rect.bottom) * 0.5f - size * 0.5f;
+    const float scale = iconSize / 200.0f;
+    const float originX = (rect.left + rect.right) * 0.5f - iconSize * 0.5f;
+    const float originY = (rect.top + rect.bottom) * 0.5f - iconSize * 0.5f;
 
     Gdiplus::SolidBrush brush(color);
     const auto draw = [&](const std::vector<core::PathCommand>& commands, bool evenOdd) {
@@ -476,7 +475,8 @@ void PinWindow::UpdateLayout() {
     const int pad = ScaleInt(4.0f);
     const int gap = ScaleInt(6.0f);
     toolbarHeight_ = ScaleInt(30.0f) + 2 * ScaleInt(4.0f);
-    optionHeight_ = ScaleInt(40.0f);
+    // 和截图覆盖层的二级栏同尺寸：按钮 26 DIP、高 34 DIP（kOptionButton/kOptionHeight）。
+    optionHeight_ = ScaleInt(34.0f);
     chromeHeight_ = annotating_ ? pad + toolbarHeight_ + gap + optionHeight_ + pad : 0;
 
     LayoutToolbar(0, 0);
@@ -690,12 +690,15 @@ void PinWindow::LayoutToolbar(int originX, int originY) {
         x += btn + gap;
     };
     const auto addSeparator = [&] {
+        // 与覆盖层同一套推进规则：分隔线两侧各留 4 DIP，线本身画 22 DIP 高。
+        const int margin = ScaleInt(4.0f);
+        x += margin - gap;
         PinButton line;
         line.separator = true;
-        line.rect = RECT{ x, originY + ScaleInt(10.0f), x + separator,
-                          originY + toolbarHeight_ - ScaleInt(10.0f) };
+        line.rect = RECT{ x, originY + pad + ScaleInt(4.0f), x + separator,
+                          originY + pad + btn - ScaleInt(4.0f) };
         toolbar_.push_back(line);
-        x += separator + gap * 2;
+        x += separator + margin;
     };
 
     const bool shapeActive = tool_ == core::AnnotationTool::Rectangle ||
@@ -730,11 +733,13 @@ void PinWindow::LayoutOptionBar(int originX, int originY) {
         optionWidth_ = 0;
         return;
     }
-    const int btn = ScaleInt(30.0f);
+    // 与 ScreenshotOverlay::LayoutOptionBar 对齐：按钮 26 DIP、色板格 22 DIP、数值格 30 DIP。
+    const int btn = ScaleInt(26.0f);
+    const int colorWidth = ScaleInt(22.0f);
     const int gap = ScaleInt(2.0f);
     const int pad = ScaleInt(4.0f);
     const int separatorWidth = std::max(1, ScaleInt(1.0f));
-    const int valueWidth = ScaleInt(24.0f);
+    const int valueWidth = ScaleInt(30.0f);
 
     int x = originX + pad;
     const auto add = [&](PinAction action, const char* icon, bool active, bool enabled) {
@@ -749,29 +754,31 @@ void PinWindow::LayoutOptionBar(int originX, int originY) {
     };
     const auto addDot = [&](int index) {
         PinButton button;
-        button.rect = RECT{ x, originY + pad, x + btn, originY + pad + btn };
+        button.rect = RECT{ x, originY + pad, x + colorWidth, originY + pad + btn };
         button.action = PinAction::Color;
         button.payload = index;
         button.dot = true;
         button.dotColor = core::annotation_defaults::PaletteColor(index);
         button.active = style_.color == button.dotColor;
         optionButtons_.push_back(button);
-        x += btn + gap;
+        x += colorWidth + gap;
     };
     const auto addValue = [&](const std::wstring& text) {
         PinButton button;
         button.rect = RECT{ x, originY + pad, x + valueWidth, originY + pad + btn };
         button.text = text;
         optionButtons_.push_back(button);
-        x += valueWidth;
+        x += valueWidth + gap;
     };
     const auto addSeparator = [&] {
+        const int margin = ScaleInt(4.0f);
+        x += margin - gap;
         PinButton line;
         line.separator = true;
-        line.rect = RECT{ x, originY + ScaleInt(10.0f), x + separatorWidth,
-                          originY + optionHeight_ - ScaleInt(10.0f) };
+        line.rect = RECT{ x, originY + pad + ScaleInt(4.0f), x + separatorWidth,
+                          originY + pad + btn - ScaleInt(4.0f) };
         optionButtons_.push_back(line);
-        x += separatorWidth + gap * 2;
+        x += separatorWidth + margin;
     };
 
     const bool showColors = tool_ != core::AnnotationTool::Mosaic &&
@@ -877,16 +884,20 @@ void PinWindow::DrawChrome(Gdiplus::Graphics& graphics) const {
                                 static_cast<float>(button.rect.top),
                                 static_cast<float>(button.rect.right - button.rect.left),
                                 static_cast<float>(button.rect.bottom - button.rect.top));
-            if (button.active) {
-                Gdiplus::GraphicsPath path;
-                BuildRoundRect(path, rect, Scale(7.0f));
-                Gdiplus::SolidBrush brush(ToGp(kAccent));
-                graphics.FillPath(&brush, &path);
-            } else if (static_cast<int>(i) == hovered) {
-                Gdiplus::GraphicsPath path;
-                BuildRoundRect(path, rect, Scale(7.0f));
-                Gdiplus::SolidBrush brush(Gdiplus::Color(0x14, 0, 0, 0));
-                graphics.FillPath(&brush, &path);
+            // 色板格不画整块底色：选中态是套在圆点上的正圆环（和覆盖层一致），
+            // 给整格铺蓝色圆角块会让色点看起来是方的。
+            if (!button.dot) {
+                if (button.active) {
+                    Gdiplus::GraphicsPath path;
+                    BuildRoundRect(path, rect, Scale(7.0f));
+                    Gdiplus::SolidBrush brush(ToGp(kAccent));
+                    graphics.FillPath(&brush, &path);
+                } else if (static_cast<int>(i) == hovered) {
+                    Gdiplus::GraphicsPath path;
+                    BuildRoundRect(path, rect, Scale(7.0f));
+                    Gdiplus::SolidBrush brush(Gdiplus::Color(0x14, 0, 0, 0));
+                    graphics.FillPath(&brush, &path);
+                }
             }
 
             if (button.dot) {
@@ -897,17 +908,19 @@ void PinWindow::DrawChrome(Gdiplus::Graphics& graphics) const {
                 graphics.FillEllipse(&dot, cx - radius, cy - radius, radius * 2.0f,
                                      radius * 2.0f);
                 if (button.active) {
-                    Gdiplus::Pen ring(ToGp(kInkNormal), Scale(1.5f));
-                    graphics.DrawEllipse(&ring, cx - radius - Scale(2.5f),
-                                         cy - radius - Scale(2.5f),
-                                         (radius + Scale(2.5f)) * 2.0f,
-                                         (radius + Scale(2.5f)) * 2.0f);
+                    // 与覆盖层一致：正圆环套在点上，别按整格画椭圆。
+                    Gdiplus::Pen ring(ToGp(kAccent), Scale(1.5f));
+                    graphics.DrawEllipse(&ring, cx - radius - Scale(3.0f),
+                                         cy - radius - Scale(3.0f),
+                                         (radius + Scale(3.0f)) * 2.0f,
+                                         (radius + Scale(3.0f)) * 2.0f);
                 }
                 continue;
             }
 
             if (!button.text.empty()) {
-                Gdiplus::Font font(fontFamilyW_.c_str(), Scale(11.5f),
+                // 覆盖层二级栏的数值是 12 DIP 常规字重。
+                Gdiplus::Font font(fontFamilyW_.c_str(), Scale(12.0f),
                                    Gdiplus::FontStyleRegular, Gdiplus::UnitPixel);
                 Gdiplus::StringFormat format;
                 format.SetAlignment(Gdiplus::StringAlignmentCenter);
@@ -924,7 +937,7 @@ void PinWindow::DrawChrome(Gdiplus::Graphics& graphics) const {
                 button.active
                     ? core::Color{ 1.0f, 1.0f, 1.0f, alpha }
                     : core::Color{ kInkNormal.r, kInkNormal.g, kInkNormal.b, alpha };
-            DrawIcon(graphics, button.rect, button.icon, ToGp(ink));
+            DrawIcon(graphics, button.rect, button.icon, ToGp(ink), Scale(20.0f));
         }
     };
     drawButtons(toolbar_, hoveredToolbar_);
@@ -953,7 +966,7 @@ void PinWindow::DrawHoverToolbar(Gdiplus::Graphics& graphics) const {
     const auto drawButton = [&](const RECT& local, const char* icon) {
         RECT native{ contentLeft_ + local.left, contentTop_ + local.top,
                      contentLeft_ + local.right, contentTop_ + local.bottom };
-        DrawIcon(graphics, native, icon, Gdiplus::Color(255, 0xE9, 0xED, 0xF4));
+        DrawIcon(graphics, native, icon, Gdiplus::Color(255, 0xE9, 0xED, 0xF4), Scale(20.0f));
     };
     drawButton(copyRect_, "Copy");
     drawButton(saveRect_, "Save");

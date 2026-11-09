@@ -312,6 +312,17 @@ void AppendAnnotationPlan(const std::vector<Annotation>& annotations,
                 plan.Add(Segment{ Placed(annotation.points[i - 1], options),
                                   Placed(annotation.points[i], options), style.color, thickness });
             }
+            // 段与段之间是平头（D2D DrawLine 默认），粗笔在拐点会露出缺口，
+            // 看着像「断触」；每个落点补一个圆点当圆角接头与圆头笔尖。
+            if (thickness > 2.5f) {
+                const float radius = thickness * 0.5f;
+                for (const Point& point : annotation.points) {
+                    const Point placed = Placed(point, options);
+                    plan.Add(FillEllipse{ Rect{ placed.x - radius, placed.y - radius,
+                                                placed.x + radius, placed.y + radius },
+                                          style.color });
+                }
+            }
             break;
         }
 
@@ -322,6 +333,14 @@ void AppendAnnotationPlan(const std::vector<Annotation>& annotations,
             for (std::size_t i = 1; i < annotation.points.size(); ++i) {
                 plan.Add(Segment{ Placed(annotation.points[i - 1], options),
                                   Placed(annotation.points[i], options), color, thickness });
+            }
+            // 荧光笔很粗，拐点的平头缺口最明显：补圆点做圆角接头。
+            const float radius = thickness * 0.5f;
+            for (const Point& point : annotation.points) {
+                const Point placed = Placed(point, options);
+                plan.Add(FillEllipse{ Rect{ placed.x - radius, placed.y - radius,
+                                            placed.x + radius, placed.y + radius },
+                                      color });
             }
             break;
         }

@@ -200,6 +200,14 @@ private:
     void RenderCrosshair(core::FramePlan& plan);
     void RenderHint(core::FramePlan& plan);
     void UpdateMosaicTile(core::Annotation& annotation);
+    // 马赛克笔：拖到哪就把哪一小块像素化，一笔由若干小方块组成。
+    void PaintMosaicBlock(core::Point local);
+    float MosaicBrushRadius() const {
+        const float base = static_cast<float>(style_.mosaicBlockPx) * 2.0f;
+        return (base < 10.0f ? 10.0f : base) * uiScale_;
+    }
+    bool mosaicPainting_ = false;
+    core::Point lastMosaicPoint_{};
     void RunOcr();
     void OpenTextEditor(core::Point localPoint);
     void CommitTextEditor();

@@ -230,7 +230,14 @@ void TestPlan() {
     highlighter.style = Style(core::AnnotationTool::Highlighter);
     highlighters.push_back(highlighter);
     core::AppendAnnotationPlan(highlighters, options, highlighterPlan);
-    CheckEqual(static_cast<long long>(highlighterPlan.ItemCount()), 2, "highlighter has two segments");
+    // 粗笔在拐点补了圆点做圆角接头，所以这里数「线段」而不是总图元数。
+    int highlighterSegments = 0;
+    for (const core::Item& item : highlighterPlan.Items()) {
+        if (std::holds_alternative<core::Segment>(item)) {
+            ++highlighterSegments;
+        }
+    }
+    CheckEqual(highlighterSegments, 2, "highlighter has two segments");
     if (const auto* segment = std::get_if<core::Segment>(&highlighterPlan.Items()[0])) {
         CheckNear(segment->color.a, core::annotation_defaults::kHighlighterAlpha, 0.001f,
                   "highlighter alpha");

@@ -88,7 +88,7 @@ bool PinWindow::Create(const std::uint8_t* bgra, int width, int height, int scre
     const int outerWidth = width + 2 * (kBorderPx + kGlowPx);
     const int outerHeight = height + 2 * (kBorderPx + kGlowPx);
 
-    const DWORD exStyle = WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
+    const DWORD exStyle = WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW;
     window_ = CreateWindowExW(exStyle, kClassName, L"HaloCap pin", WS_POPUP,
                               screenX - (kGlowPx + kBorderPx),
                               screenY - (kGlowPx + kBorderPx), outerWidth, outerHeight, nullptr,
@@ -97,6 +97,7 @@ bool PinWindow::Create(const std::uint8_t* bgra, int width, int height, int scre
         return false;
     }
 
+    // 可激活：1.x 的贴图窗口按 Esc 关闭，不激活就收不到键盘。
     ShowWindow(static_cast<HWND>(window_), SW_SHOWNOACTIVATE);
     Render();
     return true;
@@ -406,6 +407,7 @@ LRESULT PinWindow::Handle(HWND window, UINT message, WPARAM wParam, LPARAM lPara
             return 0;
         }
 
+        SetForegroundWindow(window);
         dragging_ = true;
         GetCursorPos(&dragOrigin_);
         RECT rect{};
@@ -425,6 +427,13 @@ LRESULT PinWindow::Handle(HWND window, UINT message, WPARAM wParam, LPARAM lPara
     case WM_LBUTTONDBLCLK:
         Close();
         return 0;
+
+    case WM_KEYDOWN:
+        if (wParam == VK_ESCAPE) {
+            Close();
+            return 0;
+        }
+        break;
 
     case WM_DESTROY:
         window_ = nullptr;

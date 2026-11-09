@@ -732,6 +732,21 @@ void ScreenshotOverlay::OnMouseMove(POINT point) {
         return;
     }
 
+    if (mosaicPainting_) {
+        const Rect bounds = selection_.Bounds();
+        const Point local{ static_cast<float>(point.x) - bounds.left,
+                           static_cast<float>(point.y) - bounds.top };
+        const float dx = local.x - lastMosaicPoint_.x;
+        const float dy = local.y - lastMosaicPoint_.y;
+        const float brush = MosaicBrushRadius();
+        if (dx * dx + dy * dy >= brush * brush * 0.25f) {
+            lastMosaicPoint_ = local;
+            PaintMosaicBlock(local);
+            dirty_ = true;
+        }
+        return;
+    }
+
     if (drawing_) {
         const Rect bounds = selection_.Bounds();
         const Point local{ static_cast<float>(point.x) - bounds.left,
@@ -1037,6 +1052,15 @@ void ScreenshotOverlay::OnLeftButtonDown(POINT point) {
         return;
     }
 
+    if (tool_ == AnnotationTool::Mosaic) {
+        // 马赛克笔：按下就落第一块，之后跟着鼠标一路抹。
+        mosaicPainting_ = true;
+        lastMosaicPoint_ = local;
+        PaintMosaicBlock(local);
+        dirty_ = true;
+        return;
+    }
+
     if (tool_ == AnnotationTool::Text) {
         // 点在已有的文字上就改那一条（1.x 的行为），否则新建一条；支持任意多条。
         int hitIndex = -1;
@@ -1117,6 +1141,12 @@ void ScreenshotOverlay::OnLeftButtonUp(POINT point) {
     if (movingAnnotation_) {
         movingAnnotation_ = false;
         document_.CommitAnnotationChange();
+        dirty_ = true;
+        return;
+    }
+
+    if (mosaicPainting_) {
+        mosaicPainting_ = false;
         dirty_ = true;
         return;
     }
@@ -2430,6 +2460,22 @@ void ScreenshotOverlay::RunOcr() {
     const core::Rect selection = selection_.Bounds();
     options_.onOcr(bgra.data(), width, height, static_cast<int>(selection.left),
                    static_cast<int>(selection.top));
+}
+
+void ScreenshotOverlay::PaintMosaicBlock(core::Point local) {
+    const Rect bounds = selection_.Bounds();
+    if (bounds.IsEmpty() || local.x < 0.0f || local.y < 0.0f ||
+        local.x > bounds.Width() || local.y > bounds.Height()) {
+        return;
+    }
+    const float radius = MosaicBrushRadius();
+    document_.Begin(AnnotationTool::Mosaic, style_);
+    document_.AddPoint(core::Point{ local.x - radius, local.y - radius });
+    document_.SetEnd(core::Point{ local.x + radius, local.y + radius });
+    document_.Commit();
+    if (!document_.Items().empty()) {
+        UpdateMosaicTile(const_cast<core::Annotation&>(document_.Items().back()));
+    }
 }
 
 void ScreenshotOverlay::UpdateMosaicTile(core::Annotation& annotation) {

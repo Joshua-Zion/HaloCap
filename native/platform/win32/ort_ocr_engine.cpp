@@ -281,10 +281,23 @@ core::ocr::OcrResult OrtOcrEngine::Recognize(const core::ocr::OcrImage& image,
         std::fprintf(stderr, "boxes=%zu\n", boxes.size());
     }
 
-    std::vector<core::ocr::OcrLine> lines;
-    lines.reserve(boxes.size());
+    // det 常在破折号/引号/空格处把一行切成几段。先按行聚合，再把挨得近的碎片并回
+    // 一个框整行识别：分开识别会丢掉切口处的字（例如破折号），整行识别上下文也更完整。
+    std::vector<core::Rect> recBoxes;
+    recBoxes.reserve(boxes.size());
+    for (const std::vector<std::size_t>& row : core::ocr::GroupTextBoxesIntoLines(boxes)) {
+        for (const core::Rect& box : core::ocr::MergeRowBoxes(boxes, row)) {
+            recBoxes.push_back(box);
+        }
+    }
+    if (std::getenv("HALOCAP_OCR_DEBUG") != nullptr) {
+        std::fprintf(stderr, "rec boxes=%zu\n", recBoxes.size());
+    }
 
-    for (const core::Rect& box : boxes) {
+    std::vector<core::ocr::OcrLine> lines;
+    lines.reserve(recBoxes.size());
+
+    for (const core::Rect& box : recBoxes) {
         if (static_cast<int>(lines.size()) >= options.maxLines) {
             break;
         }

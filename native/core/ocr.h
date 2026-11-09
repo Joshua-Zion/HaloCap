@@ -3,6 +3,7 @@
 #include "display_list.h"
 #include "geometry.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -74,7 +75,20 @@ struct RecInput {
 
 RecInput PrepareRecInput(const OcrImage& image, Rect box, int recHeight);
 
-// logits 形状 [timeSteps, classes]，第 0 类为 blank。
+// 按阅读顺序把检测框聚成行：竖直中心相近的算同一行，行内按 left 排序，行间按 top 排序。
+// 返回的是 boxes 的下标，行内下标已按 left 排好。
+// 用中心距而不是「与首个框的重叠」判定：det 的 unclip 会把相邻两行的框各撑大一圈，
+// 两行在竖直方向蹭到 6 px 就会被旧逻辑并成一行，再按 x 排序，整句顺序就乱了。
+std::vector<std::vector<std::size_t>> GroupTextBoxesIntoLines(const std::vector<Rect>& boxes,
+                                                              float lineTolerance = 6.0f);
+
+// 把一行里挨得很近的碎片框并成一个框（用于整行识别）。det 常在破折号、引号处把
+// 一行切成两段，分开识别会丢掉切口处的字；gapRatio 以较矮框的高度为单位。
+std::vector<Rect> MergeRowBoxes(const std::vector<Rect>& boxes,
+                                const std::vector<std::size_t>& row, float gapRatio = 2.5f);
+
+// logits 形状 [timeSteps, classes]，第 0 类为 blank。confidence 是输出字符的平均概率
+// （与 1.x RapidOcr 的 TextScore 同语义）。
 std::string DecodeCtc(const float* logits, int timeSteps, int classes,
                       const std::vector<std::string>& dictionary, float* confidence);
 

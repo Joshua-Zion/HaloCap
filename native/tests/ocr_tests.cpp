@@ -137,6 +137,21 @@ void TestDecodeCtc() {
     CheckTrue(text == "AB", "CTC collapses blanks and repeated characters");
     CheckTrue(confidence > 0.5f, "CTC confidence is the softmax of the winning class");
 
+    // 已 softmax 的两行：第一字符 0.9、第二字符 0.4 → 置信度取平均 0.65，不是最低分 0.4。
+    // 1.x RapidOcr 的 TextScore 就是块内字符分均值：一个难字不该把整行判死。
+    std::vector<float> mixed(static_cast<std::size_t>(3) * classes, 0.0f);
+    mixed[0 * classes + 0] = 0.1f;
+    mixed[0 * classes + 1] = 0.9f;
+    mixed[1 * classes + 0] = 1.0f;
+    mixed[2 * classes + 0] = 0.35f;
+    mixed[2 * classes + 2] = 0.4f;
+    mixed[2 * classes + 3] = 0.25f;
+    float meanConfidence = 0.0f;
+    const std::string mixedText =
+        ocr::DecodeCtc(mixed.data(), 3, classes, dictionary, &meanConfidence);
+    CheckTrue(mixedText == "AB", "mixed text decodes");
+    CheckNear(meanConfidence, 0.65f, 0.02f, "CTC confidence is the mean of character scores");
+
     // 空 logits 返回空串而不是崩。
     float emptyConfidence = 1.0f;
     CheckTrue(ocr::DecodeCtc(nullptr, 0, 0, dictionary, &emptyConfidence).empty(), "empty logits");
@@ -204,6 +219,72 @@ void TestBuildResultSanitize() {
     }
 }
 
+// 真机回归：一行在破折号处被 det 切成两段，下一行的短框被 unclip 撑高后，
+// 与上一行的框竖直方向蹭到 6 px。旧逻辑（与首框的重叠 >= 6px 就并进同一行）
+// 会把下一行并进来，再按 left 排序，下一行（left 2.9 < 3.0）反而排到了最前，
+// 整句顺序就乱了——用户截图里 "中)。" 跑到第一行就是这个原因。
+void TestBuildResultKeepsTightRowOrder() {
+    std::vector<ocr::OcrLine> lines;
+    lines.push_back(
+        { "原图预览不再画红色识别框", core::Rect{ 3.0f, 0.0f, 302.0f, 15.8f }, 0.9f });
+    lines.push_back({ "现在只有原图本身；", core::Rect{ 325.0f, 0.6f, 739.0f, 11.4f }, 0.9f });
+    lines.push_back({ "命中)。", core::Rect{ 2.9f, 9.8f, 52.1f, 35.0f }, 0.8f });
+
+    const ocr::OcrResult result = ocr::BuildResult(lines);
+    CheckEqual(static_cast<long long>(result.lines.size()), 3, "tight rows stay three lines");
+    CheckTrue(result.plainText ==
+                  "原图预览不再画红色识别框\r\n现在只有原图本身；\r\n命中)。",
+              "tight rows keep reading order");
+    if (!result.lines.empty()) {
+        CheckTrue(result.lines.back().text == "命中)。", "second row stays last");
+    }
+}
+
+// 行聚类：同一行的碎片按 left 排序，竖直中心拉开半个行高以上就分行。
+void TestGroupTextBoxesIntoLines() {
+    std::vector<core::Rect> boxes;
+    boxes.push_back(core::Rect{ 300.0f, 1.0f, 700.0f, 15.0f });   // 0: 第一行右段
+    boxes.push_back(core::Rect{ 10.0f, 0.0f, 290.0f, 16.0f });    // 1: 第一行左段
+    boxes.push_back(core::Rect{ 10.0f, 20.0f, 200.0f, 36.0f });   // 2: 第二行
+    boxes.push_back(core::Rect{ 10.0f, 40.0f, 200.0f, 56.0f });   // 3: 第三行
+
+    const std::vector<std::vector<std::size_t>> rows = ocr::GroupTextBoxesIntoLines(boxes);
+    CheckEqual(static_cast<long long>(rows.size()), 3, "three rows");
+    if (rows.size() == 3) {
+        CheckEqual(static_cast<long long>(rows[0].size()), 2, "first row has two fragments");
+        if (rows[0].size() == 2) {
+            CheckEqual(static_cast<long long>(rows[0][0]), 1, "row sorts by left (first)");
+            CheckEqual(static_cast<long long>(rows[0][1]), 0, "row sorts by left (second)");
+        }
+        CheckEqual(static_cast<long long>(rows[1][0]), 2, "second row index");
+        CheckEqual(static_cast<long long>(rows[2][0]), 3, "third row index");
+    }
+}
+
+// 识别前合并：间距 2 倍行高的破折号切段要并回整行；隔了 8 倍行高的列不并。
+void TestMergeRowBoxes() {
+    std::vector<core::Rect> boxes;
+    boxes.push_back(core::Rect{ 0.0f, 0.0f, 300.0f, 16.0f });
+    boxes.push_back(core::Rect{ 322.0f, 1.0f, 700.0f, 15.0f });
+    boxes.push_back(core::Rect{ 860.0f, 0.0f, 1000.0f, 16.0f });
+
+    const std::vector<std::size_t> row{ 0, 1, 2 };
+    const std::vector<core::Rect> merged = ocr::MergeRowBoxes(boxes, row, 2.5f);
+    CheckEqual(static_cast<long long>(merged.size()), 2, "adjacent fragments merge before rec");
+    if (merged.size() == 2) {
+        CheckNear(merged[0].left, 0.0f, 0.01f, "merged box left");
+        CheckNear(merged[0].right, 700.0f, 0.01f, "merged box right");
+        CheckNear(merged[1].left, 860.0f, 0.01f, "distant column stays separate");
+    }
+
+    // 高度差超过 1.6 倍的（标题 + 小图标）不并。
+    std::vector<core::Rect> uneven;
+    uneven.push_back(core::Rect{ 0.0f, 0.0f, 120.0f, 30.0f });
+    uneven.push_back(core::Rect{ 130.0f, 10.0f, 160.0f, 24.0f });
+    const std::vector<core::Rect> kept = ocr::MergeRowBoxes(uneven, { 0, 1 }, 2.5f);
+    CheckEqual(static_cast<long long>(kept.size()), 2, "uneven heights stay separate");
+}
+
 }
 
 int main() {
@@ -216,6 +297,9 @@ int main() {
     TestBuildResult();
     TestBuildResultMergesRowFragments();
     TestBuildResultSanitize();
+    TestBuildResultKeepsTightRowOrder();
+    TestGroupTextBoxesIntoLines();
+    TestMergeRowBoxes();
 
     if (failures != 0) {
         std::printf("OCR_TESTS=FAILED %d/%d\n", failures, checks);

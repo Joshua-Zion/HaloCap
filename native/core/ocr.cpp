@@ -324,8 +324,8 @@ std::string DecodeCtc(const float* logits, int timeSteps, int classes,
     }
 
     std::string text;
-    float minimum = 1.0f;
-    bool hasCharacter = false;
+    double confidenceSum = 0.0;
+    int confidenceCount = 0;
     int previous = -1;
 
     for (int t = 0; t < timeSteps; ++t) {
@@ -364,8 +364,8 @@ std::string DecodeCtc(const float* logits, int timeSteps, int classes,
             }
             probability = static_cast<float>(1.0 / denominator);
         }
-        minimum = hasCharacter ? std::min(minimum, probability) : probability;
-        hasCharacter = true;
+        confidenceSum += probability;
+        ++confidenceCount;
 
         const std::size_t dictionaryIndex = static_cast<std::size_t>(best - 1);
         if (dictionaryIndex < dictionary.size()) {
@@ -373,10 +373,101 @@ std::string DecodeCtc(const float* logits, int timeSteps, int classes,
         }
     }
 
+    // 取输出字符的平均概率，和 1.x RapidOcr 的 TextScore（块内字符分均值）同语义。
+    // 用最低分会因为一个难字把整行丢掉，长行尤其吃亏。
     if (confidence != nullptr) {
-        *confidence = hasCharacter ? minimum : 0.0f;
+        *confidence = confidenceCount > 0
+                          ? static_cast<float>(confidenceSum / confidenceCount)
+                          : 0.0f;
     }
     return text;
+}
+
+std::vector<std::vector<std::size_t>> GroupTextBoxesIntoLines(const std::vector<Rect>& boxes,
+                                                              float lineTolerance) {
+    std::vector<std::vector<std::size_t>> rows;
+    if (boxes.empty()) {
+        return rows;
+    }
+
+    const auto centerY = [&boxes](std::size_t index) {
+        return (boxes[index].top + boxes[index].bottom) * 0.5f;
+    };
+    const auto height = [&boxes](std::size_t index) {
+        return std::max(1.0f, boxes[index].Height());
+    };
+
+    std::vector<std::size_t> order(boxes.size());
+    std::iota(order.begin(), order.end(), std::size_t{ 0 });
+    std::sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b) {
+        if (centerY(a) != centerY(b)) {
+            return centerY(a) < centerY(b);
+        }
+        if (boxes[a].left != boxes[b].left) {
+            return boxes[a].left < boxes[b].left;
+        }
+        return a < b;
+    });
+
+    std::size_t start = 0;
+    while (start < order.size()) {
+        const float rowCenter = centerY(order[start]);
+        float rowHeight = height(order[start]);
+        std::size_t end = start + 1;
+        while (end < order.size()) {
+            // 同一行的碎片的中心几乎重合；相邻两行的中心至少差半个行高。
+            // 用较矮框的一半做阈值：行里混进一个被 det 撑高的大框时，
+            // 不会因此把下一行也吸进来。
+            const float tolerance =
+                std::max(lineTolerance, 0.5f * std::min(rowHeight, height(order[end])));
+            if (centerY(order[end]) - rowCenter > tolerance) {
+                break;
+            }
+            rowHeight = std::max(rowHeight, height(order[end]));
+            ++end;
+        }
+
+        std::vector<std::size_t> row(order.begin() + static_cast<std::ptrdiff_t>(start),
+                                     order.begin() + static_cast<std::ptrdiff_t>(end));
+        std::sort(row.begin(), row.end(), [&](std::size_t a, std::size_t b) {
+            if (boxes[a].left != boxes[b].left) {
+                return boxes[a].left < boxes[b].left;
+            }
+            return boxes[a].top < boxes[b].top;
+        });
+        rows.push_back(std::move(row));
+        start = end;
+    }
+    return rows;
+}
+
+std::vector<Rect> MergeRowBoxes(const std::vector<Rect>& boxes,
+                                const std::vector<std::size_t>& row, float gapRatio) {
+    std::vector<Rect> merged;
+    merged.reserve(row.size());
+    for (const std::size_t index : row) {
+        const Rect& piece = boxes[index];
+        if (!merged.empty()) {
+            Rect& last = merged.back();
+            const float lastHeight = std::max(1.0f, last.Height());
+            const float pieceHeight = std::max(1.0f, piece.Height());
+            const float shorter = std::min(lastHeight, pieceHeight);
+            const float taller = std::max(lastHeight, pieceHeight);
+            const float centerDelta =
+                std::fabs((last.top + last.bottom) - (piece.top + piece.bottom)) * 0.5f;
+            const float gap = piece.left - last.right;
+            if (gap <= shorter * gapRatio && shorter >= taller * 0.6f &&
+                centerDelta <= shorter * 0.35f) {
+                last.left = std::min(last.left, piece.left);
+                last.top = std::min(last.top, piece.top);
+                last.right = std::max(last.right, piece.right);
+                last.bottom = std::max(last.bottom, piece.bottom);
+                continue;
+            }
+        }
+        merged.push_back(piece);
+    }
+    return merged;
 }
 
 OcrResult BuildResult(std::vector<OcrLine> lines, float lineTolerance) {
@@ -398,41 +489,27 @@ OcrResult BuildResult(std::vector<OcrLine> lines, float lineTolerance) {
         lines = std::move(kept);
     }
 
-    std::sort(lines.begin(), lines.end(), [](const OcrLine& a, const OcrLine& b) {
-        return a.box.top < b.box.top;
-    });
+    std::vector<Rect> boxes;
+    boxes.reserve(lines.size());
+    for (const OcrLine& line : lines) {
+        boxes.push_back(line.box);
+    }
 
     std::vector<OcrLine> ordered;
     ordered.reserve(lines.size());
-
-    std::size_t startIndex = 0;
-    while (startIndex < lines.size()) {
-        // 同一行 = 垂直重叠超过较矮那个框的一半。用重叠而不是中心距，
-        // 是因为同一行里字号可能差一倍（标题 + 正文），中心距会把它们拆开。
-        const Rect rowBox = lines[startIndex].box;
-        std::size_t end = startIndex + 1;
-        while (end < lines.size()) {
-            const Rect other = lines[end].box;
-            const float overlap = std::min(rowBox.bottom, other.bottom) -
-                                  std::max(rowBox.top, other.top);
-            const float smaller = std::max(1.0f, std::min(rowBox.Height(), other.Height()));
-            if (overlap < smaller * 0.5f && overlap < lineTolerance) {
-                break;
-            }
-            ++end;
-        }
-
-        std::vector<OcrLine> row(lines.begin() + static_cast<std::ptrdiff_t>(startIndex),
-                                 lines.begin() + static_cast<std::ptrdiff_t>(end));
-        std::sort(row.begin(), row.end(), [](const OcrLine& a, const OcrLine& b) {
-            return a.box.left < b.box.left;
-        });
-
+    for (const std::vector<std::size_t>& row : GroupTextBoxesIntoLines(boxes, lineTolerance)) {
         // 1.x（RapidOcr）一个文本框就是一整行；我们的连通域检测常把同一行按词拆开。
         // 这里把同一行里水平间距小于 0.6 倍行高的碎片拼回一行，拉丁词之间补一个空格。
+        std::vector<const OcrLine*> pieces;
+        pieces.reserve(row.size());
+        for (const std::size_t index : row) {
+            pieces.push_back(&lines[index]);
+        }
+
         std::vector<OcrLine> merged;
-        merged.reserve(row.size());
-        for (const OcrLine& piece : row) {
+        merged.reserve(pieces.size());
+        for (const OcrLine* piecePtr : pieces) {
+            const OcrLine& piece = *piecePtr;
             if (!merged.empty()) {
                 OcrLine& last = merged.back();
                 const float gap = piece.box.left - last.box.right;
@@ -462,8 +539,6 @@ OcrResult BuildResult(std::vector<OcrLine> lines, float lineTolerance) {
             merged.push_back(piece);
         }
         ordered.insert(ordered.end(), merged.begin(), merged.end());
-
-        startIndex = end;
     }
 
     result.lines = std::move(ordered);

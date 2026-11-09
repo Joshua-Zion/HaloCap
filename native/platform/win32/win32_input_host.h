@@ -71,6 +71,10 @@ private:
     std::deque<int> firedTokens_;
     std::vector<std::pair<int, core::HotkeySpec>> registered_;
 
+    // 被钩子吞掉的键由这里补发；记下最近一次，防止个别系统版本同时又给一条 WM_HOTKEY。
+    int lastHookedToken_ = 0;
+    std::uint64_t lastHookedMs_ = 0;
+
     void* window_ = nullptr;
     void* hook_ = nullptr;
     bool interceptionIncludesInjected_ = false;

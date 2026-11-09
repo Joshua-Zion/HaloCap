@@ -1971,6 +1971,7 @@ int Run(const Options& options) {
         bool delivered = false;
         bool restored = false;
         bool saveBlockedShown = false;
+        bool swallowDelivered = false;
         int deliveredToken = 0;
         std::string errorShown;
 
@@ -2007,6 +2008,16 @@ int Run(const Options& options) {
                 drain();
                 delivered = tapAndWait(kNewKey, deliveredToken) &&
                             deliveredToken == kTokenScreenshot;
+                // 物理按键会被拦截钩子吞掉（默认放过注入的事件），把注入也纳入拦截范围，
+                // 才能测到真实路径：「吞掉之后动作必须由钩子补发」。这条就是单键热键
+                // 明明注册成功却按了没反应的那个 bug。
+                input.SetInterception({ core::HotkeySpec{ core::KeySymbol::F9, 0 } });
+                input.SetInterceptionIncludesInjected(true);
+                drain();
+                int swallowedToken = 0;
+                swallowDelivered = tapAndWait(kNewKey, swallowedToken) &&
+                                   swallowedToken == kTokenScreenshot;
+                input.SetInterceptionIncludesInjected(false);
                 if (settingsWindow->Valid()) {
                     settingsWindow->Close();
                 }
@@ -2029,9 +2040,10 @@ int Run(const Options& options) {
         AddInt(report, "APP_HOTKEY_LIVE_TOKEN", deliveredToken);
         AddFlag(report, "APP_HOTKEY_LIVE_RESTORED", restored);
         AddFlag(report, "APP_HOTKEY_LIVE_SAVE_BLOCKED_HINT", saveBlockedShown);
+        AddFlag(report, "APP_HOTKEY_LIVE_SWALLOWED_DELIVERS", swallowDelivered);
         AddText(report, "APP_HOTKEY_LIVE_ERROR", errorShown.empty() ? "none" : errorShown);
         hotkeyLiveOk = inputStarted && opened && captured && saved && delivered && restored &&
-                       saveBlockedShown;
+                       saveBlockedShown && swallowDelivered;
         log.Info(hotkeyLiveOk ? "hotkey live selftest: ok" : "hotkey live selftest: failed");
         running = false;
     }

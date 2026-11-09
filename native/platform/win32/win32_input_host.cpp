@@ -319,6 +319,18 @@ LRESULT Win32InputHost::HandleHook(int code, WPARAM wParam, LPARAM lParam) {
     // 表现是「偶尔拦不住」，而日志里什么都看不到。
     if (decision == core::SwallowDecision::Swallow) {
         ++swallowed_;
+        // 关键：键被吞掉之后系统就不会再产生 WM_HOTKEY 了。单键热键恰恰要靠吞掉它
+        // 才能独占（设置页那句「单键会独占该键」），所以动作必须在这里补发——
+        // 否则就是「注册成功、按了没反应」。
+        for (const auto& entry : registered_) {
+            if (core::MatchesHotkey(event, entry.second)) {
+                firedTokens_.push_back(entry.first);
+                ++hotkeyDeliveries_;
+                lastHookedToken_ = entry.first;
+                lastHookedMs_ = GetTickCount64();
+                break;
+            }
+        }
         return 1;
     }
 
@@ -346,7 +358,13 @@ LRESULT CALLBACK Win32InputHost::WindowProc(HWND window, UINT message, WPARAM wP
     auto* self = reinterpret_cast<Win32InputHost*>(GetWindowLongPtrW(window, GWLP_USERDATA));
 
     if (message == WM_HOTKEY && self != nullptr) {
-        self->firedTokens_.push_back(static_cast<int>(wParam));
+        const int token = static_cast<int>(wParam);
+        // 刚由钩子补发过的同一把就别再来一次。
+        if (token == self->lastHookedToken_ &&
+            GetTickCount64() - self->lastHookedMs_ < 200) {
+            return 0;
+        }
+        self->firedTokens_.push_back(token);
         ++self->hotkeyDeliveries_;
         return 0;
     }

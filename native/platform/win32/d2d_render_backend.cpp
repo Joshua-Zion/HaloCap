@@ -423,7 +423,20 @@ void D2dRenderBackend::DrawPath(const core::PathShape& shape) {
         }
     }
 
-    dc_->FillGeometry(geometry.Get(), BrushFor(shape.color));
+    if (shape.strokeWidth > 0.0f) {
+        if (!roundStroke_) {
+            D2D1_STROKE_STYLE_PROPERTIES properties{};
+            properties.startCap = D2D1_CAP_STYLE_ROUND;
+            properties.endCap = D2D1_CAP_STYLE_ROUND;
+            properties.dashCap = D2D1_CAP_STYLE_ROUND;
+            properties.lineJoin = D2D1_LINE_JOIN_ROUND;
+            factory_->CreateStrokeStyle(properties, nullptr, 0, &roundStroke_);
+        }
+        dc_->DrawGeometry(geometry.Get(), BrushFor(shape.color), shape.strokeWidth,
+                          roundStroke_.Get());
+    } else {
+        dc_->FillGeometry(geometry.Get(), BrushFor(shape.color));
+    }
 }
 
 void D2dRenderBackend::PrunePathCache() {

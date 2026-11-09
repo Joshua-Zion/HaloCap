@@ -85,6 +85,9 @@ struct PathShape {
     std::vector<PathCommand> commands;
     Color color;
     bool evenOdd = false;
+    // > 0 时按描边画（圆头圆角），否则填充。画笔/荧光笔用描边：一笔一条路径，
+    // 半透明色只叠一次，不会被无数小段叠深、也不会在拐点露缝。
+    float strokeWidth = 0.0f;
     // 后端按它缓存 D2D 几何：图标是静态的，位置不变时不该每帧重建。
     int cacheKey = 0;
 };

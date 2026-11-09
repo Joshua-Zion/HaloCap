@@ -218,13 +218,50 @@ bool HitTest(const Annotation& annotation, Point point, float radius) {
 }
 
 int EraseAt(std::vector<Annotation>& annotations, Point point, float radius) {
-    const auto removed = std::remove_if(annotations.begin(), annotations.end(),
-                                        [&](const Annotation& annotation) {
-                                            return HitTest(annotation, point, radius);
-                                        });
-    const int count = static_cast<int>(std::distance(removed, annotations.end()));
-    annotations.erase(removed, annotations.end());
-    return count;
+    int hits = 0;
+    std::vector<Annotation> kept;
+    kept.reserve(annotations.size() + 4);
+    for (const Annotation& annotation : annotations) {
+        const bool stroke = annotation.tool == AnnotationTool::Pen ||
+                            annotation.tool == AnnotationTool::Highlighter;
+        if (!stroke) {
+            // 形状/文字/序号/马赛克没有「一部分」：命中就整条删掉。
+            if (HitTest(annotation, point, radius)) {
+                ++hits;
+            } else {
+                kept.push_back(annotation);
+            }
+            continue;
+        }
+        // 笔画按点切开：橡皮圈住的那段去掉，其余连续段各自成为一条新笔画。
+        std::vector<Point> run;
+        bool cut = false;
+        for (const Point& p : annotation.points) {
+            const float dx = p.x - point.x;
+            const float dy = p.y - point.y;
+            if (dx * dx + dy * dy <= radius * radius) {
+                cut = true;
+                if (!run.empty()) {
+                    Annotation piece = annotation;
+                    piece.points = run;
+                    kept.push_back(piece);
+                    run.clear();
+                }
+            } else {
+                run.push_back(p);
+            }
+        }
+        if (cut) {
+            ++hits;
+        }
+        if (!run.empty()) {
+            Annotation piece = annotation;
+            piece.points = run;
+            kept.push_back(piece);
+        }
+    }
+    annotations = std::move(kept);
+    return hits;
 }
 
 // ---- 显示列表 ----
@@ -299,6 +336,9 @@ void AppendAnnotationPlan(const std::vector<Annotation>& annotations,
             break;
 
         case AnnotationTool::Pen: {
+            if (annotation.points.empty()) {
+                break;
+            }
             const float thickness = std::max(0.4f, style.thickness * size);
             if (annotation.points.size() == 1) {
                 const Point center = Placed(annotation.points[0], options);
@@ -308,40 +348,38 @@ void AppendAnnotationPlan(const std::vector<Annotation>& annotations,
                                       style.color });
                 break;
             }
-            for (std::size_t i = 1; i < annotation.points.size(); ++i) {
-                plan.Add(Segment{ Placed(annotation.points[i - 1], options),
-                                  Placed(annotation.points[i], options), style.color, thickness });
+            // 一笔一条描边路径：圆头圆角，半透明也只叠一次（分段落画会在拐点露缝，
+            // 半透明还会在重叠处越叠越深，看着像一串圆点）。
+            PathShape stroke;
+            stroke.color = style.color;
+            stroke.strokeWidth = thickness;
+            for (std::size_t i = 0; i < annotation.points.size(); ++i) {
+                PathCommand command;
+                command.kind = i == 0 ? PathCommand::Kind::Move : PathCommand::Kind::Line;
+                command.points[0] = Placed(annotation.points[i], options);
+                stroke.commands.push_back(command);
             }
-            // 段与段之间是平头（D2D DrawLine 默认），粗笔在拐点会露出缺口，
-            // 看着像「断触」；每个落点补一个圆点当圆角接头与圆头笔尖。
-            if (thickness > 2.5f) {
-                const float radius = thickness * 0.5f;
-                for (const Point& point : annotation.points) {
-                    const Point placed = Placed(point, options);
-                    plan.Add(FillEllipse{ Rect{ placed.x - radius, placed.y - radius,
-                                                placed.x + radius, placed.y + radius },
-                                          style.color });
-                }
-            }
+            plan.Add(stroke);
             break;
         }
 
         case AnnotationTool::Highlighter: {
+            if (annotation.points.empty()) {
+                break;
+            }
             Color color = style.color;
             color.a = annotation_defaults::kHighlighterAlpha;
             const float thickness = std::max(2.0f, style.thickness) * size;
-            for (std::size_t i = 1; i < annotation.points.size(); ++i) {
-                plan.Add(Segment{ Placed(annotation.points[i - 1], options),
-                                  Placed(annotation.points[i], options), color, thickness });
+            PathShape stroke;
+            stroke.color = color;
+            stroke.strokeWidth = thickness;
+            for (std::size_t i = 0; i < annotation.points.size(); ++i) {
+                PathCommand command;
+                command.kind = i == 0 ? PathCommand::Kind::Move : PathCommand::Kind::Line;
+                command.points[0] = Placed(annotation.points[i], options);
+                stroke.commands.push_back(command);
             }
-            // 荧光笔很粗，拐点的平头缺口最明显：补圆点做圆角接头。
-            const float radius = thickness * 0.5f;
-            for (const Point& point : annotation.points) {
-                const Point placed = Placed(point, options);
-                plan.Add(FillEllipse{ Rect{ placed.x - radius, placed.y - radius,
-                                            placed.x + radius, placed.y + radius },
-                                      color });
-            }
+            plan.Add(stroke);
             break;
         }
 

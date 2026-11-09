@@ -82,6 +82,8 @@ private:
     void DrawPath(const core::PathShape& shape);
     void PrunePathCache();
 
+    Microsoft::WRL::ComPtr<ID2D1StrokeStyle> roundStroke_;
+
     std::unordered_map<int, Microsoft::WRL::ComPtr<ID2D1PathGeometry>> pathCache_;
 
     Microsoft::WRL::ComPtr<ID3D11Device> device_;

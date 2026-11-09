@@ -209,7 +209,7 @@ void TestDocument() {
 void TestPlan() {
     FakeRasterizer rasterizer;
 
-    // 画笔：N 个点 → N-1 条线段。
+    // 画笔：一笔一条描边路径（3 个点 = Move + 2 条 Line）。
     core::FramePlan penPlan;
     std::vector<core::Annotation> pens;
     core::Annotation pen;
@@ -220,9 +220,17 @@ void TestPlan() {
     core::AnnotationPlanOptions options;
     options.rasterizer = &rasterizer;
     core::AppendAnnotationPlan(pens, options, penPlan);
-    CheckEqual(static_cast<long long>(penPlan.ItemCount()), 2, "pen produces one segment per pair");
+    CheckEqual(static_cast<long long>(penPlan.ItemCount()), 1, "pen is one stroked path");
+    if (const auto* stroke = std::get_if<core::PathShape>(&penPlan.Items()[0])) {
+        CheckTrue(stroke->strokeWidth > 0.0f, "pen path is stroked");
+        CheckEqual(static_cast<long long>(stroke->commands.size()), 3, "pen path has three nodes");
+    } else {
+        ++checks;
+        ++failures;
+        std::printf("FAIL pen item is a path\n");
+    }
 
-    // 荧光笔：alpha 被压到 0.42。
+    // 荧光笔：同一条路径，但 alpha 被压到 0.42（只叠一次，不会越描越深）。
     core::FramePlan highlighterPlan;
     std::vector<core::Annotation> highlighters;
     core::Annotation highlighter = pen;
@@ -230,21 +238,14 @@ void TestPlan() {
     highlighter.style = Style(core::AnnotationTool::Highlighter);
     highlighters.push_back(highlighter);
     core::AppendAnnotationPlan(highlighters, options, highlighterPlan);
-    // 粗笔在拐点补了圆点做圆角接头，所以这里数「线段」而不是总图元数。
-    int highlighterSegments = 0;
-    for (const core::Item& item : highlighterPlan.Items()) {
-        if (std::holds_alternative<core::Segment>(item)) {
-            ++highlighterSegments;
-        }
-    }
-    CheckEqual(highlighterSegments, 2, "highlighter has two segments");
-    if (const auto* segment = std::get_if<core::Segment>(&highlighterPlan.Items()[0])) {
-        CheckNear(segment->color.a, core::annotation_defaults::kHighlighterAlpha, 0.001f,
+    if (const auto* stroke = std::get_if<core::PathShape>(&highlighterPlan.Items()[0])) {
+        CheckNear(stroke->color.a, core::annotation_defaults::kHighlighterAlpha, 0.001f,
                   "highlighter alpha");
+        CheckTrue(stroke->strokeWidth > 0.0f, "highlighter path is stroked");
     } else {
         ++checks;
         ++failures;
-        std::printf("FAIL highlighter item is a segment\n");
+        std::printf("FAIL highlighter item is a path\n");
     }
 
     // 矩形/椭圆：描边与填充各一个图元。

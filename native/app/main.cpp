@@ -1425,10 +1425,23 @@ int Run(const Options& options) {
             const int y1 = baseY + 600;
 
             // 0) 空闲悬停：十字线 + 光标下窗口描边 + 放大镜，抓一张证明图。
+            //    覆盖层刚打开、还没收到任何鼠标消息时就必须有候选（1.x 的自动识别窗口）。
+            const core::IntRect hoverAtOpen = screenshotOverlay->HoverRectForTest();
+            const bool hoverDetectOk = hoverAtOpen.right - hoverAtOpen.left >= 32 &&
+                                       hoverAtOpen.bottom - hoverAtOpen.top >= 32;
             //    自检没有消息循环，脏帧得自己 Pump 一次才会 Present。
+            //    先等过节流窗口（24 ms），否则这次移动可能被折叠成「没动」。
+            Sleep(40);
             sendMouse(WM_MOUSEMOVE, baseX + 500, baseY + 500);
             screenshotOverlay->Pump();
             Sleep(150);
+            const core::IntRect hoverMoved = screenshotOverlay->HoverRectForTest();
+            // baseX/baseY 已经把窗口原点抵消了：客户区 (baseX+500, baseY+500) 就是屏幕 (500,500)。
+            constexpr int hoverCursorX = 500;
+            constexpr int hoverCursorY = 500;
+            const bool hoverUnderCursor =
+                hoverMoved.left <= hoverCursorX && hoverCursorX < hoverMoved.right &&
+                hoverMoved.top <= hoverCursorY && hoverCursorY < hoverMoved.bottom;
             const bool hoverProof =
                 screenshotOverlay->GrabDesktopToPng(options.screenshotSelftestPath + L".hover.png");
 
@@ -1658,6 +1671,13 @@ int Run(const Options& options) {
             AddFlag(report, "APP_SCREENSHOT_OPTIONBAR_FITS", optionsFitOk);
             AddFlag(report, "APP_SCREENSHOT_WHEEL", wheelOk);
             AddFlag(report, "APP_SCREENSHOT_ANNOTATE", annotated);
+            AddFlag(report, "APP_SCREENSHOT_HOVER_DETECT", hoverDetectOk);
+            AddFlag(report, "APP_SCREENSHOT_HOVER_UNDER_CURSOR", hoverUnderCursor);
+            char hoverRectText[64] = {};
+            std::snprintf(hoverRectText, sizeof(hoverRectText), "%d,%d %dx%d", hoverMoved.left,
+                          hoverMoved.top, hoverMoved.right - hoverMoved.left,
+                          hoverMoved.bottom - hoverMoved.top);
+            AddText(report, "APP_SCREENSHOT_HOVER_RECT", hoverRectText);
             AddFlag(report, "APP_SCREENSHOT_MOSAIC_COMPOSE", mosaicComposeOk);
             AddFlag(report, "APP_SCREENSHOT_MOSAIC_OVER_ANNOTATION", mosaicOverAnnotationOk);
             AddFlag(report, "APP_SCREENSHOT_EXPORT_ANNOTATED", exportAnnotated);
@@ -1678,7 +1698,8 @@ int Run(const Options& options) {
                                    moveOk && resizeOk && nudgeOk && rightClickOk && clickSelectOk &&
                                    annotated && toolbarOk && optionsOk && clickShapeOk &&
                                    optionsFitOk && wheelOk && mosaicComposeOk &&
-                                   mosaicOverAnnotationOk && exportAnnotated;
+                                   mosaicOverAnnotationOk && exportAnnotated && hoverDetectOk &&
+                                   hoverUnderCursor;
             log.Info(screenshotSelftestOk ? "screenshot selftest: ok"
                                           : "screenshot selftest: failed");
         }

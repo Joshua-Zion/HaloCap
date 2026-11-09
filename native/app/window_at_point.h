@@ -5,7 +5,9 @@
 namespace halocap::app {
 
 // 光标下的顶层窗口。1.x 的 WindowProbe 与 2.0 的窗口拾取、单击选窗口共用这一份判定：
-//   - 跳过本进程的窗口（ignore 还会临时禁用，避免 topmost 的覆盖层永远命中自己）
+//   - 用 EnumWindows 按 Z 序找第一个「可见矩形包含该点」的顶层窗口（不用 WindowFromPoint：
+//     全屏 topmost 的覆盖层会永远命中自己）
+//   - 跳过本进程的窗口（贴图窗口除外，它是用户内容）
 //   - 跳过桌面/Shell、不可见、被 DWM 遮住（cloaked）、WS_EX_TRANSPARENT
 //   - 跳过工具提示/输入法/阴影这类系统窗口
 //   - 跳过可见矩形小于 minSize 的区域（图标、勾选框）

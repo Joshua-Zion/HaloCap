@@ -115,6 +115,8 @@ public:
     const std::wstring& ToastForTest() const { return toast_; }
     bool AnnotatingForTest() const { return annotating_; }
     int UiScalePercentForTest() const { return static_cast<int>(uiScale_ * 100.0f + 0.5f); }
+    // 当前悬停候选（窗口或整块屏，屏幕坐标）；空表示还没探测到。
+    core::IntRect HoverRectForTest() const { return hoverRect_; }
     // 马赛克取样缓存（底图 + 下方标注）合成成功没有；以及缓存里某个选区局部坐标的像素（BGRA）。
     bool MosaicComposeValidForTest() const { return mosaicBaseValid_; }
     bool MosaicBasePixelForTest(float localX, float localY, std::uint8_t bgra[4]) const;

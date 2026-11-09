@@ -362,6 +362,15 @@ bool ScreenshotOverlay::Open(const ScreenshotOverlayOptions& options) {
     InstallKeyHook();
     g_overlay = this;
     active_ = true;
+
+    // 1.x 覆盖层一出现就按光标位置探测一次：用快捷键打开时光标通常没动过，
+    // 只靠 WM_MOUSEMOVE 会迟迟不显示窗口候选（看起来就像「自动识别没了」）。
+    if (GetCursorPos(&lastMouse_)) {
+        mouseInside_ = true;
+        UpdateHoverCandidate(lastMouse_);
+        UpdateCursor(lastMouse_);
+    }
+    SetTimer(static_cast<HWND>(window_->Handle()), 5, 150, nullptr);
     Render();
     return true;
 }
@@ -374,6 +383,7 @@ void ScreenshotOverlay::Close() {
     DestroyTextEditor();
 
     if (window_ != nullptr) {
+        KillTimer(static_cast<HWND>(window_->Handle()), 5);
         window_->SetVisible(false);
     }
     if (backend_ != nullptr) {
@@ -451,6 +461,23 @@ LRESULT ScreenshotOverlay::HandleMessage(HWND window, UINT message, WPARAM wPara
             // 悬停满 600 ms：把提示文字画出来。
             KillTimer(window, 4);
             dirty_ = true;
+            return 0;
+        }
+        if (wParam == 5) {
+            // 1.x 的空闲探测（150 ms）：覆盖层出现时/光标被别处挪动时，
+            // 未必有 WM_MOUSEMOVE 送到这里，候选窗口照样要跟着光标更新。
+            if (active_ && phase_ == Phase::Selecting && selection_.Bounds().IsEmpty() &&
+                !selecting_ && !annotating_ && !movingSelection_ && !resizing_ && !drawing_ &&
+                !mosaicPainting_) {
+                POINT cursor{};
+                if (GetCursorPos(&cursor) &&
+                    (cursor.x != lastMouse_.x || cursor.y != lastMouse_.y)) {
+                    OnMouseMove(cursor);
+                } else if (hoverRect_.IsEmpty()) {
+                    UpdateHoverCandidate(cursor);
+                    dirty_ = true;
+                }
+            }
             return 0;
         }
         break;
@@ -809,13 +836,22 @@ void ScreenshotOverlay::UpdateHoverCandidate(POINT point) {
     }
     RECT rect{};
     const HWND target = WindowAtPoint(point, static_cast<HWND>(window_->Handle()), 32);
-    if (target == nullptr || !WindowVisibleRect(target, &rect)) {
-        hoverWindow_ = nullptr;
-        hoverRect_ = IntRect{};
-        return;
+    if (target != nullptr && WindowVisibleRect(target, &rect)) {
+        // 夹进虚拟桌面：悬在屏幕外的窗口部分不参与挖洞，否则会出现负尺寸矩形。
+        const IntRect clamped{ std::max<LONG>(rect.left, windowX_),
+                               std::max<LONG>(rect.top, windowY_),
+                               std::min<LONG>(rect.right, windowX_ + screenWidth_),
+                               std::min<LONG>(rect.bottom, windowY_ + screenHeight_) };
+        if (clamped.right - clamped.left >= 32 && clamped.bottom - clamped.top >= 32) {
+            hoverWindow_ = target;
+            hoverRect_ = clamped;
+            return;
+        }
     }
-    hoverWindow_ = target;
-    hoverRect_ = IntRect{ rect.left, rect.top, rect.right, rect.bottom };
+    // 1.x：认不出窗口（桌面、Shell，或候选太小/太靠边）就退回光标所在整块屏。
+    // 高亮永远有候选，单击即全屏——2.0 之前这里留空，桌面上开截图看起来就像「识别没了」。
+    hoverWindow_ = nullptr;
+    hoverRect_ = MonitorBoundsAt(point);
 }
 
 void ScreenshotOverlay::ClearHoverCandidate() {
@@ -1688,10 +1724,9 @@ void ScreenshotOverlay::RenderSizeBadge(core::FramePlan& plan) {
     if (rasterizer_ == nullptr || annotating_) {
         return;
     }
-    // 1.x：只在「正拖着」与「悬停某个候选窗口」时显示；选区完成后就收起。
+    // 1.x：只在「正拖着」与「悬停某个候选（窗口或整块屏）」时显示；选区完成后就收起。
     const bool dragging = selecting_ || resizing_ || movingSelection_;
-    const bool hovering =
-        selection_.Bounds().IsEmpty() && hoverWindow_ != nullptr && !hoverRect_.IsEmpty();
+    const bool hovering = selection_.Bounds().IsEmpty() && !hoverRect_.IsEmpty();
     if (!dragging && !hovering) {
         return;
     }
@@ -2280,8 +2315,8 @@ void ScreenshotOverlay::RenderSelection(core::FramePlan& plan) {
 
     const Rect selection = selection_.Bounds();
     if (selection.IsEmpty()) {
-        // 悬停窗口：把那块挖出来（同 hover 暗度）+ 1.5 DIP 描边，其余压暗。
-        if (hoverWindow_ != nullptr && !hoverRect_.IsEmpty()) {
+        // 悬停候选（窗口或整块屏）：把那块挖出来（同 hover 暗度）+ 1.5 DIP 描边，其余压暗。
+        if (!hoverRect_.IsEmpty()) {
             const Rect hole{ static_cast<float>(hoverRect_.left) - ox,
                              static_cast<float>(hoverRect_.top) - oy,
                              static_cast<float>(hoverRect_.right) - ox,

@@ -272,11 +272,16 @@ RecInput PrepareRecInput(const OcrImage& image, Rect box, int recHeight) {
     }
 
     const Rect normalized = box.Normalized();
-    const int left = std::clamp(static_cast<int>(std::floor(normalized.left)), 0, image.width - 1);
-    const int top = std::clamp(static_cast<int>(std::floor(normalized.top)), 0, image.height - 1);
-    const int right = std::clamp(static_cast<int>(std::ceil(normalized.right)), left + 1, image.width);
-    const int bottom =
-        std::clamp(static_cast<int>(std::ceil(normalized.bottom)), top + 1, image.height);
+    // 1.x 的 RapidOcr 用 Padding=6：识别裁图四周留 6 px，避免把上下伸部/边缘笔画裁掉。
+    constexpr int kRecPadding = 6;
+    const int left = std::clamp(static_cast<int>(std::floor(normalized.left)) - kRecPadding, 0,
+                                image.width - 1);
+    const int top = std::clamp(static_cast<int>(std::floor(normalized.top)) - kRecPadding, 0,
+                               image.height - 1);
+    const int right = std::clamp(static_cast<int>(std::ceil(normalized.right)) + kRecPadding,
+                                 left + 1, image.width);
+    const int bottom = std::clamp(static_cast<int>(std::ceil(normalized.bottom)) + kRecPadding,
+                                  top + 1, image.height);
 
     const int cropWidth = right - left;
     const int cropHeight = bottom - top;
@@ -422,7 +427,41 @@ OcrResult BuildResult(std::vector<OcrLine> lines, float lineTolerance) {
         std::sort(row.begin(), row.end(), [](const OcrLine& a, const OcrLine& b) {
             return a.box.left < b.box.left;
         });
-        ordered.insert(ordered.end(), row.begin(), row.end());
+
+        // 1.x（RapidOcr）一个文本框就是一整行；我们的连通域检测常把同一行按词拆开。
+        // 这里把同一行里水平间距小于 0.6 倍行高的碎片拼回一行，拉丁词之间补一个空格。
+        std::vector<OcrLine> merged;
+        merged.reserve(row.size());
+        for (const OcrLine& piece : row) {
+            if (!merged.empty()) {
+                OcrLine& last = merged.back();
+                const float gap = piece.box.left - last.box.right;
+                const float firstHeight = last.box.Height();
+                const float secondHeight = piece.box.Height();
+                const float shorter = std::min(firstHeight, secondHeight);
+                const float taller = std::max(firstHeight, secondHeight);
+                if (gap <= std::max(1.0f, shorter) * 0.6f && shorter >= taller * 0.5f) {
+                    const char tail = last.text.empty() ? '\0' : last.text.back();
+                    const char head = piece.text.empty() ? '\0' : piece.text.front();
+                    const auto isWord = [](char c) {
+                        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                               (c >= '0' && c <= '9');
+                    };
+                    if (isWord(tail) && isWord(head) && gap > shorter * 0.15f) {
+                        last.text += " ";
+                    }
+                    last.text += piece.text;
+                    last.box.left = std::min(last.box.left, piece.box.left);
+                    last.box.top = std::min(last.box.top, piece.box.top);
+                    last.box.right = std::max(last.box.right, piece.box.right);
+                    last.box.bottom = std::max(last.box.bottom, piece.box.bottom);
+                    last.confidence = std::min(last.confidence, piece.confidence);
+                    continue;
+                }
+            }
+            merged.push_back(piece);
+        }
+        ordered.insert(ordered.end(), merged.begin(), merged.end());
 
         startIndex = end;
     }
@@ -437,7 +476,8 @@ std::string ToPlainText(const OcrResult& result) {
     for (std::size_t i = 0; i < result.lines.size(); ++i) {
         text += result.lines[i].text;
         if (i + 1 < result.lines.size()) {
-            text.push_back('\n');
+            // Win32 的 EDIT 只把 CRLF 当换行；用单纯的 '\n' 会把所有行并成一段。
+            text += "\r\n";
         }
     }
     return text;

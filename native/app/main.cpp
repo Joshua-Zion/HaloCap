@@ -1838,6 +1838,10 @@ int Run(const Options& options) {
                                      ocrWindow->Handle();
             }
             AddFlag(report, "APP_OCR_WINDOW_VISIBLE", ocrWindowVisible);
+            AddInt(report, "APP_OCR_TEXT_LINES_CTRL",
+                   ocrWindow != nullptr ? ocrWindow->TextLineCountForTest() : -1);
+            AddFlag(report, "APP_OCR_TEXT_SCROLLBAR",
+                    ocrWindow != nullptr && ocrWindow->TextScrollVisibleForTest());
             AddFlag(report, "APP_OCR_WINDOW_ON_TOP", ocrWindowOnTop);
             AddText(report, "APP_OCR_WINDOW_RECT",
                     (std::to_string(ocrWindowRect.left) + "," + std::to_string(ocrWindowRect.top) +

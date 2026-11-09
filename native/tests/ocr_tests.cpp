@@ -110,12 +110,13 @@ void TestPrepareRecInput() {
     const std::vector<std::uint8_t> pixels = MakeBgra(width, height);
     const ocr::OcrImage image{ pixels.data(), width, height, width * 4 };
 
+    // 裁图四周留 6 px：40x20 的框变成 52x32，宽高比 1.625 → 48 高时宽 78。
     const ocr::RecInput input =
         ocr::PrepareRecInput(image, core::Rect{ 10.0f, 10.0f, 50.0f, 30.0f }, 48);
     CheckEqual(input.height, 48, "rec height");
-    CheckEqual(input.width, 96, "rec keeps the aspect ratio");
-    CheckEqual(static_cast<long long>(input.data.size()), 3LL * 96 * 48, "rec NCHW size");
-    CheckNear(input.data[0], (0.098f - 0.5f) / 0.5f, 0.06f, "rec normalisation");
+    CheckEqual(input.width, 78, "rec keeps the aspect ratio with padding");
+    CheckEqual(static_cast<long long>(input.data.size()), 3LL * 78 * 48, "rec NCHW size");
+    CheckNear(input.data[0], (0.039f - 0.5f) / 0.5f, 0.06f, "rec normalisation");
 }
 
 void TestDecodeCtc() {
@@ -144,7 +145,8 @@ void TestDecodeCtc() {
 
 void TestBuildResult() {
     std::vector<ocr::OcrLine> lines;
-    lines.push_back({ "right", core::Rect{ 50.0f, 100.0f, 120.0f, 120.0f }, 0.9f });
+    // 同一行两个不相邻的框（间距 > 0.6 倍行高，不会触发行内碎片合并）。
+    lines.push_back({ "right", core::Rect{ 80.0f, 100.0f, 150.0f, 120.0f }, 0.9f });
     lines.push_back({ "top", core::Rect{ 10.0f, 10.0f, 80.0f, 30.0f }, 0.9f });
     lines.push_back({ "left", core::Rect{ 10.0f, 100.0f, 45.0f, 120.0f }, 0.9f });
 
@@ -155,7 +157,7 @@ void TestBuildResult() {
         CheckTrue(result.lines[1].text == "left", "same row sorts by x");
         CheckTrue(result.lines[2].text == "right", "same row sorts by x (2)");
     }
-    CheckTrue(result.plainText == "top\nleft\nright", "plain text joins lines");
+    CheckTrue(result.plainText == "top\r\nleft\r\nright", "plain text joins lines with CRLF");
 
     const std::vector<std::size_t> matches = ocr::FindMatchingLines(result, "LEF");
     CheckEqual(static_cast<long long>(matches.size()), 1, "search is case-insensitive");
@@ -164,6 +166,26 @@ void TestBuildResult() {
     }
     CheckEqual(static_cast<long long>(ocr::FindMatchingLines(result, "zzz").size()), 0,
                "no match is empty");
+}
+
+void TestBuildResultMergesRowFragments() {
+    std::vector<ocr::OcrLine> lines;
+    // 同一行三个碎片：两个挨着（6 px = 0.3 倍行高）→ 拼成 "Halo Cap"；
+    // 第三个隔了 95 px → 仍是单独一行。
+    lines.push_back({ "Halo", core::Rect{ 10.0f, 10.0f, 60.0f, 30.0f }, 0.9f });
+    lines.push_back({ "Cap", core::Rect{ 66.0f, 10.0f, 105.0f, 30.0f }, 0.9f });
+    lines.push_back({ "far", core::Rect{ 200.0f, 10.0f, 240.0f, 30.0f }, 0.9f });
+    // 中文碎片之间不加空格。
+    lines.push_back({ "截图", core::Rect{ 10.0f, 60.0f, 50.0f, 80.0f }, 0.9f });
+    lines.push_back({ "工具", core::Rect{ 55.0f, 60.0f, 95.0f, 80.0f }, 0.9f });
+
+    const ocr::OcrResult result = ocr::BuildResult(lines);
+    CheckEqual(static_cast<long long>(result.lines.size()), 3, "row fragments merged");
+    if (result.lines.size() == 3) {
+        CheckTrue(result.lines[0].text == "Halo Cap", "latin fragments join with a space");
+        CheckTrue(result.lines[1].text == "far", "distant fragment stays separate");
+        CheckTrue(result.lines[2].text == "截图工具", "cjk fragments join without a space");
+    }
 }
 
 void TestBuildResultSanitize() {
@@ -192,6 +214,7 @@ int main() {
     TestPrepareRecInput();
     TestDecodeCtc();
     TestBuildResult();
+    TestBuildResultMergesRowFragments();
     TestBuildResultSanitize();
 
     if (failures != 0) {

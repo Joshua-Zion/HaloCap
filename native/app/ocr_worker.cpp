@@ -52,6 +52,62 @@ std::string Sanitize(std::string text) {
     return text;
 }
 
+// 1.x 的 Prepare：半透明/透明像素按白底合成，避免透明区被当成黑色。
+void CompositeOverWhite(std::vector<std::uint8_t>& pixels, int width, int height, int stride) {
+    for (int y = 0; y < height; ++y) {
+        auto* row = pixels.data() + static_cast<std::size_t>(y) * stride;
+        for (int x = 0; x < width; ++x) {
+            std::uint8_t* pixel = row + static_cast<std::size_t>(x) * 4;
+            const std::uint8_t alpha = pixel[3];
+            if (alpha == 255) {
+                continue;
+            }
+            if (alpha == 0) {
+                pixel[0] = pixel[1] = pixel[2] = 255;
+                pixel[3] = 255;
+                continue;
+            }
+            const int inverse = 255 - alpha;
+            for (int channel = 0; channel < 3; ++channel) {
+                pixel[channel] = static_cast<std::uint8_t>(
+                    (pixel[channel] * alpha + 255 * inverse) / 255);
+            }
+            pixel[3] = 255;
+        }
+    }
+}
+
+// 1.x 的 InvertIfDark：平均亮度 < 110 就整图反色。
+bool InvertIfDark(std::vector<std::uint8_t>& pixels, int width, int height, int stride) {
+    if (pixels.empty()) {
+        return false;
+    }
+    long long luminance = 0;
+    long long samples = 0;
+    for (int y = 0; y < height; y += 4) {
+        auto* row = pixels.data() + static_cast<std::size_t>(y) * stride;
+        for (int x = 0; x < width; x += 16) {
+            const std::uint8_t* pixel = row + static_cast<std::size_t>(x) * 4;
+            luminance += static_cast<long long>(pixel[0]) * 114 + pixel[1] * 587 +
+                         pixel[2] * 299;
+            ++samples;
+        }
+    }
+    if (samples == 0 || luminance / samples / 1000 >= 110) {
+        return false;
+    }
+    for (int y = 0; y < height; ++y) {
+        auto* row = pixels.data() + static_cast<std::size_t>(y) * stride;
+        for (int x = 0; x < width; ++x) {
+            std::uint8_t* pixel = row + static_cast<std::size_t>(x) * 4;
+            pixel[0] = static_cast<std::uint8_t>(255 - pixel[0]);
+            pixel[1] = static_cast<std::uint8_t>(255 - pixel[1]);
+            pixel[2] = static_cast<std::uint8_t>(255 - pixel[2]);
+        }
+    }
+    return true;
+}
+
 std::string ModelDirectoryFromWorker() {
     if (const char* environment = std::getenv("HALOCAP_OCR_MODELS")) {
         return environment;
@@ -176,6 +232,14 @@ int RunOcrWorker(const std::string& inputPath, const std::string& outputPath,
     if (!engine->Initialize(config, &error)) {
         std::ofstream(outputPath) << "ERROR:" << Sanitize(error) << "\n";
         return 3;
+    }
+
+    // 1.x OcrImageProcessor 的预处理：先按白底合成（透明像素不按黑算），
+    // 再按平均亮度判断暗底图并反色——暗色界面上的白字不反色几乎认不出来，
+    // 这也是 2.0 识别结果比 1.x 差的主要原因。
+    CompositeOverWhite(pixels, width, height, stride);
+    if (engineName != "winrt") {
+        InvertIfDark(pixels, width, height, stride);
     }
 
     const core::ocr::OcrImage image{ pixels.data(), width, height, stride };

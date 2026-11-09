@@ -67,6 +67,14 @@ public:
     void SetImageVisibleForTest(bool visible);
     void SetLineViewForTest(bool lineView);
     bool LineViewForTest() const { return lineView_; }
+    int TextLineCountForTest() const {
+        return text_ != nullptr ? static_cast<int>(SendMessageW(text_, EM_GETLINECOUNT, 0, 0)) : 0;
+    }
+    int TextFirstLineForTest() const {
+        return text_ != nullptr ? static_cast<int>(SendMessageW(text_, EM_GETFIRSTVISIBLELINE, 0, 0))
+                                : 0;
+    }
+    bool TextScrollVisibleForTest() const { return textScrollVisible_; }
 
     // 搜索自检（原有签名保持不变）。
     void SetQueryForTest(const std::wstring& query);
@@ -93,6 +101,8 @@ private:
         CloseFooter,
         CopyAll,
         EmptyRetry,
+        TextScrollThumb,
+        TextScrollTrack,
     };
 
     static bool EnsureClass();
@@ -140,6 +150,11 @@ private:
                      bool hover);
     void DrawPreview(HDC dc);
     void DrawLines(HDC dc);
+    // 文本框右侧的细滚动条（不用系统滚动条：太宽、带箭头，会压到文字）。
+    void UpdateTextScrollGeometry();
+    int TextFirstLine() const;
+    int TextLineCount() const;
+    void ScrollTextTo(int firstLine);
     void DrawLoading(HDC dc);
     void DrawEmpty(HDC dc);
 
@@ -168,6 +183,13 @@ private:
     int lineTotalHeight_ = 0;
     int hoveredLine_ = -1;
     Hit hoveredHit_ = Hit::None;
+
+    RECT textScrollTrack_{};
+    RECT textScrollThumb_{};
+    bool textScrollVisible_ = false;
+    bool textScrollDragging_ = false;
+    int textScrollDragOffset_ = 0;
+    int textScrollVisibleLines_ = 1;
 
     // 搜索
     std::wstring lastQuery_;

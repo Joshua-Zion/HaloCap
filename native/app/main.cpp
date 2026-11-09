@@ -1473,7 +1473,7 @@ int Run(const Options& options) {
                                    toolbar.right == nudged.right &&
                                    screenshotOverlay->ToolbarButtonCountForTest() == 22;
             AddInt(report, "APP_SCREENSHOT_UI_SCALE_PCT", uiScalePct);
-            // 形状工具：选项栏应当出现（8 色 + 分隔 + 矩形/椭圆/空心/实心）。
+            // 形状工具：选项栏应当出现（8 色 + 分隔 + 矩形/椭圆/空心/实心 + 粗细加减）。
             // 直接点工具栏里的「形状」按钮（第 3 个条目），验证工具栏真的能点。
             const core::IntRect shapeButton = screenshotOverlay->ToolbarButtonRectForTest(2);
             bool clickShapeOk = false;
@@ -1488,7 +1488,7 @@ int Run(const Options& options) {
             }
             screenshotOverlay->Pump();
             const bool optionsOk = screenshotOverlay->AnnotatingForTest() &&
-                                   screenshotOverlay->OptionButtonCountForTest() == 13;
+                                   screenshotOverlay->OptionButtonCountForTest() == 16;
             // 回到移动态，下一步的右键才是「清选区」而不是「退出标注」。
             PostMessageW(overlayWindow, WM_APP + 9, 0, 0);
             pumpMessages();

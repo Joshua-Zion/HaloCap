@@ -108,6 +108,11 @@ struct AnnotationPlanOptions {
     // DIP → 像素的缩放。选区是 1:1 时是 1.0；预览缩放时由调用方给。
     float scale = 1.0f;
 
+    // 标注「尺寸」的额外缩放（线宽、字号、序号圆、箭头）。位置由 scale 负责，
+    // 两者分开是因为覆盖层是物理像素画的而 1.x 的尺寸是 DIP：150% 屏上位置仍是 1:1，
+    // 线宽和字号却要 ×1.5。
+    float sizeScale = 1.0f;
+
     // 选区局部坐标 → 目标坐标的平移。覆盖层上标注点存的是选区局部坐标，
     // 画到整屏时要加上选区原点；导出到选区大小的目标时是 (0,0)。
     Point origin{};
@@ -147,6 +152,8 @@ public:
     // 选择/移动：拖动过程中只改数据，松手时 CommitAnnotationChange 落一次快照。
     bool MoveAnnotation(std::size_t index, Point delta);
     bool RemoveAnnotation(std::size_t index);
+    // 文字工具的「再点一次改内容」：只换文本，样式沿用原标注，落一次快照。
+    bool ReplaceText(std::size_t index, const std::string& text);
     void CommitAnnotationChange();
 
     bool Undo();

@@ -253,7 +253,7 @@ void AppendStepCircle(FramePlan& plan, const Annotation& annotation, float scale
     }
 
     const Point center = Placed(annotation.points[0], options);
-    const float radius = annotation_defaults::kStepRadius * scale;
+    const float radius = std::max(8.0f, annotation.style.textSize * 0.611f) * scale;
     const Color ink = IsLightColor(annotation.style.color)
                           ? Color{ 0.106f, 0.122f, 0.141f, 1.0f }
                           : Color{ 1.0f, 1.0f, 1.0f, 1.0f };
@@ -266,7 +266,8 @@ void AppendStepCircle(FramePlan& plan, const Annotation& annotation, float scale
         return;
     }
 
-    const FontSpec spec{ options.fontFamily, 600, 13.0f * scale, ink };
+    const FontSpec spec{ options.fontFamily, 600,
+                         std::max(8.0f, annotation.style.textSize * 0.72f) * scale, ink };
     // 先排一次拿尺寸，再按中心排第二次（第二次命中图集缓存，成本是查表）。
     const TextCell measured = options.rasterizer->LayOut(annotation.text, spec, Point{ 0.0f, 0.0f });
     if (measured.atlas == 0) {
@@ -286,6 +287,9 @@ void AppendStepCircle(FramePlan& plan, const Annotation& annotation, float scale
 void AppendAnnotationPlan(const std::vector<Annotation>& annotations,
                           const AnnotationPlanOptions& options, FramePlan& plan) {
     const float scale = options.scale > 0.0001f ? options.scale : 1.0f;
+    // 尺寸单独缩放：位置是 1:1，线宽/字号在 150% 屏上要 ×1.5（1.x 的尺寸单位是 DIP）。
+    const float size =
+        scale * (options.sizeScale > 0.0001f ? options.sizeScale : 1.0f);
 
     for (const Annotation& annotation : annotations) {
         const AnnotationStyle& style = annotation.style;
@@ -295,7 +299,7 @@ void AppendAnnotationPlan(const std::vector<Annotation>& annotations,
             break;
 
         case AnnotationTool::Pen: {
-            const float thickness = std::max(0.4f, style.thickness * scale);
+            const float thickness = std::max(0.4f, style.thickness * size);
             if (annotation.points.size() == 1) {
                 const Point center = Placed(annotation.points[0], options);
                 const float radius = std::max(0.6f, thickness * 0.5f);
@@ -314,7 +318,7 @@ void AppendAnnotationPlan(const std::vector<Annotation>& annotations,
         case AnnotationTool::Highlighter: {
             Color color = style.color;
             color.a = annotation_defaults::kHighlighterAlpha;
-            const float thickness = std::max(2.0f, style.thickness) * scale;
+            const float thickness = std::max(2.0f, style.thickness) * size;
             for (std::size_t i = 1; i < annotation.points.size(); ++i) {
                 plan.Add(Segment{ Placed(annotation.points[i - 1], options),
                                   Placed(annotation.points[i], options), color, thickness });
@@ -330,7 +334,7 @@ void AppendAnnotationPlan(const std::vector<Annotation>& annotations,
             if (style.filled) {
                 plan.Add(FillRect{ rect, style.color });
             } else {
-                plan.Add(StrokeRect{ rect, style.color, std::max(0.4f, style.thickness * scale) });
+                plan.Add(StrokeRect{ rect, style.color, std::max(0.4f, style.thickness * size) });
             }
             break;
         }
@@ -343,7 +347,7 @@ void AppendAnnotationPlan(const std::vector<Annotation>& annotations,
             if (style.filled) {
                 plan.Add(FillEllipse{ rect, style.color });
             } else {
-                plan.Add(StrokeEllipse{ rect, style.color, std::max(0.4f, style.thickness * scale) });
+                plan.Add(StrokeEllipse{ rect, style.color, std::max(0.4f, style.thickness * size) });
             }
             break;
         }
@@ -363,10 +367,10 @@ void AppendAnnotationPlan(const std::vector<Annotation>& annotations,
             plan.Add(Segment{ start, end, style.color, thickness });
             const float angle = std::atan2(dy, dx);
             if (style.arrowHead == ArrowHeadMode::End || style.arrowHead == ArrowHeadMode::Both) {
-                AppendArrowHead(plan, annotation, end, angle, scale);
+                AppendArrowHead(plan, annotation, end, angle, size);
             }
             if (style.arrowHead == ArrowHeadMode::Both) {
-                AppendArrowHead(plan, annotation, start, angle + 3.14159265f, scale);
+                AppendArrowHead(plan, annotation, start, angle + 3.14159265f, size);
             }
             break;
         }
@@ -377,7 +381,7 @@ void AppendAnnotationPlan(const std::vector<Annotation>& annotations,
                 break;
             }
             const FontSpec spec{ options.fontFamily, style.bold ? 700 : 400,
-                                 style.textSize * scale, style.color };
+                                 style.textSize * size, style.color };
             const TextCell cell =
                 options.rasterizer->LayOut(annotation.text, spec, Placed(annotation.points[0], options));
             if (cell.atlas != 0) {
@@ -400,7 +404,7 @@ void AppendAnnotationPlan(const std::vector<Annotation>& annotations,
         }
 
         case AnnotationTool::Step:
-            AppendStepCircle(plan, annotation, scale, options);
+            AppendStepCircle(plan, annotation, size, options);
             break;
         }
     }
@@ -493,6 +497,16 @@ bool AnnotationDocument::RemoveAnnotation(std::size_t index) {
         return false;
     }
     items_.erase(items_.begin() + static_cast<std::ptrdiff_t>(index));
+    Snapshot();
+    return true;
+}
+
+bool AnnotationDocument::ReplaceText(std::size_t index, const std::string& text) {
+    if (index >= items_.size() || text.empty() ||
+        items_[index].tool != AnnotationTool::Text) {
+        return false;
+    }
+    items_[index].text = text;
     Snapshot();
     return true;
 }

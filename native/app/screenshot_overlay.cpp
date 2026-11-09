@@ -472,6 +472,14 @@ LRESULT ScreenshotOverlay::HandleMessage(HWND window, UINT message, WPARAM wPara
         case AnnotationTool::Text:
             style_.textSize = std::clamp(style_.textSize + direction * 2.0f, 10.0f, 48.0f);
             break;
+        case AnnotationTool::Rectangle:
+        case AnnotationTool::Ellipse:
+        case AnnotationTool::Arrow:
+            style_.thickness = std::clamp(style_.thickness + direction, 1.0f, 24.0f);
+            break;
+        case AnnotationTool::Step:
+            style_.textSize = std::clamp(style_.textSize + direction * 2.0f, 10.0f, 48.0f);
+            break;
         case AnnotationTool::Mosaic:
             style_.mosaicBlockPx =
                 std::clamp(style_.mosaicBlockPx + static_cast<int>(direction) * 2, 6, 30);
@@ -1022,7 +1030,23 @@ void ScreenshotOverlay::OnLeftButtonDown(POINT point) {
     }
 
     if (tool_ == AnnotationTool::Text) {
-        OpenTextEditor(local);
+        // 点在已有的文字上就改那一条（1.x 的行为），否则新建一条；支持任意多条。
+        int hitIndex = -1;
+        for (int index = static_cast<int>(document_.Items().size()) - 1; index >= 0; --index) {
+            const core::Annotation& item = document_.Items()[static_cast<std::size_t>(index)];
+            if (item.tool == AnnotationTool::Text && !item.points.empty() &&
+                core::HitTest(item, local, 8.0f * uiScale_)) {
+                hitIndex = index;
+                break;
+            }
+        }
+        if (hitIndex >= 0) {
+            editingTextIndex_ = hitIndex;
+            OpenTextEditor(document_.Items()[static_cast<std::size_t>(hitIndex)].points.front());
+        } else {
+            editingTextIndex_ = -1;
+            OpenTextEditor(local);
+        }
         return;
     }
 
@@ -1378,6 +1402,10 @@ void ScreenshotOverlay::LayoutOptionBar() {
                 tool_ == AnnotationTool::Ellipse);
         addIcon(Action::FillOff, ToolbarIcon::Outline, optionButton, !style_.filled);
         addIcon(Action::FillOn, ToolbarIcon::Fill, optionButton, style_.filled);
+        addIcon(Action::ThicknessDown, ToolbarIcon::Decrease, optionButton, false);
+        addText(Action::None, std::to_string(static_cast<int>(std::lround(style_.thickness))),
+                Scale(30), false);
+        addIcon(Action::ThicknessUp, ToolbarIcon::Increase, optionButton, false);
         break;
     case AnnotationTool::Pen:
     case AnnotationTool::Highlighter:
@@ -1393,6 +1421,10 @@ void ScreenshotOverlay::LayoutOptionBar() {
                 style_.arrowHead == core::ArrowHeadMode::Both);
         addIcon(Action::ArrowNone, ToolbarIcon::ArrowLine, optionButton,
                 style_.arrowHead == core::ArrowHeadMode::None);
+        addIcon(Action::ThicknessDown, ToolbarIcon::Decrease, optionButton, false);
+        addText(Action::None, std::to_string(static_cast<int>(std::lround(style_.thickness))),
+                Scale(30), false);
+        addIcon(Action::ThicknessUp, ToolbarIcon::Increase, optionButton, false);
         break;
     case AnnotationTool::Text:
         addIcon(Action::TextSizeDown, ToolbarIcon::Decrease, optionButton, false);
@@ -1406,6 +1438,12 @@ void ScreenshotOverlay::LayoutOptionBar() {
         addIcon(Action::MosaicDown, ToolbarIcon::Decrease, optionButton, false);
         addText(Action::None, std::to_string(style_.mosaicBlockPx), Scale(30), false);
         addIcon(Action::MosaicUp, ToolbarIcon::Increase, optionButton, false);
+        break;
+    case AnnotationTool::Step:
+        addIcon(Action::TextSizeDown, ToolbarIcon::Decrease, optionButton, false);
+        addText(Action::None, std::to_string(static_cast<int>(std::lround(style_.textSize))),
+                Scale(30), false);
+        addIcon(Action::TextSizeUp, ToolbarIcon::Increase, optionButton, false);
         break;
     case AnnotationTool::Eraser:
         addIcon(Action::EraserDown, ToolbarIcon::Decrease, optionButton, false);
@@ -2288,6 +2326,8 @@ void ScreenshotOverlay::Render() {
         options.rasterizer = rasterizer_.get();
         options.fontFamily = options_.fontFamily;
         options.scale = 1.0f;
+    options.sizeScale = uiScale_;
+        options.sizeScale = uiScale_;
         options.origin = Point{ selection_.Bounds().left - windowX_,
                                 selection_.Bounds().top - windowY_ };
         // 正在画的那一笔还在 document_.Active() 里，没有进 Items()（Commit 才进）。
@@ -2433,6 +2473,14 @@ void ScreenshotOverlay::OpenTextEditor(core::Point localPoint) {
     g_oldEditProc = reinterpret_cast<WNDPROC>(SetWindowLongPtrW(
         editControl_, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&ScreenshotOverlay::EditorEditProc)));
 
+    if (editingTextIndex_ >= 0 &&
+        editingTextIndex_ < static_cast<int>(document_.Items().size())) {
+        const std::wstring existing = Utf8ToWide(
+            document_.Items()[static_cast<std::size_t>(editingTextIndex_)].text);
+        SetWindowTextW(editControl_, existing.c_str());
+        SendMessageW(editControl_, EM_SETSEL, 0, -1);
+    }
+
     ShowWindow(editorWindow_, SW_SHOW);
     SetForegroundWindow(editorWindow_);
     SetFocus(editControl_);
@@ -2452,14 +2500,24 @@ void ScreenshotOverlay::CommitTextEditor() {
     }
 
     const std::string utf8 = WideToUtf8(text);
+    const int editIndex = editingTextIndex_;
+    editingTextIndex_ = -1;
     DestroyTextEditor();
-    if (!utf8.empty()) {
+    if (editIndex >= 0) {
+        if (!utf8.empty()) {
+            document_.ReplaceText(static_cast<std::size_t>(editIndex), utf8);
+        } else {
+            // 清空内容 = 删掉这条。
+            document_.RemoveAnnotation(static_cast<std::size_t>(editIndex));
+        }
+    } else if (!utf8.empty()) {
         AddTextAnnotation(textPoint_, utf8);
     }
     dirty_ = true;
 }
 
 void ScreenshotOverlay::CancelTextEditor() {
+    editingTextIndex_ = -1;
     DestroyTextEditor();
     dirty_ = true;
 }
@@ -2672,6 +2730,7 @@ bool ScreenshotOverlay::ComposeSelection(std::vector<std::uint8_t>& bgra, int& w
     options.rasterizer = rasterizer_.get();
     options.fontFamily = options_.fontFamily;
     options.scale = 1.0f;
+    options.sizeScale = uiScale_;
     options.origin = Point{ -(selection.left - windowX_), -(selection.top - windowY_) };
     core::AppendAnnotationPlan(document_.Items(), options, plan);
 

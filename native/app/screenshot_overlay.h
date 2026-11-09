@@ -310,6 +310,8 @@ private:
     HWND editControl_ = nullptr;
     void* editorBrush_ = nullptr;
     core::Point textPoint_{};
+    // >= 0 表示这次编辑是「改已有文字」，提交时替换而不是新增。
+    int editingTextIndex_ = -1;
 };
 
 }

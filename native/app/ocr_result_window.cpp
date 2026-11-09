@@ -27,15 +27,6 @@ std::wstring Utf8ToWide(std::string_view text) {
     return wide;
 }
 
-std::wstring Lower(std::wstring text) {
-    for (wchar_t& character : text) {
-        if (character >= L'A' && character <= L'Z') {
-            character = static_cast<wchar_t>(character - L'A' + L'a');
-        }
-    }
-    return text;
-}
-
 }  // namespace
 
 OcrResultWindow::OcrResultWindow() = default;
@@ -123,6 +114,16 @@ bool OcrResultWindow::Create(void* owner, const std::uint8_t* bgra, int width, i
     for (HWND control : { text_, search_, findButton_, copyButton_, previousButton_, nextButton_, viewButton_, hint_, closeButton_ }) {
         SendMessageW(control, WM_SETFONT, reinterpret_cast<WPARAM>(font_), TRUE);
     }
+
+    // 两个 EDIT 都要子类化：F3/Shift+F3 在结果框里也要能跳，回车/Esc 只在搜索框里生效。
+    // 原窗口过程存在成员里，EditProc 靠 hwnd 判断该转发给哪一个。
+    SetWindowLongPtrW(search_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
+    SetWindowLongPtrW(text_, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(this));
+    searchTextProc_ = reinterpret_cast<WNDPROC>(
+        SetWindowLongPtrW(search_, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&EditProc)));
+    resultTextProc_ = reinterpret_cast<WNDPROC>(
+        SetWindowLongPtrW(text_, GWLP_WNDPROC, reinterpret_cast<LONG_PTR>(&EditProc)));
+    SendMessageW(search_, EM_SETCUEBANNER, 0, reinterpret_cast<LPARAM>(L"搜索识别结果"));
 
     const int screenWidth = GetSystemMetrics(SM_CXSCREEN);
     const int screenHeight = GetSystemMetrics(SM_CYSCREEN);
@@ -255,6 +256,10 @@ LRESULT OcrResultWindow::Handle(HWND window, UINT message, WPARAM wParam, LPARAM
     }
 
     case WM_COMMAND:
+        if (LOWORD(wParam) == 2 && HIWORD(wParam) == EN_CHANGE) {
+            UpdateSearch(true);
+            return 0;
+        }
         if (LOWORD(wParam) == 3) {
             FindNext();
         } else if (LOWORD(wParam) == 4) {
@@ -286,6 +291,12 @@ LRESULT OcrResultWindow::Handle(HWND window, UINT message, WPARAM wParam, LPARAM
         findButton_ = nullptr;
         copyButton_ = nullptr;
         hint_ = nullptr;
+        previousButton_ = nullptr;
+        nextButton_ = nullptr;
+        viewButton_ = nullptr;
+        closeButton_ = nullptr;
+        searchTextProc_ = nullptr;
+        resultTextProc_ = nullptr;
         return 0;
 
     default:
@@ -479,18 +490,51 @@ void OcrResultWindow::StepMatch(int direction) {
         matchIndex_ = (matchIndex_ + 1) % matches_.size();
     }
     SelectMatch(matchIndex_);
+    RefreshSearchStatus();
 }
 
-void OcrResultWindow::FindNext() {
+std::wstring OcrResultWindow::CurrentQuery() const {
+    if (search_ == nullptr) {
+        return {};
+    }
+    const int length = GetWindowTextLengthW(search_);
+    std::wstring query(static_cast<std::size_t>(length) + 1, L'\0');
+    GetWindowTextW(search_, query.data(), length + 1);
+    query.resize(static_cast<std::size_t>(length));
+    return query;
+}
+
+void OcrResultWindow::RefreshSearchStatus() {
+    if (hint_ == nullptr) {
+        return;
+    }
+    // 1.x 的状态文本就是 "3/17"；2.0 的命中单位是「行」（FindMatchingLines 每行只报一次），
+    // 上一处/下一处走的也是行，所以计数与导航同源。
+    std::wstring status;
+    if (!lastQuery_.empty()) {
+        status = matches_.empty()
+                     ? L"无匹配"
+                     : std::to_wstring(matchIndex_ + 1) + L"/" + std::to_wstring(matches_.size());
+    }
+    SetWindowTextW(hint_, status.empty() ? L"左侧为识别区域，框出的每一段即为右侧的一行"
+                                         : status.c_str());
+}
+
+void OcrResultWindow::UpdateSearch(bool selectFirst) {
     if (search_ == nullptr || text_ == nullptr) {
         return;
     }
+    const std::wstring query = CurrentQuery();
+    const bool queryChanged = query != lastQuery_;
+    lastQuery_ = query;
 
-    wchar_t buffer[256] = {};
-    GetWindowTextW(search_, buffer, 256);
-    const std::wstring query = buffer;
     if (query.empty() || result_.lines.empty()) {
         matches_.clear();
+        matchIndex_ = 0;
+        SendMessageW(text_, EM_SETSEL, 0, 0);
+        RefreshSearchStatus();
+        // 高亮是画在父窗口上的：清了命中必须重绘，否则绿框/蓝框会留在图上。
+        InvalidateRect(window_, nullptr, FALSE);
         return;
     }
 
@@ -502,17 +546,72 @@ void OcrResultWindow::FindNext() {
                         queryUtf8.data(), utf8Length, nullptr, nullptr);
 
     matches_ = core::ocr::FindMatchingLines(result_, queryUtf8);
+    if (queryChanged || matchIndex_ >= matches_.size()) {
+        matchIndex_ = 0;
+    }
     if (matches_.empty()) {
-        matchIndex_ = 0;
-        SetFocus(text_);
-        return;
+        SendMessageW(text_, EM_SETSEL, 0, 0);
+    } else if (selectFirst) {
+        SelectMatch(matchIndex_);
     }
-    if (query != lastQuery_) {
-        lastQuery_ = query;
-        matchIndex_ = 0;
-    } else {
-        matchIndex_ = (matchIndex_ + 1) % matches_.size();
-    }
-    SelectMatch(matchIndex_);
+    RefreshSearchStatus();
+    InvalidateRect(window_, nullptr, FALSE);
 }
+
+void OcrResultWindow::FindNext() {
+    const bool queryChanged = CurrentQuery() != lastQuery_;
+    UpdateSearch(true);
+    // 查询没变时「查找」就是下一处；变了则停在第一处（与即时搜索一致）。
+    if (!queryChanged && !matches_.empty()) {
+        StepMatch(1);
+    }
+}
+
+void OcrResultWindow::SetQueryForTest(const std::wstring& query) {
+    if (search_ != nullptr) {
+        SetWindowTextW(search_, query.c_str());
+    }
+}
+
+std::wstring OcrResultWindow::StatusForTest() const {
+    if (hint_ == nullptr) {
+        return {};
+    }
+    const int length = GetWindowTextLengthW(hint_);
+    std::wstring status(static_cast<std::size_t>(length) + 1, L'\0');
+    GetWindowTextW(hint_, status.data(), length + 1);
+    status.resize(static_cast<std::size_t>(length));
+    return status;
+}
+
+LRESULT CALLBACK OcrResultWindow::EditProc(HWND window, UINT message, WPARAM wParam,
+                                           LPARAM lParam) {
+    auto* self = reinterpret_cast<OcrResultWindow*>(GetWindowLongPtrW(window, GWLP_USERDATA));
+    if (self == nullptr) {
+        return DefWindowProcW(window, message, wParam, lParam);
+    }
+    const bool isSearch = window == self->search_;
+    const WNDPROC original = isSearch ? self->searchTextProc_ : self->resultTextProc_;
+
+    if (message == WM_KEYDOWN) {
+        const bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+        if (wParam == VK_F3) {
+            self->StepMatch(shift ? -1 : 1);
+            return 0;
+        }
+        if (isSearch && wParam == VK_RETURN) {
+            self->StepMatch(shift ? -1 : 1);
+            return 0;
+        }
+        if (isSearch && wParam == VK_ESCAPE) {
+            SetWindowTextW(window, L"");
+            return 0;
+        }
+    }
+    if (message == WM_NCDESTROY) {
+        SetWindowLongPtrW(window, GWLP_USERDATA, 0);
+    }
+    return CallWindowProcW(original, window, message, wParam, lParam);
+}
+
 }

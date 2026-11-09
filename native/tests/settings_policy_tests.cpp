@@ -681,6 +681,65 @@ void TestSingleKeyRules() {
               "NoRepeat alone is accepted");
 }
 
+void TestHotkeySlotsAndConflicts() {
+    AppSettings settings;
+    CheckEqual(core::kHotkeySlotCount, 5, "five hotkey slots");
+    CheckTrue(core::HotkeySlot(settings, 0) == &settings.radialHotkey, "slot 0 is radial");
+    CheckTrue(core::HotkeySlot(settings, 1) == &settings.screenshotHotkey, "slot 1 is screenshot");
+    CheckTrue(core::HotkeySlot(settings, 2) == &settings.ocrHotkey, "slot 2 is ocr");
+    CheckTrue(core::HotkeySlot(settings, 3) == &settings.recordHotkey, "slot 3 is record");
+    CheckTrue(core::HotkeySlot(settings, 4) == &settings.pinHotkey, "slot 4 is pin");
+    CheckTrue(core::HotkeySlot(settings, -1) == nullptr, "capture idle slot is out of range");
+    CheckTrue(core::HotkeySlot(settings, 5) == nullptr, "slot past the end is out of range");
+
+    const AppSettings& readOnly = settings;
+    CheckTrue(core::HotkeySlot(readOnly, 2) == &settings.ocrHotkey, "const overload picks the same slot");
+    CheckTrue(core::HotkeySlot(readOnly, -1) == nullptr, "const overload rejects out of range");
+
+    *core::HotkeySlot(settings, 2) = HotkeySpec{ KeySymbol::K, core::kModControl };
+    CheckTrue(settings.ocrHotkey == HotkeySpec(KeySymbol::K, core::kModControl),
+              "mutable slot writes through");
+
+    // 默认五把互不相同。
+    AppSettings defaults;
+    for (int slot = 0; slot < core::kHotkeySlotCount; ++slot) {
+        CheckEqual(core::FindHotkeyConflict(defaults, slot), -1, "default hotkeys do not collide");
+    }
+
+    // 把截图改成与光圈同一把：两个方向都要报出对方。
+    defaults.screenshotHotkey = defaults.radialHotkey;
+    CheckEqual(core::FindHotkeyConflict(defaults, 0), 1, "radial reports screenshot");
+    CheckEqual(core::FindHotkeyConflict(defaults, 1), 0, "screenshot reports radial");
+    CheckEqual(core::FindHotkeyConflict(defaults, 2), -1, "unrelated slot stays clean");
+
+    // 第一个冲突按槽位序返回，不是按「离得最近」。
+    defaults.ocrHotkey = defaults.radialHotkey;
+    CheckEqual(core::FindHotkeyConflict(defaults, 0), 1, "lowest conflicting slot wins");
+
+    // 同键不同修饰键不算冲突。
+    AppSettings modifiers;
+    modifiers.radialHotkey = HotkeySpec{ KeySymbol::D, core::kModControl | core::kModAlt };
+    modifiers.screenshotHotkey = HotkeySpec{ KeySymbol::D, core::kModControl };
+    CheckEqual(core::FindHotkeyConflict(modifiers, 0), -1, "extra modifier is a different hotkey");
+    CheckEqual(core::FindHotkeyConflict(modifiers, 1), -1, "missing modifier is a different hotkey");
+
+    // 只差 NoRepeat 仍然是同一把物理键：注册第二次必然失败，所以要报冲突。
+    AppSettings noRepeat;
+    noRepeat.radialHotkey = HotkeySpec{ KeySymbol::F13, 0 };
+    noRepeat.pinHotkey = HotkeySpec{ KeySymbol::F13, core::kModNoRepeat };
+    CheckEqual(core::FindHotkeyConflict(noRepeat, 0), 4, "NoRepeat does not hide a collision");
+    CheckEqual(core::FindHotkeyConflict(noRepeat, 4), 0, "NoRepeat collision is symmetric");
+
+    // 未设置的槽位不参与比对，否则两把空热键会互相报冲突。
+    AppSettings empty;
+    empty.radialHotkey = HotkeySpec{};
+    empty.screenshotHotkey = HotkeySpec{};
+    CheckEqual(core::FindHotkeyConflict(empty, 0), -1, "unset hotkey cannot collide");
+    CheckEqual(core::FindHotkeyConflict(empty, 1), -1, "unset hotkey cannot be collided with");
+    CheckEqual(core::FindHotkeyConflict(empty, -1), -1, "out of range slot has no conflict");
+    CheckEqual(core::FindHotkeyConflict(empty, 9), -1, "past the end slot has no conflict");
+}
+
 void TestResolveOutputSize() {
     core::RecordingSettings original;
     CheckEqual(core::ResolveOutputSize(original, 2560, 1440).widthPx, 2560, "original keeps width");
@@ -779,6 +838,7 @@ int main() {
     TestHotkeyParsing();
     TestUnrecognizedKeys();
     TestSingleKeyRules();
+    TestHotkeySlotsAndConflicts();
     TestResolveOutputSize();
     TestBitrate();
     TestSettingsEquality();

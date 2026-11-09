@@ -78,6 +78,26 @@ enum : int {
 SettingsWindow* g_hotkeyOwner = nullptr;
 HHOOK g_hotkeyHook = nullptr;
 
+// 低级钩子里物理按键报的是左右分开的虚拟码（VK_LCONTROL 等），不是 VK_CONTROL。
+bool IsModifierVirtualKey(DWORD virtualKey) {
+    switch (virtualKey) {
+    case VK_LCONTROL:
+    case VK_RCONTROL:
+    case VK_CONTROL:
+    case VK_LMENU:
+    case VK_RMENU:
+    case VK_MENU:
+    case VK_LSHIFT:
+    case VK_RSHIFT:
+    case VK_SHIFT:
+    case VK_LWIN:
+    case VK_RWIN:
+        return true;
+    default:
+        return false;
+    }
+}
+
 bool EnsureGdiplus() {
     static ULONG_PTR token = 0;
     if (token == 0) {
@@ -264,6 +284,17 @@ void StrokeRoundRect(Graphics& g, const RectF& rect, float radius, const Color& 
 Color WithAlpha(const Color& color, int alpha) {
     return Color(static_cast<BYTE>(std::clamp(alpha, 0, 255)), color.GetR(), color.GetG(),
                  color.GetB());
+}
+
+const wchar_t* HotkeySlotLabel(int slot) {
+    switch (slot) {
+    case 0: return L"呼出光圈";
+    case 1: return L"截图";
+    case 2: return L"文字识别";
+    case 3: return L"录屏";
+    case 4: return L"贴图";
+    default: return L"未知动作";
+    }
 }
 
 int CountdownOption(core::RecordingCountdown value) {
@@ -490,12 +521,22 @@ LRESULT CALLBACK SettingsWindow::HotkeyHook(int code, WPARAM wParam, LPARAM lPar
     if (code < 0 || g_hotkeyOwner == nullptr) {
         return CallNextHookEx(nullptr, code, wParam, lParam);
     }
-    if (wParam != WM_KEYDOWN && wParam != WM_SYSKEYDOWN) {
+    ++g_hotkeyOwner->hookEvents_;
+    const DWORD vk = reinterpret_cast<const KBDLLHOOKSTRUCT*>(lParam)->vkCode;
+    const bool isDown = wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN;
+    const bool isUp = wParam == WM_KEYUP || wParam == WM_SYSKEYUP;
+    if (!isDown && !isUp) {
         return CallNextHookEx(nullptr, code, wParam, lParam);
     }
-    const DWORD vk = reinterpret_cast<const KBDLLHOOKSTRUCT*>(lParam)->vkCode;
-    if (vk == VK_CONTROL || vk == VK_SHIFT || vk == VK_MENU || vk == VK_LWIN || vk == VK_RWIN) {
+
+    // 修饰键状态自己记，不读 GetAsyncKeyState：钩子里那个状态可能还没跟上
+    // （注入的事件尤其明显，实测会把 Ctrl+Alt+D 读成裸 D），组合键就被当成单键了。
+    if (IsModifierVirtualKey(vk)) {
+        g_hotkeyOwner->TrackModifier(vk, isDown);
         return 1;
+    }
+    if (isUp) {
+        return CallNextHookEx(nullptr, code, wParam, lParam);
     }
     if (vk == VK_ESCAPE) {
         g_hotkeyOwner->CancelHotkeyCapture();
@@ -503,20 +544,28 @@ LRESULT CALLBACK SettingsWindow::HotkeyHook(int code, WPARAM wParam, LPARAM lPar
     }
     core::HotkeySpec spec;
     spec.key = KeyFromVirtualKey(vk);
-    if ((GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0) {
+    if (g_hotkeyOwner->ctrlDown_) {
         spec.modifiers |= core::kModControl;
     }
-    if ((GetAsyncKeyState(VK_MENU) & 0x8000) != 0) {
+    if (g_hotkeyOwner->altDown_) {
         spec.modifiers |= core::kModAlt;
     }
-    if ((GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0) {
+    if (g_hotkeyOwner->shiftDown_) {
         spec.modifiers |= core::kModShift;
     }
-    if (((GetAsyncKeyState(VK_LWIN) | GetAsyncKeyState(VK_RWIN)) & 0x8000) != 0) {
+    if (g_hotkeyOwner->winDown_) {
         spec.modifiers |= core::kModWin;
     }
-    if (spec.key == core::KeySymbol::None || !core::CheckHotkey(spec).valid) {
-        Beep(800, 60);
+    if (spec.key == core::KeySymbol::None) {
+        return 1;
+    }
+    const core::HotkeyCheck check = core::CheckHotkey(spec);
+    if (!check.valid) {
+        // 1.x 在这里只弹横幅、不改值、也不退出捕获态：用户接着按下一把就行。
+        g_hotkeyOwner->ShowError(
+            (spec.modifiers & core::kStateModifiers) == 0
+                ? L"该单键不适合用作全局快捷键，请改用 F1–F24、字母、数字，或按住 Ctrl / Alt / Shift 再按主键。"
+                : L"无法使用该组合键，请换一个。");
         return 1;
     }
     g_hotkeyOwner->FinishHotkeyCapture(spec);
@@ -524,7 +573,12 @@ LRESULT CALLBACK SettingsWindow::HotkeyHook(int code, WPARAM wParam, LPARAM lPar
 }
 
 void SettingsWindow::StartHotkeyCapture(int index) {
-    if (index < 0 || index >= 5) {
+    if (index < 0 || index >= core::kHotkeySlotCount) {
+        return;
+    }
+    // 再点同一行 = 取消（1.x 的 HotkeyButton_Click）；点别的行则换一行继续捕获。
+    if (captureIndex_ == index) {
+        CancelHotkeyCapture();
         return;
     }
     if (keyHook_ != nullptr) {
@@ -533,23 +587,63 @@ void SettingsWindow::StartHotkeyCapture(int index) {
     }
     captureIndex_ = index;
     g_hotkeyOwner = this;
+    hookEvents_ = 0;
+    // 起捕获时可能已经有修饰键按着（用户先按住再点行不算常见，但按错了常见）。
+    // 之后状态全靠钩子自己维护，这里只做一次种子。
+    ctrlDown_ = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+    altDown_ = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+    shiftDown_ = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+    winDown_ = ((GetAsyncKeyState(VK_LWIN) | GetAsyncKeyState(VK_RWIN)) & 0x8000) != 0;
+    ClearError();
     keyHook_ = SetWindowsHookExW(WH_KEYBOARD_LL, &SettingsWindow::HotkeyHook,
                                  GetModuleHandleW(nullptr), 0);
     Render();
 }
 
 void SettingsWindow::FinishHotkeyCapture(const core::HotkeySpec& spec) {
-    if (captureIndex_ >= 0 && captureIndex_ < 5) {
-        switch (captureIndex_) {
-        case 0: settings_.radialHotkey = spec; break;
-        case 1: settings_.screenshotHotkey = spec; break;
-        case 2: settings_.ocrHotkey = spec; break;
-        case 3: settings_.recordHotkey = spec; break;
-        case 4: settings_.pinHotkey = spec; break;
-        default: break;
-        }
+    core::HotkeySpec* slot = core::HotkeySlot(settings_, captureIndex_);
+    if (slot == nullptr) {
+        CancelHotkeyCapture();
+        return;
+    }
+    // 先试着写进去再查冲突：FindHotkeyConflict 比的是「设置里现在的五把」，
+    // 这样不用在 UI 里再拼一份临时 AppSettings。冲突就把原值放回去。
+    const core::HotkeySpec previous = *slot;
+    *slot = spec;
+    const int conflict = core::FindHotkeyConflict(settings_, captureIndex_);
+    if (conflict >= 0) {
+        *slot = previous;
+        ShowError(std::wstring(L"该快捷键已用于「") + HotkeySlotLabel(conflict) +
+                  L"」，请换一个。");
+        return;
     }
     CancelHotkeyCapture();
+}
+
+void SettingsWindow::TrackModifier(DWORD virtualKey, bool down) {
+    switch (virtualKey) {
+    case VK_LCONTROL:
+    case VK_RCONTROL:
+    case VK_CONTROL:
+        ctrlDown_ = down;
+        break;
+    case VK_LMENU:
+    case VK_RMENU:
+    case VK_MENU:
+        altDown_ = down;
+        break;
+    case VK_LSHIFT:
+    case VK_RSHIFT:
+    case VK_SHIFT:
+        shiftDown_ = down;
+        break;
+    case VK_LWIN:
+    case VK_RWIN:
+        winDown_ = down;
+        break;
+    default:
+        break;
+    }
 }
 
 void SettingsWindow::CancelHotkeyCapture() {
@@ -559,20 +653,45 @@ void SettingsWindow::CancelHotkeyCapture() {
         keyHook_ = nullptr;
     }
     g_hotkeyOwner = nullptr;
+    ClearError();
     Render();
 }
 
+void SettingsWindow::ShowError(const std::wstring& message) {
+    error_ = message;
+    Render();
+}
+
+void SettingsWindow::ClearError() {
+    error_.clear();
+}
+
 void SettingsWindow::Save() {
+    // 捕获中不许保存：这一把还没定下来（1.x 直接把保存按钮禁用）。
+    if (captureIndex_ >= 0) {
+        return;
+    }
+    // 捕获时已经挡过冲突，但手改/1.x 迁移进来的文件可能本来就带着两把相同的键。
+    for (int slot = 0; slot < core::kHotkeySlotCount; ++slot) {
+        const int conflict = core::FindHotkeyConflict(settings_, slot);
+        if (conflict >= 0) {
+            page_ = Page::Hotkeys;
+            ShowError(std::wstring(L"「") + HotkeySlotLabel(slot) + L"」与「" +
+                      HotkeySlotLabel(conflict) + L"」使用了相同的快捷键，请更换其中一个。");
+            return;
+        }
+    }
     if (!onSave_) {
         Close();
         return;
     }
-    if (onSave_(settings_)) {
+    std::wstring error;
+    if (onSave_(settings_, error)) {
         saved_ = true;
         Close();
-    } else {
-        MessageBoxW(window_, L"保存失败，详见日志。", L"HaloCap", MB_OK | MB_ICONWARNING);
+        return;
     }
+    ShowError(error.empty() ? L"保存失败，详见日志。" : error);
 }
 
 std::wstring SettingsWindow::SummaryText() const {
@@ -701,6 +820,9 @@ int SettingsWindow::HitTest(POINT client) const {
 
 void SettingsWindow::Click(int id) {
     if (id >= kIdNavBase && id < kIdNavBase + 6) {
+        if (captureIndex_ >= 0) {
+            CancelHotkeyCapture();
+        }
         page_ = static_cast<Page>(id - kIdNavBase);
         scroll_ = 0;
         Render();
@@ -1039,16 +1161,12 @@ void SettingsWindow::Render() {
     case Page::Hotkeys: {
         groupLabel(L"全局快捷键");
         cardStart(5 * 56.0f);
-        const wchar_t* names[5] = { L"呼出光圈", L"截图", L"文字识别", L"录屏", L"贴图" };
-        const core::HotkeySpec* specs[5] = { &settings_.radialHotkey, &settings_.screenshotHotkey,
-                                             &settings_.ocrHotkey, &settings_.recordHotkey,
-                                             &settings_.pinHotkey };
-        for (int i = 0; i < 5; ++i) {
+        for (int i = 0; i < core::kHotkeySlotCount; ++i) {
             const float rowTop = y;
             if (i > 0) {
                 divider(scrollX, scrollW);
             }
-            DrawText(g, names[i], &fonts->setting,
+            DrawText(g, HotkeySlotLabel(i), &fonts->setting,
                      RectF(scrollX + 16.0f, rowTop + 12.0f, 260, 18), textPrimary);
             const float fieldW = 160.0f;
             const float fieldH = 34.0f;
@@ -1060,7 +1178,8 @@ void SettingsWindow::Render() {
             StrokeRoundRect(g, RectF(fieldX, fieldY, fieldW, fieldH), 7.0f,
                             capturing ? accent : Color(255, 0xD9, 0xD9, 0xDE));
             const std::wstring text =
-                capturing ? L"按下快捷键…" : Utf8ToWide(core::FormatHotkeyText(*specs[i]));
+                capturing ? L"请按下快捷键…"
+                          : Utf8ToWide(core::FormatHotkeyText(*core::HotkeySlot(settings_, i)));
             DrawText(g, text, &fonts->field, RectF(fieldX, fieldY, fieldW, fieldH),
                      capturing ? accent : textPrimary, StringAlignmentCenter);
             AddHotspot(RECT{ static_cast<LONG>(fieldX), static_cast<LONG>(fieldY),
@@ -1069,6 +1188,29 @@ void SettingsWindow::Render() {
                        kIdHotkeyBase + i);
             y = rowTop + 56.0f;
         }
+
+        // 1.x 的 UpdateHotkeyHint：有单键就点名哪几把，否则给通用说明。
+        y += 12.0f;
+        std::wstring hint;
+        if (captureIndex_ >= 0) {
+            hint = L"等待按键…  按 Esc 取消";
+        } else {
+            std::wstring singleKeys;
+            for (int i = 0; i < core::kHotkeySlotCount; ++i) {
+                if ((core::HotkeySlot(settings_, i)->modifiers & core::kStateModifiers) == 0) {
+                    if (!singleKeys.empty()) {
+                        singleKeys += L"、";
+                    }
+                    singleKeys += HotkeySlotLabel(i);
+                }
+            }
+            hint = singleKeys.empty()
+                       ? L"单击按键区域后按下新的组合键；单键会独占该键并优先于输入法，Esc 取消"
+                       : singleKeys + L" 使用单键，会独占该键并优先于输入法；点击对应按键可重新设置。";
+        }
+        DrawText(g, hint, &fonts->desc, RectF(scrollX + 4.0f, y, scrollW - 8.0f, 32.0f),
+                 textTertiary, StringAlignmentNear, StringAlignmentNear);
+        y += 32.0f;
         break;
     }
     case Page::Capture: {
@@ -1332,12 +1474,10 @@ void SettingsWindow::Render() {
                       Color(51, 0, 0, 0));
     }
 
-    // 底部：提示 + 取消/保存。
+    // 底部：提示/错误横幅 + 取消/保存。
     const float footerTop = frame.Y + frame.Height - kFooter;
     Pen footerHairline(hairline, 1.0f);
     g.DrawLine(&footerHairline, frame.X + kSidebar, footerTop, frame.X + frame.Width, footerTop);
-    DrawText(g, L"更改在保存后生效", &fonts->desc,
-             RectF(headerX, footerTop, 300, kFooter), textTertiary);
 
     const float saveW = 84.0f;
     const float cancelW = 72.0f;
@@ -1345,6 +1485,20 @@ void SettingsWindow::Render() {
     const float buttonY = footerTop + (kFooter - buttonH) * 0.5f;
     const float saveX = frame.X + frame.Width - 30.0f - saveW;
     const float cancelX = saveX - 8.0f - cancelW;
+
+    if (!error_.empty()) {
+        // 1.x 的 ErrorBanner：#FFEDEB 底、#F4C7C2 边、#B3261E 字。两行放得下最长那条提示。
+        const RectF banner(headerX, footerTop + 8.0f, cancelX - 16.0f - headerX, 44.0f);
+        FillRoundRect(g, banner, 7.0f, Color(255, 0xFF, 0xED, 0xEB));
+        StrokeRoundRect(g, banner, 7.0f, Color(255, 0xF4, 0xC7, 0xC2));
+        DrawText(g, error_, &fonts->desc,
+                 RectF(banner.X + 10.0f, banner.Y, banner.Width - 20.0f, banner.Height),
+                 Color(255, 0xB3, 0x26, 0x1E));
+    } else {
+        DrawText(g, L"更改在保存后生效", &fonts->desc,
+                 RectF(headerX, footerTop, cancelX - 16.0f - headerX, kFooter), textTertiary);
+    }
+
     {
         FillRoundRect(g, RectF(cancelX, buttonY, cancelW, buttonH), 7.0f, Color(0, 0, 0, 0));
         DrawText(g, L"取消", &fonts->button, RectF(cancelX, buttonY, cancelW, buttonH),
@@ -1354,13 +1508,18 @@ void SettingsWindow::Render() {
                          static_cast<LONG>(buttonY + buttonH) },
                    kIdCancel);
 
-        FillRoundRect(g, RectF(saveX, buttonY, saveW, buttonH), 7.0f, accent);
+        // 捕获进行中保存是灰的：那一把还没定下来，Save() 也会直接返回。
+        const bool saveEnabled = captureIndex_ < 0;
+        FillRoundRect(g, RectF(saveX, buttonY, saveW, buttonH), 7.0f,
+                      saveEnabled ? accent : Color(255, 0xB8, 0xD4, 0xF0));
         DrawText(g, L"保存", &fonts->buttonBold, RectF(saveX, buttonY, saveW, buttonH),
                  Color(255, 255, 255, 255), StringAlignmentCenter);
-        AddHotspot(RECT{ static_cast<LONG>(saveX), static_cast<LONG>(buttonY),
-                         static_cast<LONG>(saveX + saveW),
-                         static_cast<LONG>(buttonY + buttonH) },
-                   kIdSave);
+        if (saveEnabled) {
+            AddHotspot(RECT{ static_cast<LONG>(saveX), static_cast<LONG>(buttonY),
+                             static_cast<LONG>(saveX + saveW),
+                             static_cast<LONG>(buttonY + buttonH) },
+                       kIdSave);
+        }
     }
 
     // 拷贝到 DIB 并 UpdateLayeredWindow。

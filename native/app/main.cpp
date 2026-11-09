@@ -95,6 +95,17 @@ enum HotkeyToken : int {
     kTokenPin = 5,
 };
 
+// 下标 = core 的热键槽位序（0 光圈、1 截图、2 识别、3 录屏、4 贴图）。
+constexpr int kHotkeyTokens[core::kHotkeySlotCount] = {
+    kTokenRadial, kTokenScreenshot, kTokenOcr, kTokenRecord, kTokenPin
+};
+constexpr const char* kHotkeyNames[core::kHotkeySlotCount] = {
+    "radial", "screenshot", "ocr", "record", "pin"
+};
+constexpr const wchar_t* kHotkeyLabels[core::kHotkeySlotCount] = {
+    L"呼出光圈", L"截图", L"文字识别", L"录屏", L"贴图"
+};
+
 struct Options {
     bool selftest = false;
     int seconds = kDefaultSelftestSeconds;
@@ -123,6 +134,12 @@ struct Options {
     // 非空 = 无人值守的设置页自检：打开六页设置 → 抓图 → 退出。
     std::wstring settingsSelftestPath;
     std::wstring settingsClickSelftestPath;
+
+    // 非空 = 无人值守的热键自检：注入真按键走一遍捕获/冲突/取消/保存闸门。
+    std::wstring hotkeySelftestPath;
+
+    // 非空 = 无人值守的 OCR 搜索自检：喂合成识别结果，验计数/回绕/清空与图上高亮重绘。
+    std::wstring ocrSearchSelftestPath;
 
     // 非空 = 无人值守的贴图自检：往剪贴板写颜色文本 → 贴图 → 抓图 → 退出。
     std::wstring pinSelftestPath;
@@ -350,6 +367,10 @@ Options ParseOptions(int argc, char** argv) {
             options.radialSelftestPath = Utf8ToWide(argv[++i]);
         } else if (argument == "--settings-click-selftest" && i + 1 < argc) {
             options.settingsClickSelftestPath = Utf8ToWide(argv[++i]);
+        } else if (argument == "--hotkey-selftest" && i + 1 < argc) {
+            options.hotkeySelftestPath = Utf8ToWide(argv[++i]);
+        } else if (argument == "--ocr-search-selftest" && i + 1 < argc) {
+            options.ocrSearchSelftestPath = Utf8ToWide(argv[++i]);
         } else if (argument == "--settings-page" && i + 1 < argc) {
             options.settingsSelftestPage = std::atoi(argv[++i]);
         } else if (argument == "--radial-click-selftest" && i + 1 < argc) {
@@ -381,6 +402,8 @@ void PrintUsage() {
         "  --screenshot-selftest PATH  open the screenshot overlay, annotate, export, exit\n"
         "  --ocr-selftest PATH         open the OCR overlay, recognise the selection, exit\n"
         "  --settings-selftest PATH    open the six settings pages, capture, exit\n"
+        "  --hotkey-selftest PATH      inject keys through hotkey capture, capture, exit\n"
+        "  --ocr-search-selftest PATH  drive the result window search on a synthetic result, exit\n"
         "  --pin-selftest PATH         pin the clipboard content, capture, exit\n"
         "  --radial-selftest PATH      open the radial menu, capture, exit\n"
         "  --window-picker-selftest PATH  open the window picker, capture, exit\n"
@@ -754,30 +777,52 @@ int Run(const Options& options) {
     Win32InputHost input;
     int hotkeysRegistered = 0;
     bool inputStarted = false;
+
+    // 启动与「设置保存」共用这一条注册路：先全部摘掉再按槽位序注册，任何一把失败
+    // 都由调用方决定是否退回原样。error 非空时带回第一把失败的可读原因。
+    const auto registerAllHotkeys = [&](const core::AppSettings& candidate, std::wstring* error) {
+        for (int token : kHotkeyTokens) {
+            input.UnregisterHotkey(token);
+        }
+        int registered = 0;
+        for (int slot = 0; slot < core::kHotkeySlotCount; ++slot) {
+            const core::HotkeySpec& spec = *core::HotkeySlot(candidate, slot);
+            if (input.RegisterHotkey(spec, kHotkeyTokens[slot])) {
+                ++registered;
+                log.Info(std::string("hotkey: ") + kHotkeyNames[slot] + " = " +
+                         core::FormatHotkeyText(spec));
+                continue;
+            }
+            log.Error(std::string("hotkey: ") + kHotkeyNames[slot] + " unavailable (" +
+                      input.LastErrorKind() + ")");
+            if (error != nullptr && error->empty()) {
+                const std::wstring display = Utf8ToWide(core::FormatHotkeyText(spec));
+                *error = std::wstring(L"「") + kHotkeyLabels[slot] + L"」：";
+                if (std::strcmp(input.LastErrorKind(), "inuse") == 0) {
+                    *error += L"「" + display + L"」已被其他程序占用，换一个组合键试试。";
+                } else {
+                    *error += L"无法注册快捷键「" + display + L"」（错误码 " +
+                              std::to_wstring(input.LastErrorCode()) + L"）。";
+                }
+            }
+        }
+        // 单键热键必须独占该键：不拦截的话前台程序还会再收到一次同一个键，
+        // 设置页那句「单键会独占该键并优先于输入法」才算数。
+        std::vector<core::HotkeySpec> singleKeys;
+        for (int slot = 0; slot < core::kHotkeySlotCount; ++slot) {
+            const core::HotkeySpec& spec = *core::HotkeySlot(candidate, slot);
+            if ((spec.modifiers & core::kStateModifiers) == 0) {
+                singleKeys.push_back(spec);
+            }
+        }
+        input.SetInterception(singleKeys);
+        return registered;
+    };
+
     if (options.input) {
         inputStarted = input.Start();
         if (inputStarted) {
-            const struct {
-                const core::HotkeySpec& spec;
-                int token;
-                const char* name;
-            } hotkeys[] = {
-                { settings.radialHotkey, kTokenRadial, "radial" },
-                { settings.screenshotHotkey, kTokenScreenshot, "screenshot" },
-                { settings.ocrHotkey, kTokenOcr, "ocr" },
-                { settings.recordHotkey, kTokenRecord, "record" },
-                { settings.pinHotkey, kTokenPin, "pin" },
-            };
-            for (const auto& hotkey : hotkeys) {
-                if (input.RegisterHotkey(hotkey.spec, hotkey.token)) {
-                    ++hotkeysRegistered;
-                    log.Info(std::string("hotkey: ") + hotkey.name + " = " +
-                             core::FormatHotkeyText(hotkey.spec));
-                } else {
-                    log.Error(std::string("hotkey: ") + hotkey.name + " unavailable (" +
-                              input.LastErrorKind() + ")");
-                }
-            }
+            hotkeysRegistered = registerAllHotkeys(settings, nullptr);
         } else {
             log.Error(std::string("input: host failed to start (") + input.LastErrorKind() + ")");
         }
@@ -820,6 +865,9 @@ int Run(const Options& options) {
     OverlayStack overlay;
     bool running = true;
     bool sampledIdle = false;
+    // 启动不预热：这里的 OverlayStack 只服务录制（beginRecording 里按需建），
+    // 截图/OCR 走的是 ScreenshotOverlay 自己的设备——预热从不服务它们，只是把
+    // 58 MB 常驻拖到进程余生（实测：预热时 OCR 后 99 MB，不预热 41 MB）。
     bool overlayReady = false;
     std::int64_t overlayAtMs = 0;
     double idlePrivate = -1.0;
@@ -827,13 +875,6 @@ int Run(const Options& options) {
     double overlayPrivate = -1.0;
     double overlayWorkingSet = -1.0;
     int actions = 0;
-
-    // 产品形态要预热覆盖层：1.x 的 v1.2 起就是这么做的（不预热的话第一次截图会闪一下）。
-    // 预热的代价是这 60 MB 常驻 idle，所以 S1 的 80 MB 预算实际是在量「预热之后」。
-    if (!options.selftest && options.overlay) {
-        overlayReady = overlay.Initialize(log, overlayWidth, overlayHeight);
-        log.Info(overlayReady ? "overlay: prewarmed" : "overlay: prewarm failed");
-    }
 
     // ---- 录制入口：托盘「录屏」与录制热键共用这一个开关 ----
     RecordingRunner recording;
@@ -1121,10 +1162,34 @@ int Run(const Options& options) {
         settingsWindow = std::make_unique<halocap::app::SettingsWindow>();
         const bool created = settingsWindow->Create(
             nullptr, liveSettings, facts, ResolveOcrModelDirectory(),
-            [&](const core::AppSettings& updated) {
+            [&](const core::AppSettings& updated, std::wstring& error) {
+                // 1.x 的顺序：先换热键，任何一步失败都退回原样、窗口不关、编辑保留。
+                for (int slot = 0; slot < core::kHotkeySlotCount; ++slot) {
+                    const int conflict = core::FindHotkeyConflict(updated, slot);
+                    if (conflict >= 0) {
+                        error = std::wstring(L"「") + kHotkeyLabels[slot] + L"」与「" +
+                                kHotkeyLabels[conflict] + L"」使用了相同的快捷键，请更换其中一个。";
+                        return false;
+                    }
+                }
+                const core::AppSettings previous = liveSettings;
+                const int previousRegistered = hotkeysRegistered;
+                if (inputStarted) {
+                    hotkeysRegistered = registerAllHotkeys(updated, &error);
+                    if (!error.empty()) {
+                        hotkeysRegistered = registerAllHotkeys(previous, nullptr);
+                        if (hotkeysRegistered == 0) {
+                            hotkeysRegistered = previousRegistered;
+                        }
+                        return false;
+                    }
+                }
                 if (!core::SaveSettingsTo(store, updated)) {
                     log.Error(std::string("settings: save failed (") + store.LastErrorKind() + ")");
-                    tray.Notify("HaloCap", "设置保存失败");
+                    if (inputStarted) {
+                        hotkeysRegistered = registerAllHotkeys(previous, nullptr);
+                    }
+                    error = L"无法保存设置，已恢复原快捷键。";
                     return false;
                 }
                 liveSettings = updated;
@@ -1136,7 +1201,7 @@ int Run(const Options& options) {
                 trayState.autoStart = halocap::platform::win32::IsAutoStartEnabled(selfPath);
                 tray.Apply(trayState);
                 log.Info("settings: saved");
-                tray.Notify("HaloCap", "设置已保存（热键与录制参数下次启动生效）");
+                tray.Notify("HaloCap", "设置已保存（录制参数下次启动生效）");
                 return true;
             });
         if (!created) {
@@ -1440,14 +1505,28 @@ int Run(const Options& options) {
             Sleep(200);
             const double idleMb = PrivateMb();
             AddMb(report, "APP_OCR_AFTER_RELEASE_MB", idleMb);
+
+            // 再关覆盖层：ScreenshotOverlay 自己建了一台 D3D/D2D 设备，与预热的那台
+            // （OverlayStack，只服务录制）是两台。不分开量就分不清「模型残留」与「设备保留」。
+            screenshotOverlay->Close();
+            screenshotOverlay.reset();
+            TrimProcessMemory();
+            Sleep(200);
+            const double afterOverlayMb = PrivateMb();
+            AddMb(report, "APP_OCR_AFTER_OVERLAY_CLOSE_MB", afterOverlayMb);
+            AddFlag(report, "APP_OVERLAY_PREWARMED", overlayReady);
             AddFlag(report, "APP_OCR_WORKER", true);
             AddText(report, "APP_OCR_ENGINE", ocrWorkerEngine.c_str());
             AddFlag(report, "APP_OCR_AFTER_RELEASE_UNDER_80", idleMb > 0.0 && idleMb <= 80.0);
+            AddFlag(report, "APP_OCR_AFTER_OVERLAY_CLOSE_UNDER_80",
+                    afterOverlayMb > 0.0 && afterOverlayMb <= 80.0);
 
-            // 功能判据：窗口起来、证明图写出、识别真的跑过。内存判据单独记：
-            // ORT 会话已释放，但进程私有提交在 OCR 后仍停在 100 MB 上下（D3D/D2D 设备与
-            // ORT DLL 的堆保留），这一条记为 S4 的未达成项，见 §5.1。
-            ocrSelftestOk = windowOpen && proof && ocrRecognizeMs > 0.0;
+            // 功能判据：窗口起来、证明图写出、识别真的跑过；内存判据也进闸门——
+            // 关掉覆盖层与结果窗口之后必须回到 80 MB 以内（S4 的退出条件）。
+            // 这条能拦住「又把某台设备/某个图集常驻起来」这类回归。
+            ocrSelftestOk =
+                windowOpen && proof && ocrRecognizeMs > 0.0 && afterOverlayMb > 0.0 &&
+                afterOverlayMb <= 80.0;
             log.Info(ocrSelftestOk ? "ocr selftest: ok" : "ocr selftest: failed");
         } else {
             log.Error("ocr selftest: overlay did not open");
@@ -1463,7 +1542,7 @@ int Run(const Options& options) {
         auto testWindow = std::make_unique<halocap::app::SettingsWindow>();
         const bool opened = testWindow->Create(
             nullptr, settings, facts, ResolveOcrModelDirectory(),
-            [&](const core::AppSettings& updated) {
+            [&](const core::AppSettings& updated, std::wstring&) {
                 captured = updated;
                 saved = true;
                 return true;
@@ -1521,6 +1600,341 @@ int Run(const Options& options) {
         }
         log.Info(settingsClickOk ? "settings click selftest: ok"
                                  : "settings click selftest: failed");
+        running = false;
+    }
+
+    // 热键自检：捕获是低级钩子驱动的，只能注入真按键来验。四道闸门各验一次：
+    // 与别的动作冲突、裸键不安全、合法组合被接受、Esc 取消；再加一道「带着冲突保存」。
+    bool hotkeySelftestOk = true;
+    if (!options.hotkeySelftestPath.empty()) {
+        hotkeySelftestOk = false;
+        // WH_KEYBOARD_LL 的回调由装钩子的线程在自己的消息队列上执行。自检块跑在主线程、
+        // 没有消息循环，所以注入之后必须自己抽队列，否则钩子一次都不会被调用——
+        // 这一步漏掉时四个闸门全假绿（捕获态根本没退出，看起来像「按了没反应」）。
+        const auto pump = [](int milliseconds) {
+            const DWORD deadline = GetTickCount() + static_cast<DWORD>(milliseconds);
+            MSG message;
+            while (GetTickCount() < deadline) {
+                while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+                    TranslateMessage(&message);
+                    DispatchMessageW(&message);
+                }
+                Sleep(5);
+            }
+        };
+        int sendFailures = 0;
+        const auto press = [&](WORD virtualKey, bool down) {
+            INPUT input{};
+            input.type = INPUT_KEYBOARD;
+            input.ki.wVk = virtualKey;
+            input.ki.dwFlags = down ? 0 : KEYEVENTF_KEYUP;
+            if (SendInput(1, &input, sizeof(input)) != 1) {
+                ++sendFailures;
+            }
+            // 每注入一个事件就抽一次队列：钩子里用 GetAsyncKeyState 读修饰键状态，
+            // 一次塞六个事件再抽，轮到主键按下时那个状态可能还没跟上（实测会读成 0）。
+            pump(15);
+        };
+        const auto combo = [&](WORD key, bool control, bool alt) {
+            if (control) { press(VK_CONTROL, true); }
+            if (alt) { press(VK_MENU, true); }
+            press(key, true);
+            press(key, false);
+            if (alt) { press(VK_MENU, false); }
+            if (control) { press(VK_CONTROL, false); }
+            pump(60);
+        };
+        const auto grabProof = [&](const std::wstring& path) {
+            halocap::platform::win32::DesktopImage desktop;
+            return halocap::platform::win32::GrabPrimaryDesktop(desktop) &&
+                   halocap::platform::win32::SaveBgraPng(path, desktop.bgra.data(), desktop.width,
+                                                         desktop.height, desktop.width * 4);
+        };
+
+        core::AppSettings captured;
+        bool saved = false;
+        auto testWindow = std::make_unique<halocap::app::SettingsWindow>();
+        const bool opened = testWindow->Create(
+            nullptr, settings, facts, ResolveOcrModelDirectory(),
+            [&](const core::AppSettings& updated, std::wstring&) {
+                captured = updated;
+                saved = true;
+                return true;
+            });
+        bool conflictRejected = false;
+        bool unsafeRejected = false;
+        bool accepted = false;
+        bool cancelled = false;
+        bool proof = false;
+        bool hookInstalled = false;
+        int hookEvents = 0;
+        std::string errorAfterConflict;
+        if (opened) {
+            testWindow->ShowPageForTest(1);
+            SetForegroundWindow(testWindow->Handle());
+            pump(200);
+
+            // ① 按光圈那一把（默认 Ctrl+Alt+D）：拒绝、留在捕获态、原值不动。
+            testWindow->BeginHotkeyCaptureForTest(1);
+            hookInstalled = testWindow->HookInstalledForTest();
+            combo(static_cast<WORD>(halocap::platform::win32::ToNativeVirtualKey(
+                      settings.radialHotkey.key)),
+                  (settings.radialHotkey.modifiers & core::kModControl) != 0,
+                  (settings.radialHotkey.modifiers & core::kModAlt) != 0);
+            hookEvents = testWindow->HookEventsForTest();
+            errorAfterConflict = WideToUtf8(testWindow->ErrorForTest());
+            conflictRejected =
+                testWindow->CaptureIndexForTest() == 1 &&
+                testWindow->SettingsForTest().screenshotHotkey == settings.screenshotHotkey &&
+                testWindow->ErrorForTest().find(L"呼出光圈") != std::wstring::npos;
+            proof = grabProof(options.hotkeySelftestPath);
+
+            // ② 裸空格：不是安全的单键，同样拒绝且留在捕获态。
+            press(VK_SPACE, true);
+            press(VK_SPACE, false);
+            pump(120);
+            unsafeRejected = testWindow->CaptureIndexForTest() == 1 &&
+                             testWindow->ErrorForTest().find(L"该单键不适合") != std::wstring::npos;
+
+            // ③ Ctrl+Alt+K：接受，退出捕获态，横幅清掉。
+            combo('K', true, true);
+            accepted = testWindow->CaptureIndexForTest() == -1 &&
+                       testWindow->ErrorForTest().empty() &&
+                       testWindow->SettingsForTest().screenshotHotkey ==
+                           core::HotkeySpec{ core::KeySymbol::K, core::kModControl | core::kModAlt };
+            const core::HotkeySpec acceptedSpec = testWindow->SettingsForTest().screenshotHotkey;
+
+            // ④ 再点同一行进入捕获，Esc 取消：值保持③的结果。
+            testWindow->BeginHotkeyCaptureForTest(1);
+            press(VK_ESCAPE, true);
+            press(VK_ESCAPE, false);
+            pump(120);
+            cancelled = testWindow->CaptureIndexForTest() == -1 &&
+                        testWindow->SettingsForTest().screenshotHotkey == acceptedSpec;
+            testWindow.reset();
+        }
+
+        // ⑤ 文件里本来就带着两把相同的键（手改/迁移进来的）：保存必须被挡住，
+        //    窗口不关、onSave 不被调用。捕获路径挡不住这种，只有保存闸门能挡。
+        bool saveBlocked = false;
+        bool saveClickBlocked = false;
+        bool saveGateBlocked = false;
+        int saveClickId = 0;
+        int scalePercent = 0;
+        bool saveHandlerCalled = false;
+        core::AppSettings duplicated = settings;
+        duplicated.screenshotHotkey = duplicated.radialHotkey;
+        auto duplicateWindow = std::make_unique<halocap::app::SettingsWindow>();
+        const bool duplicateOpened = duplicateWindow->Create(
+            nullptr, duplicated, facts, ResolveOcrModelDirectory(),
+            [&](const core::AppSettings&, std::wstring&) {
+                saveHandlerCalled = true;
+                return true;
+            });
+        if (duplicateOpened) {
+            duplicateWindow->ShowPageForTest(1);
+            pump(150);
+            scalePercent = duplicateWindow->ScaleForTest();
+            // 保存按钮在 DIP 里是 (754..838, 622..654)，取中心 (796, 638) 再乘缩放。
+            // 直接用「窗口宽 - 120」在 150% 缩放下会落到按钮下面 3 px（实测点偏了）。
+            const int clickX = 796 * scalePercent / 100;
+            const int clickY = 638 * scalePercent / 100;
+            saveClickId = duplicateWindow->HitTestForTest(clickX, clickY);
+            const LPARAM point = MAKELPARAM(clickX, clickY);
+            SendMessageW(duplicateWindow->Handle(), WM_LBUTTONDOWN, MK_LBUTTON, point);
+            SendMessageW(duplicateWindow->Handle(), WM_LBUTTONUP, 0, point);
+            pump(120);
+            saveClickBlocked = !saveHandlerCalled && duplicateWindow->Valid() &&
+                               duplicateWindow->ErrorForTest().find(L"相同的快捷键") !=
+                                   std::wstring::npos;
+            grabProof(options.hotkeySelftestPath + L".save-blocked.png");
+            // 命中区与闸门分开判：再直接调一次 Save()，证明拦住的是闸门而不是坐标恰好没点上。
+            saveHandlerCalled = false;
+            duplicateWindow->SaveForTest();
+            pump(80);
+            saveGateBlocked = !saveHandlerCalled && duplicateWindow->Valid() &&
+                              duplicateWindow->ErrorForTest().find(L"相同的快捷键") !=
+                                  std::wstring::npos;
+            saveBlocked = saveClickBlocked && saveGateBlocked;
+            duplicateWindow.reset();
+        }
+
+        AddFlag(report, "APP_HOTKEY_WINDOW", opened);
+        AddFlag(report, "APP_HOTKEY_PROOF", proof);
+        AddFlag(report, "APP_HOTKEY_CONFLICT_REJECTED", conflictRejected);
+        AddFlag(report, "APP_HOTKEY_UNSAFE_REJECTED", unsafeRejected);
+        AddFlag(report, "APP_HOTKEY_ACCEPTED", accepted);
+        AddFlag(report, "APP_HOTKEY_CANCELLED", cancelled);
+        AddFlag(report, "APP_HOTKEY_SAVE_BLOCKED", saveBlocked);
+        AddFlag(report, "APP_HOTKEY_SAVE_CLICK_BLOCKED", saveClickBlocked);
+        AddFlag(report, "APP_HOTKEY_SAVE_GATE_BLOCKED", saveGateBlocked);
+        AddInt(report, "APP_HOTKEY_SAVE_CLICK_ID", saveClickId);
+        AddInt(report, "APP_HOTKEY_SCALE_PCT", scalePercent);
+        AddFlag(report, "APP_HOTKEY_HOOK_INSTALLED", hookInstalled);
+        AddInt(report, "APP_HOTKEY_HOOK_EVENTS", hookEvents);
+        AddInt(report, "APP_HOTKEY_SEND_FAILURES", sendFailures);
+        AddText(report, "APP_HOTKEY_ERROR_AFTER_CONFLICT",
+                errorAfterConflict.empty() ? "none" : errorAfterConflict);
+        hotkeySelftestOk = opened && proof && conflictRejected && unsafeRejected && accepted &&
+                           cancelled && duplicateOpened && saveBlocked;
+        log.Info(hotkeySelftestOk ? "hotkey selftest: ok" : "hotkey selftest: failed");
+        running = false;
+    }
+
+    // OCR 搜索自检：桌面上真有什么字是不确定的，所以喂一份合成结果，把命中计数、
+    // 双向回绕、无匹配、清空查询走一遍。高亮是画在父窗口上的，用 PrintWindow 印一张
+    // 窗口位图数绿/蓝像素——这样「清了查询但框还留在图上」这种回归能被抓住。
+    bool ocrSearchSelftestOk = true;
+    if (!options.ocrSearchSelftestPath.empty()) {
+        ocrSearchSelftestOk = false;
+        constexpr int kImageWidth = 640;
+        constexpr int kImageHeight = 320;
+        std::vector<std::uint8_t> image(static_cast<std::size_t>(kImageWidth) * kImageHeight * 4,
+                                        235);
+        for (std::size_t i = 3; i < image.size(); i += 4) {
+            image[i] = 255;
+        }
+        const char* const texts[] = {
+            "HaloCap 截图工具", "HaloCap 支持贴图", "文字识别 halocap",
+            "录屏与音频",       "HALOCAP 离线运行", "设置与快捷键"
+        };
+        std::vector<core::ocr::OcrLine> lines;
+        for (int i = 0; i < 6; ++i) {
+            core::ocr::OcrLine line;
+            line.text = texts[i];
+            line.box = core::Rect{ 20.0f, 20.0f + i * 46.0f, 420.0f, 52.0f + i * 46.0f };
+            line.confidence = 0.9f;
+            lines.push_back(line);
+        }
+        const core::ocr::OcrResult result = core::ocr::BuildResult(std::move(lines));
+
+        struct HighlightCounts {
+            int green = 0;
+            int blue = 0;
+        };
+        const auto renderWindow = [](HWND window, const std::wstring& path) {
+            HighlightCounts counts;
+            RECT client{};
+            GetClientRect(window, &client);
+            const int width = client.right;
+            const int height = client.bottom;
+            if (width <= 0 || height <= 0) {
+                return counts;
+            }
+            HDC windowDc = GetDC(window);
+            HDC memory = CreateCompatibleDC(windowDc);
+            BITMAPINFO info{};
+            info.bmiHeader.biSize = sizeof(info.bmiHeader);
+            info.bmiHeader.biWidth = width;
+            info.bmiHeader.biHeight = -height;
+            info.bmiHeader.biPlanes = 1;
+            info.bmiHeader.biBitCount = 32;
+            info.bmiHeader.biCompression = BI_RGB;
+            void* bits = nullptr;
+            HBITMAP bitmap = CreateDIBSection(windowDc, &info, DIB_RGB_COLORS, &bits, nullptr, 0);
+            HGDIOBJ old = SelectObject(memory, bitmap);
+            if (bitmap != nullptr && bits != nullptr && PrintWindow(window, memory, PW_CLIENTONLY)) {
+                const auto* pixels = static_cast<const std::uint8_t*>(bits);
+                // 只数预览区：右侧「复制全部」按钮本来就是 #007AFF，会污染蓝色计数。
+                const int previewRight = width * 58 / 100 - 12;
+                for (int y = 52; y < height - 12; ++y) {
+                    for (int x = 12; x < previewRight; ++x) {
+                        const std::uint8_t* pixel =
+                            pixels + (static_cast<std::size_t>(y) * width + x) * 4;
+                        if (pixel[0] == 113 && pixel[1] == 204 && pixel[2] == 46) {
+                            ++counts.green;
+                        }
+                        if (pixel[0] == 255 && pixel[1] == 122 && pixel[2] == 0) {
+                            ++counts.blue;
+                        }
+                    }
+                }
+                if (!path.empty()) {
+                    halocap::platform::win32::SaveBgraPng(path, pixels, width, height, width * 4);
+                }
+            }
+            SelectObject(memory, old);
+            if (bitmap != nullptr) {
+                DeleteObject(bitmap);
+            }
+            DeleteDC(memory);
+            ReleaseDC(window, windowDc);
+            return counts;
+        };
+
+        auto searchWindow = std::make_unique<halocap::app::OcrResultWindow>();
+        const bool opened = searchWindow->Create(nullptr, image.data(), kImageWidth, kImageHeight,
+                                                 result);
+        bool counterOk = false;
+        bool wrapOk = false;
+        bool caseOk = false;
+        bool noneOk = false;
+        bool clearOk = false;
+        bool repaintOk = false;
+        HighlightCounts highlighted;
+        HighlightCounts cleared;
+        if (opened) {
+            Sleep(250);
+            const auto status = [&] { return searchWindow->StatusForTest(); };
+
+            // "halocap" 命中第 0、1、2、4 行：一行里出现两次也只算一处（命中单位是行）。
+            searchWindow->SetQueryForTest(L"halocap");
+            Sleep(150);
+            counterOk = searchWindow->MatchesForTest().size() == 4 &&
+                        searchWindow->MatchIndexForTest() == 0 && status() == L"1/4";
+
+            searchWindow->StepMatchForTest(1);
+            searchWindow->StepMatchForTest(1);
+            searchWindow->StepMatchForTest(1);
+            const bool forward = searchWindow->MatchIndexForTest() == 3 && status() == L"4/4";
+            searchWindow->StepMatchForTest(1);
+            const bool forwardWrap = searchWindow->MatchIndexForTest() == 0 && status() == L"1/4";
+            searchWindow->StepMatchForTest(-1);
+            wrapOk = forward && forwardWrap && searchWindow->MatchIndexForTest() == 3 &&
+                     status() == L"4/4";
+
+            searchWindow->SetQueryForTest(L"HALOCAP");
+            Sleep(150);
+            caseOk = searchWindow->MatchesForTest().size() == 4 &&
+                     searchWindow->MatchIndexForTest() == 0 && status() == L"1/4";
+
+            searchWindow->SetQueryForTest(L"文字");
+            Sleep(150);
+            const bool chinese = searchWindow->MatchesForTest().size() == 1 && status() == L"1/1";
+            searchWindow->SetQueryForTest(L"这段文字不存在");
+            Sleep(150);
+            searchWindow->StepMatchForTest(1);
+            noneOk = chinese && searchWindow->MatchesForTest().empty() &&
+                     searchWindow->MatchIndexForTest() == 0 && status() == L"无匹配";
+
+            searchWindow->SetQueryForTest(L"halocap");
+            Sleep(200);
+            highlighted = renderWindow(searchWindow->Handle(), options.ocrSearchSelftestPath);
+            searchWindow->SetQueryForTest(L"");
+            Sleep(200);
+            cleared = renderWindow(searchWindow->Handle(),
+                                   options.ocrSearchSelftestPath + L".cleared.png");
+            repaintOk = highlighted.green > 0 && highlighted.blue > 0 && cleared.green == 0 &&
+                        cleared.blue == 0;
+            clearOk = searchWindow->MatchesForTest().empty() &&
+                      status().find(L"左侧为识别区域") == 0;
+            searchWindow.reset();
+        }
+
+        AddFlag(report, "APP_OCR_SEARCH_WINDOW", opened);
+        AddFlag(report, "APP_OCR_SEARCH_COUNTER", counterOk);
+        AddFlag(report, "APP_OCR_SEARCH_WRAP", wrapOk);
+        AddFlag(report, "APP_OCR_SEARCH_CASE", caseOk);
+        AddFlag(report, "APP_OCR_SEARCH_NONE", noneOk);
+        AddFlag(report, "APP_OCR_SEARCH_CLEAR", clearOk);
+        AddFlag(report, "APP_OCR_SEARCH_REPAINT", repaintOk);
+        AddInt(report, "APP_OCR_SEARCH_GREEN_ON", highlighted.green);
+        AddInt(report, "APP_OCR_SEARCH_BLUE_ON", highlighted.blue);
+        AddInt(report, "APP_OCR_SEARCH_GREEN_OFF", cleared.green);
+        AddInt(report, "APP_OCR_SEARCH_BLUE_OFF", cleared.blue);
+        ocrSearchSelftestOk = opened && counterOk && wrapOk && caseOk && noneOk && clearOk &&
+                              repaintOk;
+        log.Info(ocrSearchSelftestOk ? "ocr search selftest: ok" : "ocr search selftest: failed");
         running = false;
     }
 
@@ -1928,12 +2342,14 @@ int Run(const Options& options) {
     AddFlag(report, "APP_OCR_SELFTEST", ocrSelftestOk);
     AddFlag(report, "APP_SETTINGS_SELFTEST", settingsSelftestOk);
     AddFlag(report, "APP_SETTINGS_CLICK_SELFTEST", settingsClickOk);
+    AddFlag(report, "APP_HOTKEY_SELFTEST", hotkeySelftestOk);
+    AddFlag(report, "APP_OCR_SEARCH_SELFTEST", ocrSearchSelftestOk);
     AddFlag(report, "APP_PIN_SELFTEST", pinSelftestOk);
     AddFlag(report, "APP_RADIAL_SELFTEST", radialSelftestOk);
     AddFlag(report, "APP_WINDOW_PICKER_SELFTEST", windowPickerSelftestOk);
     AddFlag(report, "APP_RADIAL_CLICK_SELFTEST", radialClickOk);
     ok = ok && screenshotSelftestOk && ocrSelftestOk && settingsSelftestOk && pinSelftestOk &&
-         radialSelftestOk && windowPickerSelftestOk;
+         radialSelftestOk && windowPickerSelftestOk && hotkeySelftestOk && ocrSearchSelftestOk;
 
     std::printf("%s", report.c_str());
     if (!options.reportPath.empty()) {

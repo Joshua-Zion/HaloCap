@@ -27,7 +27,8 @@ public:
     SettingsWindow(const SettingsWindow&) = delete;
     SettingsWindow& operator=(const SettingsWindow&) = delete;
 
-    using SaveHandler = std::function<bool(const core::AppSettings&)>;
+    // 第二个参数是失败原因（保存被拒时显示在底部横幅里，窗口不关、编辑保留）。
+    using SaveHandler = std::function<bool(const core::AppSettings&, std::wstring&)>;
 
     bool Create(void* owner, const core::AppSettings& settings, const core::PlatformFacts& facts,
                 const std::string& modelsDirectory, SaveHandler onSave);
@@ -38,6 +39,18 @@ public:
 
     // 自检/截图用：直接切到某一页。
     void ShowPageForTest(int index);
+
+    // 自检用：热键捕获是低级钩子驱动的，只能注入真按键来验，验完读这三个读数。
+    void BeginHotkeyCaptureForTest(int index) { StartHotkeyCapture(index); }
+    int CaptureIndexForTest() const { return captureIndex_; }
+    const std::wstring& ErrorForTest() const { return error_; }
+    const core::AppSettings& SettingsForTest() const { return settings_; }
+    // 保存闸门的确定性入口：不依赖按钮命中区与 DPI 缩放，直接走 Save()。
+    void SaveForTest() { Save(); }
+    int HitTestForTest(int x, int y) const { return HitTest(POINT{ x, y }); }
+    int ScaleForTest() const { return static_cast<int>(scale_ * 100.0f + 0.5f); }
+    bool HookInstalledForTest() const { return keyHook_ != nullptr; }
+    int HookEventsForTest() const { return hookEvents_; }
 
 private:
     enum class Page : int {
@@ -66,6 +79,9 @@ private:
     void StartHotkeyCapture(int index);
     void FinishHotkeyCapture(const core::HotkeySpec& spec);
     void CancelHotkeyCapture();
+    void TrackModifier(DWORD virtualKey, bool down);
+    void ShowError(const std::wstring& message);
+    void ClearError();
     void Save();
     void CopySummary();
     void CheckUpdate();
@@ -92,7 +108,13 @@ private:
     int viewHeightDip_ = 0;
     int hoverId_ = 0;
     int captureIndex_ = -1;
+    std::wstring error_;
     HHOOK keyHook_ = nullptr;
+    int hookEvents_ = 0;
+    bool ctrlDown_ = false;
+    bool altDown_ = false;
+    bool shiftDown_ = false;
+    bool winDown_ = false;
     bool comInitialized_ = false;
     std::vector<Hotspot> hotspots_;
     std::unique_ptr<SettingsBackgroundCache> backgroundCache_;

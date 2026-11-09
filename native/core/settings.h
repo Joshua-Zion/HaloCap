@@ -199,6 +199,18 @@ struct HotkeyCheck {
 bool IsSafeSingleKey(KeySymbol key);
 HotkeyCheck CheckHotkey(const HotkeySpec& spec);
 
+// ---- 五把热键的槽位与冲突 ----
+//
+// 槽位顺序 = 设置页行序 = 注册顺序：0 呼出光圈、1 截图、2 文字识别、3 录屏、4 贴图。
+// 越界槽位得到 nullptr（捕获态用 -1 表示「没在捕获」，这是真的会传进来的值）。
+constexpr int kHotkeySlotCount = 5;
+const HotkeySpec* HotkeySlot(const AppSettings& settings, int slot);
+HotkeySpec* HotkeySlot(AppSettings& settings, int slot);
+
+// 与其余四把比对，返回第一个冲突的槽位；没有冲突返回 -1。只比 key 与四位状态修饰键：
+// kModNoRepeat 只影响注册请求，两把只差这一位的热键仍是同一把物理键，第二次注册必然失败。
+int FindHotkeyConflict(const AppSettings& settings, int slot);
+
 // ---- 录制参数如何落到像素与码率（1.x 的 RecordingSettings，逐条对齐） ----
 
 struct SizedOutput {

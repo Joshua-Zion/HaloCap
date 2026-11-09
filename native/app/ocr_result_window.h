@@ -27,17 +27,28 @@ public:
     bool Valid() const { return window_ != nullptr; }
     HWND Handle() const { return window_; }
 
+    // 自检用：搜索由控件消息驱动，注入查询之后读回命中、当前处与状态文本。
+    void SetQueryForTest(const std::wstring& query);
+    const std::vector<std::size_t>& MatchesForTest() const { return matches_; }
+    std::size_t MatchIndexForTest() const { return matchIndex_; }
+    std::wstring StatusForTest() const;
+    void StepMatchForTest(int direction) { StepMatch(direction); }
+
 private:
     static bool EnsureClass();
     static LRESULT CALLBACK WndProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam);
+    static LRESULT CALLBACK EditProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam);
     LRESULT Handle(HWND window, UINT message, WPARAM wParam, LPARAM lParam);
 
     void Layout();
     void Paint();
     void CopyAll();
     void FindNext();
+    void UpdateSearch(bool selectFirst);
     void StepMatch(int direction);
     void SelectMatch(std::size_t index);
+    void RefreshSearchStatus();
+    std::wstring CurrentQuery() const;
 
     HWND window_ = nullptr;
     HWND text_ = nullptr;
@@ -66,6 +77,8 @@ private:
     std::vector<std::size_t> matches_;
     std::size_t matchIndex_ = 0;
     std::wstring lastQuery_;
+    WNDPROC searchTextProc_ = nullptr;
+    WNDPROC resultTextProc_ = nullptr;
 
     RECT preview_{};
 };

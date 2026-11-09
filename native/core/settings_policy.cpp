@@ -996,6 +996,40 @@ HotkeyCheck CheckHotkey(const HotkeySpec& spec) {
     return { true, "" };
 }
 
+const HotkeySpec* HotkeySlot(const AppSettings& settings, int slot) {
+    switch (slot) {
+    case 0: return &settings.radialHotkey;
+    case 1: return &settings.screenshotHotkey;
+    case 2: return &settings.ocrHotkey;
+    case 3: return &settings.recordHotkey;
+    case 4: return &settings.pinHotkey;
+    default: return nullptr;
+    }
+}
+
+HotkeySpec* HotkeySlot(AppSettings& settings, int slot) {
+    return const_cast<HotkeySpec*>(
+        HotkeySlot(static_cast<const AppSettings&>(settings), slot));
+}
+
+int FindHotkeyConflict(const AppSettings& settings, int slot) {
+    const HotkeySpec* candidate = HotkeySlot(settings, slot);
+    if (candidate == nullptr || candidate->key == KeySymbol::None) {
+        return -1;
+    }
+    const std::uint32_t modifiers = candidate->modifiers & kStateModifiers;
+    for (int other = 0; other < kHotkeySlotCount; ++other) {
+        if (other == slot) {
+            continue;
+        }
+        const HotkeySpec* spec = HotkeySlot(settings, other);
+        if (spec->key == candidate->key && (spec->modifiers & kStateModifiers) == modifiers) {
+            return other;
+        }
+    }
+    return -1;
+}
+
 // ---- 读取与写出 ----
 
 void ParseSettings(std::string_view utf8, AppSettings& settings, SettingsReadReport& report) {

@@ -2,7 +2,7 @@
 
 本目录属于 `2.0` 分支。设计依据见 [../docs/2.0-native-plan.md](../docs/2.0-native-plan.md)，分支约定见其 §10，工具链与构建前提见计划文档的「S1 的工具链」。
 
-当前状态：**S1–S5 完成**（S4 的热键捕获、结果窗口高亮、同进程内存回落是收尾项）——十八套测试全绿；`HaloCap.exe` 有设置、日志、托盘、热键、覆盖层、录制、截图、OCR、六页设置与剪贴板贴图（托盘「录屏」/`Ctrl+Alt+R`、托盘「截图」/`Ctrl+Alt+A`、托盘「OCR」/`Ctrl+Alt+O`、托盘「贴图」/`Ctrl+Alt+P`、托盘「设置」；`--record-seconds` / `--screenshot-selftest` / `--ocr-selftest` / `--settings-selftest` / `--pin-selftest` 五个自检，另有 `--version` / `--check-update`）。交付：`package.ps1` 产出 win64 zip（目标 ≤ 20 MB）与 SHA-256 清单；空闲 2.5 MB、4K30 峰值 230.8 MB、截图选区 78.2 ms。
+当前状态：**S1–S5 完成，S4 收尾项也已补齐**（热键捕获、结果窗口命中高亮/按行跳转、同进程 OCR 后内存回落）——十八套测试全绿；`HaloCap.exe` 有设置、日志、托盘、热键、覆盖层、录制、截图、OCR、六页设置与剪贴板贴图（托盘「录屏」/`Ctrl+Alt+R`、托盘「截图」/`Ctrl+Alt+A`、托盘「OCR」/`Ctrl+Alt+O`、托盘「贴图」/`Ctrl+Alt+P`、托盘「设置」；`--record-seconds` / `--screenshot-selftest` / `--ocr-selftest` / `--ocr-search-selftest` / `--settings-selftest` / `--hotkey-selftest` / `--pin-selftest` 七个自检，另有 `--version` / `--check-update`）。交付：`package.ps1` 产出 win64 zip（目标 ≤ 20 MB）与 SHA-256 清单；空闲 2.9 MB、OCR 后回落 42.1 MB、4K30 峰值 230.8 MB、截图选区 78.2 ms。
 
 一处环境阻塞要写清：本机现在对**任何**程序都拒绝 `DuplicateOutput`（`E_ACCESSDENIED`；今天早些时候还能跑出吞吐数字的 spike 2 工具现在同样被拒），所以 `ICaptureSource` 的端到端脏矩形量级数字还没拿到。拷贝逻辑本身不依赖复制权，已经单独验过（`rect_copy_test`）。
 
@@ -234,7 +234,7 @@ native> build\app\HaloCap.exe --selftest --report out.txt  写进文件（explor
 native> build\app\HaloCap.exe --selftest --no-tray --no-input --no-overlay   归因用
 ```
 
-组装顺序就是 S1 的清单：`SetProcessDpiAwarenessContext` → 能力探测（`OS_BUILD` / `WGC`）→ 设置（`LoadSettingsFrom`，首次运行写默认值）→ 日志（`AppendLogLine` + 启动时 `PruneLogs`）→ 托盘（`Win32Tray`，菜单状态来自 `core::TrayMenuState`）→ 热键（五把，token 1–5）→ 覆盖层（窗口 + D2D/DComp + 字体栅格；正常模式预热，避免第一次截图闪一下）→ 消息循环（30 ms 一醒，轮询热键与托盘点击）。托盘命令与热键现在只记日志，动作在 S3/S4 接；单实例是命名 mutex，`--selftest` 跳过它以便连跑。
+组装顺序就是 S1 的清单：`SetProcessDpiAwarenessContext` → 能力探测（`OS_BUILD` / `WGC`）→ 设置（`LoadSettingsFrom`，首次运行写默认值）→ 日志（`AppendLogLine` + 启动时 `PruneLogs`）→ 托盘（`Win32Tray`，菜单状态来自 `core::TrayMenuState`）→ 热键（五把，token 1–5）→ 消息循环（30 ms 一醒，轮询热键与托盘点击）。托盘命令与热键现在只记日志，动作在 S3/S4 接；单实例是命名 mutex，`--selftest` 跳过它以便连跑。**覆盖层不再在启动时预热**（原先那一步是照 1.x 抄的，但 2.0 的截图/OCR 走 `ScreenshotOverlay` 自己的设备，预热那台只服务录制、白占 58 MB）：`OverlayStack` 在 `beginRecording` 里按需建，`--selftest` 第二段仍会显式建一次来量成本（61.0 MB）。
 
 本机实测（`APP_SELFTEST=OK`，退出码 0，1920×1080 桌面）：
 
@@ -357,13 +357,17 @@ native> build\app\HaloCap.exe --ocr-selftest ocr-selftest.png
 | 准确率 | **3/3 行命中** |
 | 内存 | init 后 36.5 MB、识别后 70 MB、释放后 13.9 MB |
 
-第二引擎是系统 `Windows.Media.Ocr`（`ocr_probe --engine winrt`：init 10.5 ms、识别 44.6 ms）；`ocr.engine` 设置 Native / Model 切换，默认 Native。**推理现在跑在一次性 worker 子进程里**（`HaloCap.exe --ocr-worker in out engine`），主进程不加载 ORT：app 自检（桌面 900×520 区域）经 worker 识别约 175 ms、结果窗口 32 行、`APP_OCR_WORKER=1`，识别后主进程回到 ~97 MB。**内存注意**：这 97 MB 是覆盖层 D3D/D2D 设备的基线（覆盖层打开时 109.6 MB），不是模型常驻；新进程空闲仍是 2.5 MB。「OCR 后同进程回落到 80 MB」仍未达成，见 §9 第 21 条。
+第二引擎是系统 `Windows.Media.Ocr`（`ocr_probe --engine winrt`：init 10.5 ms、识别 44.6 ms）；`ocr.engine` 设置 Native / Model 切换，默认 Native。**推理现在跑在一次性 worker 子进程里**（`HaloCap.exe --ocr-worker in out engine`），主进程不加载 ORT：app 自检（桌面 900×520 区域）经 worker 识别约 175 ms、结果窗口 32 行、`APP_OCR_WORKER=1`。**内存**：识别后主进程回落到 **42.1 MB**（`APP_OCR_AFTER_OVERLAY_CLOSE_UNDER_80=1`），这已在 80 MB 预算内。原先停在 ~97 MB 的真因不是模型、也不是 D3D 设备回收不掉，而是**启动时预热的那台 `OverlayStack` 常驻 58 MB**——它只服务录制，截图/OCR 走 `ScreenshotOverlay` 自己的设备，预热对截图从来没有用处。删掉启动预热、录制改为在 `beginRecording` 里按需建（本来就有懒建路径）之后：预热时 OCR 后 99.1 MB → 不预热 41.6 MB。分层测量见 `--ocr-selftest` 的 `APP_OCR_AFTER_RELEASE_MB`（结果窗口关掉）与 `APP_OCR_AFTER_OVERLAY_CLOSE_MB`（覆盖层也关掉），两者现在都是 42.1 MB，且 > 80 MB 会直接判 FAIL。新进程空闲 2.9 MB。
 
-`--settings-selftest` 打开六页设置并抓图：左侧「截图 / 录制 / OCR / 快捷键 / 外观 / 关于·诊断」，保存走 `core::SaveSettingsTo`，`liveSettings` 立即生效（截图格式、OCR 引擎、录制参数）。关于页就是环境摘要：系统 build、WGC、私有内存、模型目录、设置与日志路径。
+`--settings-selftest` 打开六页设置并抓图：左侧「截图 / 录制 / OCR / 快捷键 / 外观 / 关于·诊断」，保存走 `core::SaveSettingsTo`：热键先重新注册（冲突或注册失败就原样退回、窗口不关、编辑保留），成功后才落盘；截图格式、OCR 引擎、录制参数等直接写进 `liveSettings` 立即生效。关于页就是环境摘要：系统 build、WGC、私有内存、模型目录、设置与日志路径。
+
+**热键捕获**（`--hotkey-selftest`）：点某一行进入捕获态，`WH_KEYBOARD_LL` 收按键，Esc 取消，与其余四把冲突或裸键不安全时只弹底部横幅、留在捕获态。两个坑记一下：①钩子里的 `GetAsyncKeyState` 可能读到「Ctrl 没按住」，把 Ctrl+Alt+D 变成裸 D，所以修饰键状态改由钩子自己按 `WM_(SYS)KEYDOWN/UP` 维护（起捕获时用 async 状态做一次种子）；②LL 钩子的回调跑在装钩子那根线程的消息队列上，自检块没有消息循环，注入之后必须自己抽队列，否则钩子一次都不会被调用。`--hotkey-selftest` 注入真按键验五道闸门：与别的动作冲突、裸键不安全、合法组合被接受、Esc 取消、以及「设置里本来就带着两把相同的键」时保存被挡（既点真按钮、也直接调 `Save()`，命中区与闸门分开判）。
+
+**结果窗口搜索**（`--ocr-search-selftest`）：喂一份合成的识别结果，验 `x/y` 计数、上下双向回绕、大小写不敏感、`无匹配`、清空查询，以及最容易被忽略的一条——清空查询后图上的绿框/蓝框必须消失。高亮画在父窗口上，测试用 `PrintWindow` 印一张窗口位图直接数绿/蓝像素（实测命中态 4860/1620、清空后 0/0）。
 
 一个踩到的坑：rec 的导出已经做了 softmax，再算一次会把置信度算成 1/6906（0.000），所有行被过滤；`DecodeCtc` 现在先看行和，像概率就取最大值、否则才算 softmax。
 
-收尾项：设置页的热键捕获（目前五把只读展示）、结果窗口的命中高亮/按行跳转、同进程 OCR 后的内存回落。
+收尾项已补齐（2026-11-09）：设置页的热键捕获（冲突提示、裸键拦截、Esc 取消、保存闸门，`--hotkey-selftest`），结果窗口的命中高亮/按行跳转（`x/y` 计数、双向回绕、F3/回车、图上绿/蓝框，`--ocr-search-selftest`），同进程 OCR 后的内存回落（42.1 MB，见上一节）。
 
 ## S5 交付（package.ps1）
 
@@ -412,7 +416,7 @@ native> build\app\HaloCap.exe --pin-selftest pin.png
 
 覆盖层主链已对齐：选区移动、九种工具、**Select 工具移动/删除标注**、**工具选项栏**（空心/实心、粗细、字号、B/I、马赛克块、箭头三种；F / Ctrl+滚轮）、**放大镜 + 取色 + 坐标**、**尺寸徽标**、蓝色选区/把手、白色提示条、hover 高亮、快捷键（V/F/Del/1–9/空格/Ctrl+Z/Y/C/S）、文字 IME、贴图卡、六页设置、OCR 结果搜索 + 上一处/下一处。
 
-完整的 1.x 对照矩阵在 `docs/2.0-native-plan.md` §5.1「1.x 功能对齐矩阵」。仍未对齐：圆盘菜单、录制倒计时/HUD/区域与窗口选择、贴图悬停工具条、设置页热键捕获、OCR 结果双视图、自动启动、更新 UI。
+完整的 1.x 对照矩阵在 `docs/2.0-native-plan.md` §5.1「1.x 功能对齐矩阵」。仍未对齐：圆盘菜单、录制倒计时/HUD/区域与窗口选择、贴图悬停工具条、OCR 结果双视图、自动启动、更新 UI。
 
 ## 光圈（1.x 规格重做）
 

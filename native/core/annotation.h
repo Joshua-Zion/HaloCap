@@ -170,6 +170,9 @@ public:
     // 序号从 1 起；Clear 之后重新从 1 开始。
     int NextStepNumber() const { return nextStep_; }
 
+    // 内容修订号：提交/删除/撤销/重做/清空都会变。马赛克取样缓存拿它判断能否复用。
+    std::uint64_t Revision() const { return revision_; }
+
 private:
     void Snapshot();
 
@@ -182,6 +185,7 @@ private:
     std::size_t cursor_ = 0;
 
     int nextStep_ = 1;
+    std::uint64_t revision_ = 0;
 };
 
 }

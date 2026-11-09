@@ -588,6 +588,7 @@ bool AnnotationDocument::Undo() {
     }
     --cursor_;
     items_ = history_[cursor_];
+    ++revision_;
     return true;
 }
 
@@ -597,6 +598,7 @@ bool AnnotationDocument::Redo() {
     }
     ++cursor_;
     items_ = history_[cursor_];
+    ++revision_;
     return true;
 }
 
@@ -608,12 +610,14 @@ void AnnotationDocument::Clear() {
     history_.push_back({});
     cursor_ = 0;
     nextStep_ = 1;
+    ++revision_;
 }
 
 void AnnotationDocument::Snapshot() {
     history_.resize(cursor_ + 1);
     history_.push_back(items_);
     cursor_ = history_.size() - 1;
+    ++revision_;
 }
 
 }

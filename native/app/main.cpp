@@ -1569,6 +1569,25 @@ int Run(const Options& options) {
             document.Commit();
 
             screenshotOverlay->AddTextAnnotation(core::Point{ 40.0f, 360.0f }, "HaloCap S3");
+
+            // 马赛克取样必须包含下方标注：红色笔迹在选区局部 y=60、x=40..200，
+            // 在 (120,60) 抹一笔，合成缓存里那一点必须是红色，而不是底图。
+            PostMessageW(overlayWindow, WM_APP + 6, 6, 0);  // kTools[6] = 马赛克
+            pumpMessages();
+            sendMouse(WM_LBUTTONDOWN, x0 + 120, y0 + 60);
+            sendMouse(WM_MOUSEMOVE, x0 + 132, y0 + 60);
+            sendMouse(WM_LBUTTONUP, x0 + 132, y0 + 60);
+            pumpMessages();
+            std::uint8_t mosaicPixel[4] = {};
+            const bool mosaicComposeOk =
+                screenshotOverlay->MosaicComposeValidForTest() &&
+                screenshotOverlay->MosaicBasePixelForTest(120.0f, 60.0f, mosaicPixel);
+            const bool mosaicOverAnnotationOk =
+                mosaicComposeOk && mosaicPixel[2] > 190 && mosaicPixel[1] < 150 &&
+                mosaicPixel[0] < 150 && !document.Items().empty() &&
+                document.Items().back().tool == core::AnnotationTool::Mosaic &&
+                document.Items().back().mosaicTile != 0;
+
             screenshotOverlay->Pump();
             Sleep(250);
             const double screenshotMb = PrivateMb();
@@ -1576,6 +1595,22 @@ int Run(const Options& options) {
             const bool proof = screenshotOverlay->GrabDesktopToPng(options.screenshotSelftestPath);
             std::string savedPath;
             const bool saved = screenshotOverlay->SaveSelection(&savedPath);
+            // 导出的 PNG 必须带标注：读回来检查红色笔迹经过的那一点（局部 60,60）是纯红。
+            // 马赛克块在 x 84..156，60 在它左边，读到的是笔迹本身而不是块平均色。
+            halocap::platform::win32::ClipboardImage exported;
+            bool exportAnnotated = false;
+            if (saved && halocap::platform::win32::LoadImageFile(
+                             savedPath, 64LL * 1024 * 1024, &exported) &&
+                exported.width > 60 && exported.height > 60 &&
+                exported.bgra.size() >
+                    (static_cast<std::size_t>(60) * static_cast<std::size_t>(exported.width) + 60) *
+                        4 + 3) {
+                const std::size_t offset =
+                    (static_cast<std::size_t>(60) * static_cast<std::size_t>(exported.width) + 60) *
+                    4;
+                const std::uint8_t* pixel = exported.bgra.data() + offset;
+                exportAnnotated = pixel[2] > 190 && pixel[1] < 150 && pixel[0] < 150;
+            }
             const bool pinned = screenshotOverlay->PinSelection();
             screenshotOverlay->Close();
             // 贴图证明图：覆盖层关掉之后再抓，窗口与光晕才是可见的。
@@ -1623,6 +1658,9 @@ int Run(const Options& options) {
             AddFlag(report, "APP_SCREENSHOT_OPTIONBAR_FITS", optionsFitOk);
             AddFlag(report, "APP_SCREENSHOT_WHEEL", wheelOk);
             AddFlag(report, "APP_SCREENSHOT_ANNOTATE", annotated);
+            AddFlag(report, "APP_SCREENSHOT_MOSAIC_COMPOSE", mosaicComposeOk);
+            AddFlag(report, "APP_SCREENSHOT_MOSAIC_OVER_ANNOTATION", mosaicOverAnnotationOk);
+            AddFlag(report, "APP_SCREENSHOT_EXPORT_ANNOTATED", exportAnnotated);
             AddFlag(report, "APP_SCREENSHOT_HOVER_PROOF", hoverProof);
             AddFlag(report, "APP_SCREENSHOT_LATENCY_OK", latencyOk);
             AddFlag(report, "APP_SCREENSHOT_OVERLAY_MEMORY_OK", overlayMemoryOk);
@@ -1638,7 +1676,9 @@ int Run(const Options& options) {
             screenshotSelftestOk = proof && pinProof && saved && pinned && !pins.empty() &&
                                    latencyOk && overlayMemoryOk && afterCloseOk && dragOk &&
                                    moveOk && resizeOk && nudgeOk && rightClickOk && clickSelectOk &&
-                                   annotated && toolbarOk && optionsOk && clickShapeOk && optionsFitOk && wheelOk;
+                                   annotated && toolbarOk && optionsOk && clickShapeOk &&
+                                   optionsFitOk && wheelOk && mosaicComposeOk &&
+                                   mosaicOverAnnotationOk && exportAnnotated;
             log.Info(screenshotSelftestOk ? "screenshot selftest: ok"
                                           : "screenshot selftest: failed");
         }

@@ -115,6 +115,9 @@ public:
     const std::wstring& ToastForTest() const { return toast_; }
     bool AnnotatingForTest() const { return annotating_; }
     int UiScalePercentForTest() const { return static_cast<int>(uiScale_ * 100.0f + 0.5f); }
+    // 马赛克取样缓存（底图 + 下方标注）合成成功没有；以及缓存里某个选区局部坐标的像素（BGRA）。
+    bool MosaicComposeValidForTest() const { return mosaicBaseValid_; }
+    bool MosaicBasePixelForTest(float localX, float localY, std::uint8_t bgra[4]) const;
 
     const char* LastErrorKind() const { return errorKind_; }
     core::IntRect SelectionRectPx() const;
@@ -214,6 +217,9 @@ private:
     int mosaicBaseWidth_ = 0;
     int mosaicBaseHeight_ = 0;
     bool mosaicBaseValid_ = false;
+    // 缓存键：标注修订号 + 选区（选区一移，底图就换了）。
+    std::uint64_t mosaicBaseRevision_ = 0;
+    core::Rect mosaicBaseSelection_{};
     bool ComposeRegion(const core::IntRect& region,
                        const std::vector<core::Annotation>& annotations,
                        std::vector<std::uint8_t>& bgra, int& width, int& height);

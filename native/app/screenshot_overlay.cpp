@@ -1064,22 +1064,31 @@ void ScreenshotOverlay::OnLeftButtonDown(POINT point) {
         // 马赛克笔：按下就落第一块，之后跟着鼠标一路抹。
         mosaicPainting_ = true;
         lastMosaicPoint_ = local;
-        // 一笔开始时合成一次「底图 + 下方标注」；这一笔的所有块都复用它，
-        // 所以重建窗口最多发生一次（下方没有标注时一次都不发生）。
-        mosaicBaseValid_ = false;
-        mosaicBase_.clear();
-        if (!document_.Items().empty()) {
-            const Rect bounds = selection_.Bounds();
-            const IntRect region{ static_cast<int>(bounds.left) - windowX_,
-                                  static_cast<int>(bounds.top) - windowY_,
-                                  static_cast<int>(bounds.right) - windowX_,
-                                  static_cast<int>(bounds.bottom) - windowY_ };
-            int composedWidth = 0;
-            int composedHeight = 0;
-            mosaicBaseValid_ = ComposeRegion(region, document_.Items(), mosaicBase_,
-                                             composedWidth, composedHeight);
-            mosaicBaseWidth_ = composedWidth;
-            mosaicBaseHeight_ = composedHeight;
+        // 一笔开始时合成一次「底图 + 当下所有标注」；这一笔的每个块都从它采样。
+        // 合成走独立离屏目标，不碰窗口交换链，所以不会闪。
+        const Rect selectionBounds = selection_.Bounds();
+        const bool cacheHit = mosaicBaseValid_ &&
+                              mosaicBaseRevision_ == document_.Revision() &&
+                              mosaicBaseSelection_ == selectionBounds;
+        if (!cacheHit) {
+            mosaicBaseValid_ = false;
+            mosaicBase_.clear();
+            if (!document_.Items().empty()) {
+                const IntRect region{ static_cast<int>(selectionBounds.left) - windowX_,
+                                      static_cast<int>(selectionBounds.top) - windowY_,
+                                      static_cast<int>(selectionBounds.right) - windowX_,
+                                      static_cast<int>(selectionBounds.bottom) - windowY_ };
+                int composedWidth = 0;
+                int composedHeight = 0;
+                mosaicBaseValid_ = ComposeRegion(region, document_.Items(), mosaicBase_,
+                                                 composedWidth, composedHeight);
+                mosaicBaseWidth_ = composedWidth;
+                mosaicBaseHeight_ = composedHeight;
+                if (mosaicBaseValid_) {
+                    mosaicBaseRevision_ = document_.Revision();
+                    mosaicBaseSelection_ = selectionBounds;
+                }
+            }
         }
         PaintMosaicBlock(local);
         dirty_ = true;
@@ -2428,7 +2437,6 @@ void ScreenshotOverlay::Render() {
         options.rasterizer = rasterizer_.get();
         options.fontFamily = options_.fontFamily;
         options.scale = 1.0f;
-    options.sizeScale = uiScale_;
         options.sizeScale = uiScale_;
         options.origin = Point{ selection_.Bounds().left - windowX_,
                                 selection_.Bounds().top - windowY_ };
@@ -2516,12 +2524,7 @@ bool ScreenshotOverlay::ComposeRegion(const core::IntRect& region,
                                       std::vector<std::uint8_t>& bgra, int& width, int& height) {
     const int regionWidth = region.right - region.left;
     const int regionHeight = region.bottom - region.top;
-    if (regionWidth <= 0 || regionHeight <= 0 || backend_ == nullptr || window_ == nullptr) {
-        return false;
-    }
-    backend_->DetachWindow();
-    if (!backend_->Resize(regionWidth, regionHeight)) {
-        backend_->AttachWindow(window_->Handle(), screenWidth_, screenHeight_);
+    if (regionWidth <= 0 || regionHeight <= 0 || backend_ == nullptr) {
         return false;
     }
     core::FramePlan plan;
@@ -2537,18 +2540,25 @@ bool ScreenshotOverlay::ComposeRegion(const core::IntRect& region,
     options.fontFamily = options_.fontFamily;
     options.scale = 1.0f;
     options.sizeScale = uiScale_;
-    options.origin = Point{ -static_cast<float>(region.left),
-                            -static_cast<float>(region.top) };
+    // 标注点存的是选区局部坐标，合成目标的原点 = region 左上角。
+    // 之前这里写成 -region.left/-region.top，等于把标注整体推到合成画面之外，
+    // 合成结果只剩底图——这就是「马赛克不含下方标注」的直接原因。
+    const core::Rect selection = selection_.Bounds();
+    options.origin = Point{ selection.left - windowX_ - static_cast<float>(region.left),
+                            selection.top - windowY_ - static_cast<float>(region.top) };
     core::AppendAnnotationPlan(annotations, options, plan);
-    backend_->Render(plan, core::IntRect{});
-    int readWidth = 0;
-    int readHeight = 0;
-    const bool ok = backend_->ReadPixels(bgra, readWidth, readHeight) &&
-                    readWidth == regionWidth && readHeight == regionHeight;
-    backend_->AttachWindow(window_->Handle(), screenWidth_, screenHeight_);
-    width = regionWidth;
-    height = regionHeight;
-    return ok;
+
+    // 独立离屏目标：不 Detach/Attach 主后端，窗口视觉不重建，不闪。
+    if (!backend_->RenderOffscreen(plan, regionWidth, regionHeight, bgra, width, height) ||
+        width != regionWidth || height != regionHeight) {
+        char message[96] = {};
+        std::snprintf(message, sizeof(message), "halocap: mosaic compose failed (hr=0x%08lX)\n",
+                      static_cast<unsigned long>(backend_->LastHr()));
+        OutputDebugStringA(message);
+        errorKind_ = "mosaic-compose";
+        return false;
+    }
+    return true;
 }
 
 void ScreenshotOverlay::UpdateMosaicTile(core::Annotation& annotation) {
@@ -2914,12 +2924,6 @@ bool ScreenshotOverlay::ComposeSelection(std::vector<std::uint8_t>& bgra, int& w
         return false;
     }
 
-    backend_->DetachWindow();
-    if (!backend_->Resize(width, height)) {
-        backend_->AttachWindow(window_->Handle(), screenWidth_, screenHeight_);
-        return false;
-    }
-
     core::FramePlan plan;
     plan.Add(core::Blit{ capturedHandle_,
                          Rect{ selection.left - windowX_, selection.top - windowY_,
@@ -2934,19 +2938,34 @@ bool ScreenshotOverlay::ComposeSelection(std::vector<std::uint8_t>& bgra, int& w
     options.fontFamily = options_.fontFamily;
     options.scale = 1.0f;
     options.sizeScale = uiScale_;
-    options.origin = Point{ -(selection.left - windowX_), -(selection.top - windowY_) };
+    // 标注点是选区局部坐标，而导出目标就是从选区左上角开始的那一块 → 平移为 0。
+    // 以前写成 -(selection.left - windowX_)，标注整体被推到画面外，导出的图一直没有标注。
+    options.origin = Point{ 0.0f, 0.0f };
     core::AppendAnnotationPlan(document_.Items(), options, plan);
 
-    backend_->Render(plan, IntRect{});
+    // 同样走独立离屏目标：复制/保存/贴图/识别都不再拆掉窗口视觉（以前会闪一下）。
+    const int composedWidth = width;
+    const int composedHeight = height;
+    return backend_->RenderOffscreen(plan, composedWidth, composedHeight, bgra, width, height) &&
+           width == composedWidth && height == composedHeight;
+}
 
-    int readWidth = 0;
-    int readHeight = 0;
-    const bool ok = backend_->ReadPixels(bgra, readWidth, readHeight) && readWidth == width &&
-                    readHeight == height;
-    if (!ok) {
-        backend_->AttachWindow(window_->Handle(), screenWidth_, screenHeight_);
+bool ScreenshotOverlay::MosaicBasePixelForTest(float localX, float localY,
+                                               std::uint8_t bgra[4]) const {
+    if (!mosaicBaseValid_ || mosaicBaseWidth_ <= 0 || mosaicBaseHeight_ <= 0 ||
+        mosaicBase_.empty()) {
+        return false;
     }
-    return ok;
+    const int x = static_cast<int>(localX);
+    const int y = static_cast<int>(localY);
+    if (x < 0 || y < 0 || x >= mosaicBaseWidth_ || y >= mosaicBaseHeight_) {
+        return false;
+    }
+    const std::size_t offset =
+        (static_cast<std::size_t>(y) * static_cast<std::size_t>(mosaicBaseWidth_) +
+         static_cast<std::size_t>(x)) * 4;
+    std::memcpy(bgra, mosaicBase_.data() + offset, 4);
+    return true;
 }
 
 bool ScreenshotOverlay::CopySelection() {

@@ -53,6 +53,12 @@ public:
     // 整帧回读（导出用）：BGRA、行距 = width*4、不透明。只读离屏目标。
     bool ReadPixels(std::vector<std::uint8_t>& bgra, int& width, int& height);
 
+    // 独立离屏合成：画到专用目标纹理并回读，完全不碰窗口的后缓冲/交换链/DComp。
+    // 覆盖层马赛克取样走这条：Detach/Attach 会重建窗口视觉（肉眼是闪一下），
+    // 而且合成结果本来就不该出现在屏幕上。
+    bool RenderOffscreen(const core::FramePlan& plan, int widthPx, int heightPx,
+                         std::vector<std::uint8_t>& bgra, int& width, int& height);
+
     // 平台内部共享：字体栅格器要往自己的图集纹理里画，画完由这里换成显示列表能引用的句柄。
     ID2D1DeviceContext* Dc() const { return dc_.Get(); }
     ID3D11Device* Device() const { return device_.Get(); }
@@ -75,6 +81,8 @@ private:
     bool EnsureOffscreenTarget();
 
     ID2D1SolidColorBrush* BrushFor(const core::Color& color);
+
+    void DrawItems(const core::FramePlan& plan);
 
     void DrawBlit(const core::Blit& blit);
 

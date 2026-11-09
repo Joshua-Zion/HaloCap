@@ -293,6 +293,16 @@ void D2dRenderBackend::Render(const core::FramePlan& plan, core::IntRect clip) {
     // 而 clip 之外必须保留，不然部分重绘就没有意义了。
     dc_->Clear(static_cast<const D2D1_COLOR_F*>(nullptr));
 
+    DrawItems(plan);
+
+    if (clipped) {
+        dc_->PopAxisAlignedClip();
+    }
+
+    lastHr_ = dc_->EndDraw();
+}
+
+void D2dRenderBackend::DrawItems(const core::FramePlan& plan) {
     for (const core::Item& item : plan.Items()) {
         std::visit(
             [this](const auto& specific) {
@@ -330,12 +340,49 @@ void D2dRenderBackend::Render(const core::FramePlan& plan, core::IntRect clip) {
             },
             item);
     }
+}
 
-    if (clipped) {
-        dc_->PopAxisAlignedClip();
+bool D2dRenderBackend::RenderOffscreen(const core::FramePlan& plan, int widthPx, int heightPx,
+                                       std::vector<std::uint8_t>& bgra, int& width, int& height) {
+    if (!dc_ || widthPx <= 0 || heightPx <= 0) {
+        lastHr_ = E_INVALIDARG;
+        return false;
     }
 
+    // 只改私有离屏目标：windowTarget_/swapChain_ 一概不动，屏幕上的那一帧保持原样。
+    if (widthPx != width_ || heightPx != height_) {
+        width_ = widthPx;
+        height_ = heightPx;
+        targetBitmap_.Reset();
+        targetSurface_.Reset();
+        target_.Reset();
+        staging_.Reset();
+    }
+    if (!EnsureOffscreenTarget()) {
+        return false;
+    }
+
+    dc_->SetTarget(targetBitmap_.Get());
+    dc_->BeginDraw();
+    dc_->Clear(static_cast<const D2D1_COLOR_F*>(nullptr));
+    DrawItems(plan);
     lastHr_ = dc_->EndDraw();
+
+    // 合成完把目标还给窗口后缓冲；下一帧的 Render 也会重新 SetTarget，这里只是不留悬空状态。
+    if (windowTarget_) {
+        dc_->SetTarget(windowTarget_.Get());
+    }
+    if (FAILED(lastHr_)) {
+        return false;
+    }
+
+    int readWidth = 0;
+    int readHeight = 0;
+    const bool ok = ReadPixels(bgra, readWidth, readHeight) && readWidth == widthPx &&
+                    readHeight == heightPx;
+    width = readWidth;
+    height = readHeight;
+    return ok;
 }
 
 void D2dRenderBackend::DrawBlit(const core::Blit& blit) {

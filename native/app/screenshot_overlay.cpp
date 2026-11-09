@@ -1196,6 +1196,14 @@ void ScreenshotOverlay::OnLeftButtonUp(POINT point) {
                 }
                 return;
             }
+            if (options_.mode == OverlayMode::Ocr) {
+                // 1.x：OCR 模式松手即识别（CompleteNewSelection → CaptureCommand.Ocr），
+                // 不需要再点一次「识别」。
+                if (RunOcr()) {
+                    Close();
+                }
+                return;
+            }
         }
         dirty_ = true;
         return;
@@ -1353,17 +1361,20 @@ void ScreenshotOverlay::HandleToolbar(const ToolbarButton& button) {
         break;
 
     case Action::Ocr:
-        if (options_.mode == OverlayMode::Ocr) {
-            RunOcr();
+        // 截图模式的工具栏也有「识别文字」；识别成功就把选区交给 app 的结果窗口，
+        // 覆盖层功成身退（1.x 的 CaptureCommand.Ocr 也是这个语义）。
+        if (RunOcr()) {
             pendingClose_ = true;
+            dirty_ = true;
         }
         break;
 
     case Action::DoneAndCopy:
     case Action::Copy:
         if (options_.mode == OverlayMode::Ocr) {
-            RunOcr();
-            pendingClose_ = true;
+            if (RunOcr()) {
+                pendingClose_ = true;
+            }
         } else if (CopySelection()) {
             pendingClose_ = true;
         }
@@ -2519,21 +2530,22 @@ void ScreenshotOverlay::Render() {
 
 // ---- 马赛克与文字 ----
 
-void ScreenshotOverlay::RunOcr() {
+bool ScreenshotOverlay::RunOcr() {
     std::vector<std::uint8_t> bgra;
     int width = 0;
     int height = 0;
     if (!ComposeSelection(bgra, width, height)) {
         errorKind_ = "compose";
-        return;
+        return false;
     }
     if (!options_.onOcr) {
         errorKind_ = "noocr";
-        return;
+        return false;
     }
     const core::Rect selection = selection_.Bounds();
     options_.onOcr(bgra.data(), width, height, static_cast<int>(selection.left),
                    static_cast<int>(selection.top));
+    return true;
 }
 
 void ScreenshotOverlay::PaintMosaicBlock(core::Point local) {

@@ -227,7 +227,8 @@ private:
                        std::vector<std::uint8_t>& bgra, int& width, int& height);
     bool mosaicPainting_ = false;
     core::Point lastMosaicPoint_{};
-    void RunOcr();
+    // 合成选区并交给 app 的 OCR 入口；没有入口/合成失败返回 false。
+    bool RunOcr();
     void OpenTextEditor(core::Point localPoint);
     void CommitTextEditor();
     void CancelTextEditor();

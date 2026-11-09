@@ -1159,6 +1159,11 @@ int Run(const Options& options) {
                 pins.push_back(std::move(pin));
             }
         };
+        // 截图工具栏的「识别文字」和 OCR 模式共用同一条入口。
+        overlayOptions.onOcr = [&openOcrResult](const std::uint8_t* image, int imageWidth,
+                                               int imageHeight, int x, int y) {
+            openOcrResult(image, imageWidth, imageHeight, x, y, false);
+        };
 
         if (!screenshotOverlay->Open(overlayOptions)) {
             log.Error(std::string("screenshot: overlay failed (") +
@@ -1671,6 +1676,21 @@ int Run(const Options& options) {
                 exportAnnotated = pixel[2] > 190 && pixel[1] < 150 && pixel[0] < 150;
             }
             const bool pinned = screenshotOverlay->PinSelection();
+
+            // 截图模式的「识别文字」按钮：点了应当把选区交给 OCR 结果窗口并关闭覆盖层。
+            bool ocrButtonOk = false;
+            const core::IntRect ocrButtonRect = screenshotOverlay->ToolbarButtonRectForTest(18);
+            if (!ocrButtonRect.IsEmpty()) {
+                const int ocrX = ocrButtonRect.left + (ocrButtonRect.right - ocrButtonRect.left) / 2;
+                const int ocrY = ocrButtonRect.top + (ocrButtonRect.bottom - ocrButtonRect.top) / 2;
+                sendMouse(WM_LBUTTONDOWN, ocrX, ocrY);
+                sendMouse(WM_LBUTTONUP, ocrX, ocrY);
+                ocrButtonOk = ocrWindow != nullptr && ocrWindow->Valid();
+            }
+            if (ocrWindow != nullptr) {
+                ocrWindow->Close();
+                ocrWindow.reset();
+            }
             screenshotOverlay->Close();
             // 贴图证明图：覆盖层关掉之后再抓，窗口与光晕才是可见的。
             Sleep(150);
@@ -1727,6 +1747,7 @@ int Run(const Options& options) {
             AddFlag(report, "APP_SCREENSHOT_MOSAIC_COMPOSE", mosaicComposeOk);
             AddFlag(report, "APP_SCREENSHOT_MOSAIC_OVER_ANNOTATION", mosaicOverAnnotationOk);
             AddFlag(report, "APP_SCREENSHOT_OUTSIDE_GUARD", outsideGuardOk);
+            AddFlag(report, "APP_SCREENSHOT_OCR_BUTTON", ocrButtonOk);
             AddFlag(report, "APP_SCREENSHOT_EXPORT_ANNOTATED", exportAnnotated);
             AddFlag(report, "APP_SCREENSHOT_HOVER_PROOF", hoverProof);
             AddFlag(report, "APP_SCREENSHOT_LATENCY_OK", latencyOk);
@@ -1746,7 +1767,7 @@ int Run(const Options& options) {
                                    annotated && toolbarOk && optionsOk && clickShapeOk &&
                                    optionsFitOk && wheelOk && mosaicComposeOk &&
                                    mosaicOverAnnotationOk && exportAnnotated && hoverDetectOk &&
-                                   hoverUnderCursor && outsideGuardOk;
+                                   hoverUnderCursor && outsideGuardOk && ocrButtonOk;
             log.Info(screenshotSelftestOk ? "screenshot selftest: ok"
                                           : "screenshot selftest: failed");
         }
@@ -1763,13 +1784,22 @@ int Run(const Options& options) {
         const double ocrOpenMs = static_cast<double>(QpcNowUs() - openStart) / 1000.0;
 
         if (screenshotOverlay != nullptr && screenshotOverlay->Active()) {
-            screenshotOverlay->DebugSelect(core::IntRect{ 100, 100, 1000, 620 });
-            screenshotOverlay->Pump();
+            // 走真实鼠标消息拖一个选区：1.x 的 OCR 模式松手即识别，不应该再点「识别」。
+            const HWND overlayWindow = static_cast<HWND>(screenshotOverlay->WindowHandle());
+            RECT overlayRect{};
+            GetWindowRect(overlayWindow, &overlayRect);
+            const int dragX0 = 100 - overlayRect.left;
+            const int dragY0 = 100 - overlayRect.top;
+            const int dragX1 = 1000 - overlayRect.left;
+            const int dragY1 = 620 - overlayRect.top;
             const double beforeOcrMb = PrivateMb();
+            SendMessageW(overlayWindow, WM_LBUTTONDOWN, MK_LBUTTON,
+                         MAKELPARAM(dragX0, dragY0));
+            SendMessageW(overlayWindow, WM_MOUSEMOVE, MK_LBUTTON,
+                         MAKELPARAM(dragX1, dragY1));
+            SendMessageW(overlayWindow, WM_LBUTTONUP, 0, MAKELPARAM(dragX1, dragY1));
 
-            // 与截图自检同一条真实消息路径：WM_APP+4 在 OCR 模式里就是「识别」。
             // 识别在后台线程跑 worker：结果窗口先以 loading 打开，等它进结果态再断言。
-            SendMessageW(static_cast<HWND>(screenshotOverlay->WindowHandle()), WM_APP + 4, 0, 0);
             const bool windowOpen = ocrWindow != nullptr && ocrWindow->Valid();
             const std::uint64_t waitStart = GetTickCount64();
             while (ocrWindow != nullptr && ocrWindow->Valid() && !ocrWindow->ReadyForTest() &&

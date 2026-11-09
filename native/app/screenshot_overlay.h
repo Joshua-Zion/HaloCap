@@ -104,6 +104,16 @@ public:
     const char* LastErrorKind() const { return errorKind_; }
     core::IntRect SelectionRectPx() const;
 
+    // 工具栏图标的种类。图标路径由 App.xaml 生成（见 toolbar_icons.gen.h），
+    // 命名的辅助函数在匿名命名空间里，所以这个枚举得是公开的。
+    enum class ToolbarIcon : std::int32_t {
+        None = 0,
+        Pen, Rectangle, Ellipse, Arrow, Text, Highlighter, Mosaic, Step, Eraser,
+        Undo, Redo, Clear, Copy, Save, Pin, Ocr, Close, Done, Select, Shape, Outline, Fill,
+        ArrowBoth, ArrowLine, Bold, Italic, Decrease, Increase,
+        Separator,
+    };
+
 private:
     // Selecting = 还在拖第一块选区；Annotating = 选区已完成（这一相位里可以移动/缩放，
     // 只有 annotating_ 为真时鼠标才是画标注）。
@@ -122,13 +132,6 @@ private:
         FillOn, FillOff, ShapeRectangle, ShapeEllipse,
         ThicknessDown, ThicknessUp, TextSizeDown, TextSizeUp, Bold, Italic,
         MosaicDown, MosaicUp, ArrowEnd, ArrowBoth, ArrowNone, EraserDown, EraserUp,
-    };
-
-    enum class ToolbarIcon : std::int32_t {
-        None = 0,
-        Pen, Rectangle, Ellipse, Arrow, Text, Highlighter, Mosaic, Step, Eraser,
-        Undo, Redo, Clear, Copy, Save, Pin, Ocr, Close, Done, Select, Shape, Outline, Fill,
-        Separator,
     };
 
     struct ToolbarButton {
@@ -172,6 +175,9 @@ private:
     void RenderToolbar(core::FramePlan& plan);
     void RenderToolbarIcon(core::FramePlan& plan, const core::Rect& rect, ToolbarIcon icon,
                            bool active, bool enabled);
+    // 画 1.x 的 160×160 填充路径（数据来自 App.xaml 的 Toolbar*Geometry）。
+    void AppendIconPath(core::FramePlan& plan, const core::Rect& rect, ToolbarIcon icon,
+                        const core::Color& color);
     void RenderSelection(core::FramePlan& plan);
     void AddDimAround(core::FramePlan& plan, const core::Rect& hole, const core::Color& dim,
                       float width, float height);

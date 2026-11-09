@@ -12,6 +12,7 @@
     recording_session.cpp
     annotation.cpp
     selection.cpp
+    path.cpp
     mosaic.cpp
     ocr.cpp
     update.cpp

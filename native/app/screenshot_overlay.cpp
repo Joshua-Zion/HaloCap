@@ -3,7 +3,9 @@
 #include "image_export.h"
 #include "desktop_grab.h"
 #include "mosaic.h"
+#include "toolbar_icons.gen.h"
 #include "window_at_point.h"
+#include "path.h"
 
 #include <windows.h>
 
@@ -106,6 +108,69 @@ bool CopyText(const std::wstring& text) {
     }
     CloseClipboard();
     return true;
+}
+
+// 1.x 图标的路径只解析一次；之后每帧只做坐标变换和几何缓存命中。
+struct ParsedIcon {
+    std::vector<core::PathCommand> first;
+    std::vector<core::PathCommand> second;
+    bool evenOddFirst = false;
+    bool evenOddSecond = false;
+    bool valid = false;
+};
+
+const ParsedIcon& ParsedIconFor(const char* name) {
+    static std::unordered_map<std::string, ParsedIcon> cache;
+    const auto found = cache.find(name);
+    if (found != cache.end()) {
+        return found->second;
+    }
+    ParsedIcon parsed;
+    const IconPathData* data = FindIconPath(name);
+    if (data != nullptr) {
+        parsed.valid = core::ParsePathData(data->first, &parsed.first, &parsed.evenOddFirst);
+        if (data->second != nullptr) {
+            core::ParsePathData(data->second, &parsed.second, &parsed.evenOddSecond);
+        }
+    }
+    return cache.emplace(name, std::move(parsed)).first->second;
+}
+
+const char* IconNameFor(ScreenshotOverlay::ToolbarIcon icon) {
+    switch (icon) {
+    case ScreenshotOverlay::ToolbarIcon::Select: return "Select";
+    case ScreenshotOverlay::ToolbarIcon::Shape: return "Shape";
+    case ScreenshotOverlay::ToolbarIcon::Arrow: return "Arrow";
+    case ScreenshotOverlay::ToolbarIcon::Pen: return "Pen";
+    case ScreenshotOverlay::ToolbarIcon::Highlighter: return "Highlighter";
+    case ScreenshotOverlay::ToolbarIcon::Eraser: return "Eraser";
+    case ScreenshotOverlay::ToolbarIcon::Text: return "Text";
+    case ScreenshotOverlay::ToolbarIcon::Mosaic: return "Mosaic";
+    case ScreenshotOverlay::ToolbarIcon::Step: return "Step";
+    case ScreenshotOverlay::ToolbarIcon::Undo: return "Undo";
+    case ScreenshotOverlay::ToolbarIcon::Redo: return "Redo";
+    case ScreenshotOverlay::ToolbarIcon::Clear: return "Clear";
+    case ScreenshotOverlay::ToolbarIcon::Save: return "Save";
+    case ScreenshotOverlay::ToolbarIcon::Copy: return "Copy";
+    case ScreenshotOverlay::ToolbarIcon::Pin: return "Pin";
+    case ScreenshotOverlay::ToolbarIcon::Ocr: return "Ocr";
+    case ScreenshotOverlay::ToolbarIcon::Close: return "Close";
+    case ScreenshotOverlay::ToolbarIcon::Done: return "Done";
+    case ScreenshotOverlay::ToolbarIcon::Rectangle: return "Rectangle";
+    case ScreenshotOverlay::ToolbarIcon::Ellipse: return "Ellipse";
+    case ScreenshotOverlay::ToolbarIcon::Outline: return "Outline";
+    case ScreenshotOverlay::ToolbarIcon::Fill: return "Fill";
+    case ScreenshotOverlay::ToolbarIcon::ArrowBoth: return "ArrowBoth";
+    case ScreenshotOverlay::ToolbarIcon::ArrowLine: return "ArrowLine";
+    case ScreenshotOverlay::ToolbarIcon::Bold: return "Bold";
+    case ScreenshotOverlay::ToolbarIcon::Italic: return "Italic";
+    case ScreenshotOverlay::ToolbarIcon::Decrease: return "Decrease";
+    case ScreenshotOverlay::ToolbarIcon::Increase: return "Increase";
+    case ScreenshotOverlay::ToolbarIcon::None:
+    case ScreenshotOverlay::ToolbarIcon::Separator:
+        break;
+    }
+    return nullptr;
 }
 
 std::wstring Utf8ToWide(std::string_view text) {
@@ -1300,37 +1365,37 @@ void ScreenshotOverlay::LayoutOptionBar() {
         break;
     case AnnotationTool::Pen:
     case AnnotationTool::Highlighter:
-        addText(Action::ThicknessDown, "-", optionButton, false);
+        addIcon(Action::ThicknessDown, ToolbarIcon::Decrease, optionButton, false);
         addText(Action::None, std::to_string(static_cast<int>(std::lround(style_.thickness))),
                 Scale(30), false);
-        addText(Action::ThicknessUp, "+", optionButton, false);
+        addIcon(Action::ThicknessUp, ToolbarIcon::Increase, optionButton, false);
         break;
     case AnnotationTool::Arrow:
         addIcon(Action::ArrowEnd, ToolbarIcon::Arrow, optionButton,
                 style_.arrowHead == core::ArrowHeadMode::End);
-        addText(Action::ArrowBoth, "\u2194", optionButton,
+        addIcon(Action::ArrowBoth, ToolbarIcon::ArrowBoth, optionButton,
                 style_.arrowHead == core::ArrowHeadMode::Both);
-        addText(Action::ArrowNone, "\u2014", optionButton,
+        addIcon(Action::ArrowNone, ToolbarIcon::ArrowLine, optionButton,
                 style_.arrowHead == core::ArrowHeadMode::None);
         break;
     case AnnotationTool::Text:
-        addText(Action::TextSizeDown, "-", optionButton, false);
+        addIcon(Action::TextSizeDown, ToolbarIcon::Decrease, optionButton, false);
         addText(Action::None, std::to_string(static_cast<int>(std::lround(style_.textSize))),
                 Scale(30), false);
-        addText(Action::TextSizeUp, "+", optionButton, false);
-        addText(Action::Bold, "B", optionButton, style_.bold);
-        addText(Action::Italic, "I", optionButton, style_.italic);
+        addIcon(Action::TextSizeUp, ToolbarIcon::Increase, optionButton, false);
+        addIcon(Action::Bold, ToolbarIcon::Bold, optionButton, style_.bold);
+        addIcon(Action::Italic, ToolbarIcon::Italic, optionButton, style_.italic);
         break;
     case AnnotationTool::Mosaic:
-        addText(Action::MosaicDown, "-", optionButton, false);
+        addIcon(Action::MosaicDown, ToolbarIcon::Decrease, optionButton, false);
         addText(Action::None, std::to_string(style_.mosaicBlockPx), Scale(30), false);
-        addText(Action::MosaicUp, "+", optionButton, false);
+        addIcon(Action::MosaicUp, ToolbarIcon::Increase, optionButton, false);
         break;
     case AnnotationTool::Eraser:
-        addText(Action::EraserDown, "-", optionButton, false);
+        addIcon(Action::EraserDown, ToolbarIcon::Decrease, optionButton, false);
         addText(Action::None, std::to_string(static_cast<int>(std::lround(eraserSize_))),
                 Scale(30), false);
-        addText(Action::EraserUp, "+", optionButton, false);
+        addIcon(Action::EraserUp, ToolbarIcon::Increase, optionButton, false);
         break;
     default:
         break;
@@ -1881,150 +1946,102 @@ void ScreenshotOverlay::LayoutToolbar() {
 
 void ScreenshotOverlay::RenderToolbarIcon(core::FramePlan& plan, const core::Rect& rect,
                                           ToolbarIcon icon, bool active, bool enabled) {
-    if (icon == ToolbarIcon::None || icon == ToolbarIcon::Separator) {
+    const char* name = IconNameFor(icon);
+    if (name == nullptr) {
         return;
     }
-    // 1.x：禁用态整块 0.32 不透明度；图标按 20 DIP 画，这里乘屏幕缩放。
-    const float k = uiScale_;
+    // 1.x：禁用态整块 0.32 不透明度。
     const float alpha = enabled ? 1.0f : 0.32f;
-    const Color ink = active ? Color{ 1.0f, 1.0f, 1.0f, alpha }
-                             : Color{ 0.235f, 0.259f, 0.314f, alpha };
-    const float cx = (rect.left + rect.right) * 0.5f;
-    const float cy = (rect.top + rect.bottom) * 0.5f;
-    const auto line = [&](float x1, float y1, float x2, float y2, float thickness) {
-        plan.Add(core::Segment{ core::Point{ cx + x1 * k, cy + y1 * k },
-                                core::Point{ cx + x2 * k, cy + y2 * k }, ink, thickness * k });
+    const core::Color ink = active ? core::Color{ 1.0f, 1.0f, 1.0f, alpha }
+                                   : core::Color{ 0.235f, 0.259f, 0.314f, alpha };
+    AppendIconPath(plan, rect, icon, ink);
+}
+
+void ScreenshotOverlay::AppendIconPath(core::FramePlan& plan, const core::Rect& rect,
+                                       ToolbarIcon icon, const core::Color& color) {
+    const char* name = IconNameFor(icon);
+    if (name == nullptr) {
+        return;
+    }
+    const ParsedIcon& parsed = ParsedIconFor(name);
+    if (!parsed.valid) {
+        return;
+    }
+    // 1.x 用 20 DIP 的 Viewbox 装 160×160 的路径。
+    const float size = Scale(20.0f);
+    const float scale = size / 160.0f;
+    const float originX = (rect.left + rect.right) * 0.5f - size * 0.5f;
+    const float originY = (rect.top + rect.bottom) * 0.5f - size * 0.5f;
+    const auto transform = [&](core::Point point) {
+        return core::Point{ originX + point.x * scale, originY + point.y * scale };
     };
-    const auto box = [&](float left, float top, float right, float bottom) {
-        return core::Rect{ cx + left * k, cy + top * k, cx + right * k, cy + bottom * k };
-    };
-    const auto addGlyph = [&](const char* text, float size) {
-        if (rasterizer_ == nullptr) {
+    const int key = static_cast<int>(icon) * 1000003 +
+                    static_cast<int>(rect.left) * 7919 + static_cast<int>(rect.top) * 104729 +
+                    static_cast<int>(rect.right) * 31 + static_cast<int>(rect.bottom) * 17;
+
+    const auto emit = [&](const std::vector<core::PathCommand>& commands, bool evenOdd) {
+        if (commands.empty()) {
             return;
         }
-        const core::FontSpec spec{ options_.fontFamily, 700, size * k, ink };
-        const core::TextCell measured =
-            rasterizer_->LayOut(text, spec, core::Point{ 0.0f, 0.0f });
-        if (measured.atlas == 0) {
-            return;
+        core::PathShape shape;
+        shape.evenOdd = evenOdd;
+        shape.color = color;
+        shape.cacheKey = key;
+        shape.commands.reserve(commands.size());
+        for (const core::PathCommand& command : commands) {
+            core::PathCommand copy = command;
+            switch (command.kind) {
+            case core::PathCommand::Kind::Move:
+            case core::PathCommand::Kind::Line:
+                copy.points[0] = transform(command.points[0]);
+                break;
+            case core::PathCommand::Kind::Cubic:
+                copy.points[0] = transform(command.points[0]);
+                copy.points[1] = transform(command.points[1]);
+                copy.points[2] = transform(command.points[2]);
+                break;
+            case core::PathCommand::Kind::Quad:
+                copy.points[0] = transform(command.points[0]);
+                copy.points[2] = transform(command.points[2]);
+                break;
+            case core::PathCommand::Kind::Close:
+                break;
+            }
+            shape.commands.push_back(copy);
         }
-        const float width = measured.destination.Width();
-        const float height = measured.destination.Height();
-        const core::TextCell cell = rasterizer_->LayOut(
-            text, spec, core::Point{ cx - width * 0.5f, cy - height * 0.5f });
-        if (cell.atlas != 0) {
-            plan.Add(cell.ToBlit());
-        }
+        plan.Add(shape);
     };
 
-    switch (icon) {
-    case ToolbarIcon::Pen:
-        line(-7.0f, 7.0f, 6.0f, -6.0f, 2.2f);
-        line(6.0f, -6.0f, 9.0f, -9.0f, 2.2f);
-        break;
-    case ToolbarIcon::Rectangle:
-        plan.Add(core::StrokeRect{ box(-8.0f, -6.0f, 8.0f, 6.0f), ink, 1.8f * k });
-        break;
-    case ToolbarIcon::Ellipse:
-        plan.Add(core::StrokeEllipse{ box(-8.0f, -6.0f, 8.0f, 6.0f), ink, 1.8f * k });
-        break;
-    case ToolbarIcon::Shape:
-        plan.Add(core::StrokeRect{ box(-9.0f, -8.0f, 3.0f, 2.0f), ink, 1.6f * k });
-        plan.Add(core::StrokeEllipse{ box(-2.0f, -2.0f, 9.0f, 8.0f), ink, 1.6f * k });
-        break;
-    case ToolbarIcon::Arrow:
-        line(-8.0f, 8.0f, 7.0f, -7.0f, 2.0f);
-        line(7.0f, -7.0f, 1.0f, -7.0f, 2.0f);
-        line(7.0f, -7.0f, 7.0f, -1.0f, 2.0f);
-        break;
-    case ToolbarIcon::Text:
-        addGlyph("T", 17.0f);
-        break;
-    case ToolbarIcon::Highlighter: {
-        Color highlight = ink;
-        highlight.a = alpha * 0.55f;
-        plan.Add(core::Segment{ core::Point{ cx - 8.0f * k, cy + 3.0f * k },
-                                core::Point{ cx + 8.0f * k, cy - 3.0f * k }, highlight, 6.0f * k });
-        line(-8.0f, 8.0f, 8.0f, 2.0f, 1.4f);
-        break;
-    }
-    case ToolbarIcon::Mosaic:
-        for (int row = 0; row < 2; ++row) {
-            for (int column = 0; column < 3; ++column) {
-                const float x = cx + (-8.0f + column * 6.0f) * k;
-                const float y = cy + (-6.0f + row * 6.0f) * k;
-                plan.Add(core::FillRect{ core::Rect{ x, y, x + 4.5f * k, y + 4.5f * k }, ink });
+    emit(parsed.first, parsed.evenOddFirst);
+    // CombinedGeometry 的并集：两条同色画一遍。第二条缓存键 +1，避免与第一条撞车。
+    if (!parsed.second.empty()) {
+        core::PathShape shape;
+        shape.evenOdd = parsed.evenOddSecond;
+        shape.color = color;
+        shape.cacheKey = key + 1;
+        shape.commands.reserve(parsed.second.size());
+        for (const core::PathCommand& command : parsed.second) {
+            core::PathCommand copy = command;
+            switch (command.kind) {
+            case core::PathCommand::Kind::Move:
+            case core::PathCommand::Kind::Line:
+                copy.points[0] = transform(command.points[0]);
+                break;
+            case core::PathCommand::Kind::Cubic:
+                copy.points[0] = transform(command.points[0]);
+                copy.points[1] = transform(command.points[1]);
+                copy.points[2] = transform(command.points[2]);
+                break;
+            case core::PathCommand::Kind::Quad:
+                copy.points[0] = transform(command.points[0]);
+                copy.points[2] = transform(command.points[2]);
+                break;
+            case core::PathCommand::Kind::Close:
+                break;
             }
+            shape.commands.push_back(copy);
         }
-        break;
-    case ToolbarIcon::Step:
-        plan.Add(core::StrokeEllipse{ box(-8.0f, -8.0f, 8.0f, 8.0f), ink, 1.8f * k });
-        addGlyph("1", 10.0f);
-        break;
-    case ToolbarIcon::Eraser:
-        line(-8.0f, 3.0f, 2.0f, -7.0f, 2.2f);
-        line(-8.0f, 8.0f, 8.0f, -2.0f, 2.2f);
-        line(-8.0f, 8.0f, 0.0f, 8.0f, 1.4f);
-        break;
-    case ToolbarIcon::Undo:
-        line(7.0f, -6.0f, -3.0f, -6.0f, 2.0f);
-        line(-3.0f, -6.0f, -7.0f, -2.0f, 2.0f);
-        line(-7.0f, -2.0f, -3.0f, 2.0f, 2.0f);
-        break;
-    case ToolbarIcon::Redo:
-        line(-7.0f, -6.0f, 3.0f, -6.0f, 2.0f);
-        line(3.0f, -6.0f, 7.0f, -2.0f, 2.0f);
-        line(7.0f, -2.0f, 3.0f, 2.0f, 2.0f);
-        break;
-    case ToolbarIcon::Clear:
-        plan.Add(core::StrokeEllipse{ box(-7.0f, -7.0f, 7.0f, 7.0f), ink, 1.6f * k });
-        line(-5.0f, 5.0f, 5.0f, -5.0f, 1.8f);
-        break;
-    case ToolbarIcon::Copy:
-        plan.Add(core::StrokeRect{ box(-8.0f, -8.0f, 3.0f, 3.0f), ink, 1.6f * k });
-        plan.Add(core::StrokeRect{ box(-3.0f, -3.0f, 8.0f, 8.0f), ink, 1.6f * k });
-        break;
-    case ToolbarIcon::Save:
-        line(0.0f, -8.0f, 0.0f, 3.0f, 2.0f);
-        line(-4.0f, -1.0f, 0.0f, 3.0f, 2.0f);
-        line(4.0f, -1.0f, 0.0f, 3.0f, 2.0f);
-        line(-8.0f, 8.0f, -8.0f, 5.0f, 1.6f);
-        line(-8.0f, 5.0f, 8.0f, 5.0f, 1.6f);
-        line(8.0f, 5.0f, 8.0f, 8.0f, 1.6f);
-        break;
-    case ToolbarIcon::Pin:
-        plan.Add(core::FillEllipse{ box(-4.0f, -9.0f, 4.0f, -1.0f), ink });
-        line(0.0f, -1.0f, 0.0f, 6.0f, 2.0f);
-        line(0.0f, 6.0f, 4.0f, 9.0f, 2.0f);
-        break;
-    case ToolbarIcon::Ocr:
-        plan.Add(core::StrokeRect{ box(-9.0f, -7.0f, 9.0f, 7.0f), ink, 1.4f * k });
-        addGlyph("T", 11.0f);
-        break;
-    case ToolbarIcon::Close:
-        line(-7.0f, -7.0f, 7.0f, 7.0f, 2.0f);
-        line(7.0f, -7.0f, -7.0f, 7.0f, 2.0f);
-        break;
-    case ToolbarIcon::Outline:
-        plan.Add(core::StrokeRect{ box(-7.0f, -6.0f, 7.0f, 6.0f), ink, 1.6f * k });
-        break;
-    case ToolbarIcon::Fill:
-        plan.Add(core::FillRect{ box(-7.0f, -6.0f, 7.0f, 6.0f), ink });
-        break;
-    case ToolbarIcon::Done:
-        line(-7.0f, 0.0f, -2.0f, 6.0f, 2.2f);
-        line(-2.0f, 6.0f, 8.0f, -7.0f, 2.2f);
-        break;
-    case ToolbarIcon::Select:
-        line(-5.0f, -8.0f, -5.0f, 5.0f, 1.8f);
-        line(-5.0f, 5.0f, -1.0f, 2.0f, 1.8f);
-        line(-1.0f, 2.0f, 3.0f, 8.0f, 1.8f);
-        line(-5.0f, -8.0f, 5.0f, 1.0f, 1.8f);
-        line(5.0f, 1.0f, -1.0f, 2.0f, 1.8f);
-        break;
-    case ToolbarIcon::Separator:
-    case ToolbarIcon::None:
-        break;
+        plan.Add(shape);
     }
 }
 
@@ -2249,7 +2266,15 @@ void ScreenshotOverlay::Render() {
         options.scale = 1.0f;
         options.origin = Point{ selection_.Bounds().left - windowX_,
                                 selection_.Bounds().top - windowY_ };
-        core::AppendAnnotationPlan(document_.Items(), options, plan);
+        // 正在画的那一笔还在 document_.Active() 里，没有进 Items()（Commit 才进）。
+        // 不把它一起画出来，表现就是「拖的时候什么都看不到、松手才出现」。
+        if (drawing_ && !document_.Active().points.empty()) {
+            std::vector<core::Annotation> preview = document_.Items();
+            preview.push_back(document_.Active());
+            core::AppendAnnotationPlan(preview, options, plan);
+        } else {
+            core::AppendAnnotationPlan(document_.Items(), options, plan);
+        }
     }
 
     // 选区/压暗/悬停描边/把手的绘制现在统一在这里（没有选区时画整屏悬停暗度）。

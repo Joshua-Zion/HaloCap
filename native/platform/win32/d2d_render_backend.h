@@ -12,6 +12,7 @@
 #include <dxgi1_3.h>
 #include <wrl/client.h>
 
+#include <unordered_map>
 #include <vector>
 
 namespace halocap::platform::win32 {
@@ -76,6 +77,12 @@ private:
     ID2D1SolidColorBrush* BrushFor(const core::Color& color);
 
     void DrawBlit(const core::Blit& blit);
+
+    // 路径（工具栏图标）：按 cacheKey 缓存 D2D 几何，位置不变时不重建。
+    void DrawPath(const core::PathShape& shape);
+    void PrunePathCache();
+
+    std::unordered_map<int, Microsoft::WRL::ComPtr<ID2D1PathGeometry>> pathCache_;
 
     Microsoft::WRL::ComPtr<ID3D11Device> device_;
     Microsoft::WRL::ComPtr<ID3D11DeviceContext> context_;

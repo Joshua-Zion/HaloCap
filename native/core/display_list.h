@@ -72,9 +72,26 @@ struct Blit {
     float opacity = 1.0f;
 };
 
+// 填充路径：1.x 的工具栏/选项栏图标就是「160×160 的填充路径」，形状复杂到没法用
+// 矩形+线段拼回来（画笔、橡皮、识别框都是曲线轮廓），所以让显示列表直接承载路径。
+// 命令集只覆盖 WPF path 数据里用到的部分：M/L/C/Q/Z（H/V/S/T 在解析时展开）。
+struct PathCommand {
+    enum class Kind : std::uint8_t { Move = 0, Line = 1, Cubic = 2, Quad = 3, Close = 4 };
+    Kind kind = Kind::Line;
+    Point points[3];
+};
+
+struct PathShape {
+    std::vector<PathCommand> commands;
+    Color color;
+    bool evenOdd = false;
+    // 后端按它缓存 D2D 几何：图标是静态的，位置不变时不该每帧重建。
+    int cacheKey = 0;
+};
 // 折线（Path）与字形 run（GlyphRun）尚未进入显示列表：前者要等几何缓存策略，
 // 后者要等 IFontRasterizer 的图集。放进列表却画不出来比不放更糟。
-using Item = std::variant<FillRect, StrokeRect, FillEllipse, StrokeEllipse, FillRoundedRect, StrokeRoundedRect, Segment, Blit>;
+using Item = std::variant<FillRect, StrokeRect, FillEllipse, StrokeEllipse, FillRoundedRect,
+                          StrokeRoundedRect, Segment, PathShape, Blit>;
 
 // core 只产显示列表，向量顺序即图层顺序，不触碰任何渲染 API（§3.3 规则一）。
 class FramePlan {

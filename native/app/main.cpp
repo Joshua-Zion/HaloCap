@@ -1521,8 +1521,14 @@ int Run(const Options& options) {
             for (int x = x0 + 70; x <= x0 + 320; x += 10) {
                 sendMouse(WM_MOUSEMOVE, x, y0 + 70);
             }
+            screenshotOverlay->Pump();
+            // DComp 是异步上屏：Pump 之后要等一下，抓到的才是这一帧。
+            Sleep(150);
+            const bool drawingProof =
+                screenshotOverlay->GrabDesktopToPng(options.screenshotSelftestPath + L".drawing.png");
             sendMouse(WM_LBUTTONUP, x0 + 320, y0 + 70);
             const bool annotated = !screenshotOverlay->Document().Items().empty();
+            (void)drawingProof;
 
             core::AnnotationStyle style;
             style.color = core::annotation_defaults::PaletteColor(0);

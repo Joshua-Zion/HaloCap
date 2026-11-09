@@ -1,5 +1,7 @@
 ﻿#include "d2d_render_backend.h"
 
+#include <d2d1helper.h>
+
 #include <d3d11.h>
 
 #include <type_traits>
@@ -317,6 +319,8 @@ void D2dRenderBackend::Render(const core::FramePlan& plan, core::IntRect clip) {
                                                      specific.radius };
                     dc_->DrawRoundedRectangle(&rounded, BrushFor(specific.color),
                                               specific.thickness, nullptr);
+                } else if constexpr (std::is_same_v<T, core::PathShape>) {
+                    DrawPath(specific);
                 } else if constexpr (std::is_same_v<T, core::Segment>) {
                     dc_->DrawLine(ToD2D(specific.from), ToD2D(specific.to),
                                   BrushFor(specific.color), specific.thickness, nullptr);
@@ -349,6 +353,84 @@ void D2dRenderBackend::DrawBlit(const core::Blit& blit) {
                     blit.opacity,
                     D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
                     source.IsEmpty() ? nullptr : &sourceRect);
+}
+
+void D2dRenderBackend::DrawPath(const core::PathShape& shape) {
+    if (!dc_ || !factory_ || shape.commands.empty()) {
+        return;
+    }
+
+    Microsoft::WRL::ComPtr<ID2D1PathGeometry> geometry;
+    const auto cached = pathCache_.find(shape.cacheKey);
+    if (shape.cacheKey != 0 && cached != pathCache_.end()) {
+        geometry = cached->second;
+    } else {
+        if (FAILED(factory_->CreatePathGeometry(&geometry)) || !geometry) {
+            return;
+        }
+        Microsoft::WRL::ComPtr<ID2D1GeometrySink> sink;
+        if (FAILED(geometry->Open(&sink)) || !sink) {
+            return;
+        }
+        sink->SetFillMode(shape.evenOdd ? D2D1_FILL_MODE_ALTERNATE : D2D1_FILL_MODE_WINDING);
+        bool figureOpen = false;
+        core::Point figureStart{};
+        for (const core::PathCommand& command : shape.commands) {
+            switch (command.kind) {
+            case core::PathCommand::Kind::Move:
+                if (figureOpen) {
+                    sink->EndFigure(D2D1_FIGURE_END_OPEN);
+                }
+                figureStart = command.points[0];
+                sink->BeginFigure(ToD2D(figureStart), D2D1_FIGURE_BEGIN_FILLED);
+                figureOpen = true;
+                break;
+            case core::PathCommand::Kind::Line:
+                if (figureOpen) {
+                    sink->AddLine(ToD2D(command.points[0]));
+                }
+                break;
+            case core::PathCommand::Kind::Cubic:
+                if (figureOpen) {
+                    sink->AddBezier(D2D1::BezierSegment(ToD2D(command.points[0]),
+                                                       ToD2D(command.points[1]),
+                                                       ToD2D(command.points[2])));
+                }
+                break;
+            case core::PathCommand::Kind::Quad:
+                if (figureOpen) {
+                    sink->AddQuadraticBezier(D2D1::QuadraticBezierSegment(
+                        ToD2D(command.points[0]), ToD2D(command.points[2])));
+                }
+                break;
+            case core::PathCommand::Kind::Close:
+                if (figureOpen) {
+                    sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+                    figureOpen = false;
+                }
+                break;
+            }
+        }
+        if (figureOpen) {
+            sink->EndFigure(D2D1_FIGURE_END_OPEN);
+        }
+        if (FAILED(sink->Close())) {
+            return;
+        }
+        if (shape.cacheKey != 0) {
+            PrunePathCache();
+            pathCache_[shape.cacheKey] = geometry;
+        }
+    }
+
+    dc_->FillGeometry(geometry.Get(), BrushFor(shape.color));
+}
+
+void D2dRenderBackend::PrunePathCache() {
+    // 图标按「位置 + 尺寸」做键；工具栏一移动就会换键，攒太多直接清空重建。
+    if (pathCache_.size() > 256) {
+        pathCache_.clear();
+    }
 }
 
 void D2dRenderBackend::Flush() {

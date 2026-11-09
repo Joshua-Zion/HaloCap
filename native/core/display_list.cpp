@@ -45,6 +45,25 @@ Rect BoundsOf(const Item& item) {
                              specific.rect.right + half, specific.rect.bottom + half };
             } else if constexpr (std::is_same_v<T, Blit>) {
                 return specific.destination;
+            } else if constexpr (std::is_same_v<T, PathShape>) {
+                Rect rect{};
+                bool any = false;
+                for (const PathCommand& command : specific.commands) {
+                    if (command.kind == PathCommand::Kind::Close) {
+                        continue;
+                    }
+                    const Point& point = command.points[0];
+                    if (!any) {
+                        rect = Rect{ point.x, point.y, point.x, point.y };
+                        any = true;
+                    } else {
+                        rect.left = std::min(rect.left, point.x);
+                        rect.top = std::min(rect.top, point.y);
+                        rect.right = std::max(rect.right, point.x);
+                        rect.bottom = std::max(rect.bottom, point.y);
+                    }
+                }
+                return rect;
             } else {
                 const float half = specific.thickness * 0.5f;
                 return Rect{ std::min(specific.from.x, specific.to.x) - half,

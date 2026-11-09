@@ -90,6 +90,17 @@ public:
                               toolbarBounds_.bottom };
     }
     int OptionButtonCountForTest() const { return static_cast<int>(optionButtons_.size()); }
+    // 每个按钮都必须落在背景里：跑到外面既看着缺一块，也因为命中区是背景矩形而点不到。
+    bool OptionBarFitsForTest() const {
+        for (const OptionButton& button : optionButtons_) {
+            if (button.rect.left < optionBounds_.left || button.rect.right > optionBounds_.right ||
+                button.rect.top < optionBounds_.top || button.rect.bottom > optionBounds_.bottom) {
+                return false;
+            }
+        }
+        return true;
+    }
+    float ThicknessForTest() const { return style_.thickness; }
     core::IntRect ToolbarButtonRectForTest(int index) const {
         if (index < 0 || index >= static_cast<int>(toolbar_.size())) {
             return core::IntRect{};

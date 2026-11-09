@@ -456,17 +456,33 @@ LRESULT ScreenshotOverlay::HandleMessage(HWND window, UINT message, WPARAM wPara
         break;
 
     case WM_MOUSEWHEEL: {
+        // 1.x：标注态直接滚滚轮就调当前工具的参数（不用按 Ctrl）。
         const int delta = GET_WHEEL_DELTA_WPARAM(wParam);
-        if ((GetKeyState(VK_CONTROL) & 0x8000) != 0) {
-            if (tool_ == AnnotationTool::Pen) {
-                style_.thickness =
-                    std::clamp(style_.thickness + (delta > 0 ? 1.0f : -1.0f), 1.0f, 24.0f);
-            } else if (tool_ == AnnotationTool::Highlighter) {
-                style_.thickness =
-                    std::clamp(style_.thickness + (delta > 0 ? 2.0f : -2.0f), 6.0f, 40.0f);
-            }
-            dirty_ = true;
+        if (!annotating_ || delta == 0) {
+            return 0;
         }
+        const float direction = delta > 0 ? 1.0f : -1.0f;
+        switch (tool_) {
+        case AnnotationTool::Pen:
+            style_.thickness = std::clamp(style_.thickness + direction, 1.0f, 24.0f);
+            break;
+        case AnnotationTool::Highlighter:
+            style_.thickness = std::clamp(style_.thickness + direction * 2.0f, 6.0f, 40.0f);
+            break;
+        case AnnotationTool::Text:
+            style_.textSize = std::clamp(style_.textSize + direction * 2.0f, 10.0f, 48.0f);
+            break;
+        case AnnotationTool::Mosaic:
+            style_.mosaicBlockPx =
+                std::clamp(style_.mosaicBlockPx + static_cast<int>(direction) * 2, 6, 30);
+            break;
+        case AnnotationTool::Eraser:
+            eraserSize_ = std::clamp(eraserSize_ + direction * 8.0f, 8.0f, 120.0f);
+            break;
+        default:
+            return 0;
+        }
+        dirty_ = true;
         return 0;
     }
 
@@ -1405,16 +1421,24 @@ void ScreenshotOverlay::LayoutOptionBar() {
         return;
     }
 
-    int width = padding;
-    for (std::size_t i = 0; i < optionButtons_.size(); ++i) {
-        width += optionButtons_[i].rect.right;
-        if (i + 1 < optionButtons_.size()) {
-            width += optionButtons_[i + 1].rect.right > 0 ? gap : 0;
+    // 先在「选项栏左上角 = (0,0)」的坐标系里摆好：背景宽度取最右边界，写命中区用同一套
+    // 推进规则。之前宽度和摆放各算一遍，最后几个按钮跑到背景外面 —— 既看着「没显示全」，
+    // 又因为落在 optionBounds_ 之外而点不到（调不了粗细/字号就是这个）。
+    int cursor = padding;
+    for (OptionButton& option : optionButtons_) {
+        const int w = option.rect.right;   // 宽度先暂存在 right 里
+        const bool separator = w <= 1;
+        if (separator) {
+            cursor += separatorMargin - gap;
         }
-        if (optionButtons_[i].rect.right == 1) {
-            width += separatorMargin - gap;
-        }
+        option.rect = RECT{ cursor, 0, cursor + w, optionButton };
+        cursor += w + (separator ? separatorMargin : gap);
     }
+    int width = 0;
+    for (const OptionButton& option : optionButtons_) {
+        width = std::max(width, static_cast<int>(option.rect.right));
+    }
+    width += padding;
 
     int x = static_cast<int>(toolbarBounds_.left);
     int y = static_cast<int>(toolbarBounds_.bottom) + Scale(6);
@@ -1424,11 +1448,11 @@ void ScreenshotOverlay::LayoutOptionBar() {
     x = std::clamp(x, Scale(8), std::max(Scale(8), screenWidth_ - width - Scale(8)));
     y = std::clamp(y, Scale(8), std::max(Scale(8), screenHeight_ - optionHeight - Scale(8)));
 
-    int cursor = x + padding;
     for (OptionButton& option : optionButtons_) {
-        const int w = option.rect.right;
-        option.rect = RECT{ cursor, y + Scale(4), cursor + w, y + Scale(4) + optionButton };
-        cursor += w + (w == 1 ? separatorMargin * 2 - gap : gap);
+        option.rect.left += x;
+        option.rect.right += x;
+        option.rect.top += y + Scale(4);
+        option.rect.bottom += y + Scale(4);
     }
     optionBounds_ = RECT{ x, y, x + width, y + optionHeight };
 }
@@ -2284,10 +2308,13 @@ void ScreenshotOverlay::Render() {
     if (options_.mode != OverlayMode::RecordRegion) {
         if (toolbarVisible_) {
             RenderToolbar(plan);
-            RenderTooltip(plan);
         }
         RenderOptionBar(plan);
         RenderMagnifier(plan);
+        // 提示条画在选项栏之后：它就在按钮下方，先画就会被二级工具栏盖住。
+        if (toolbarVisible_) {
+            RenderTooltip(plan);
+        }
     }
     RenderHint(plan);
     RenderSizeBadge(plan);

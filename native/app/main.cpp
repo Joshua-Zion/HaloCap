@@ -1517,6 +1517,14 @@ int Run(const Options& options) {
             // 工具键（P）走 1.x 的字母快捷键那条消息路径。
             PostMessageW(overlayWindow, WM_APP + 6, 0, 0);
             pumpMessages();
+            screenshotOverlay->Pump();
+            // 选项栏必须完整包在背景里（跑出去的按钮既看不见、也点不到）；滚轮要能调粗细。
+            const bool optionsFitOk = screenshotOverlay->OptionBarFitsForTest();
+            const float thicknessBefore = screenshotOverlay->ThicknessForTest();
+            SendMessageW(overlayWindow, WM_MOUSEWHEEL, MAKEWPARAM(0, WHEEL_DELTA),
+                         MAKELPARAM(x0 + 120, y0 + 120));
+            pumpMessages();
+            const bool wheelOk = screenshotOverlay->ThicknessForTest() > thicknessBefore;
             sendMouse(WM_LBUTTONDOWN, x0 + 60, y0 + 60);
             for (int x = x0 + 70; x <= x0 + 320; x += 10) {
                 sendMouse(WM_MOUSEMOVE, x, y0 + 70);
@@ -1610,6 +1618,8 @@ int Run(const Options& options) {
             AddFlag(report, "APP_SCREENSHOT_TOOLBAR", toolbarOk);
             AddFlag(report, "APP_SCREENSHOT_TOOLBAR_CLICK", clickShapeOk);
             AddFlag(report, "APP_SCREENSHOT_OPTIONBAR", optionsOk);
+            AddFlag(report, "APP_SCREENSHOT_OPTIONBAR_FITS", optionsFitOk);
+            AddFlag(report, "APP_SCREENSHOT_WHEEL", wheelOk);
             AddFlag(report, "APP_SCREENSHOT_ANNOTATE", annotated);
             AddFlag(report, "APP_SCREENSHOT_HOVER_PROOF", hoverProof);
             AddFlag(report, "APP_SCREENSHOT_LATENCY_OK", latencyOk);
@@ -1626,7 +1636,7 @@ int Run(const Options& options) {
             screenshotSelftestOk = proof && pinProof && saved && pinned && !pins.empty() &&
                                    latencyOk && overlayMemoryOk && afterCloseOk && dragOk &&
                                    moveOk && resizeOk && nudgeOk && rightClickOk && clickSelectOk &&
-                                   annotated && toolbarOk && optionsOk && clickShapeOk;
+                                   annotated && toolbarOk && optionsOk && clickShapeOk && optionsFitOk && wheelOk;
             log.Info(screenshotSelftestOk ? "screenshot selftest: ok"
                                           : "screenshot selftest: failed");
         }

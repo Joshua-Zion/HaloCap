@@ -910,6 +910,9 @@ void ScreenshotOverlay::NudgeSelection(int dx, int dy) {
 }
 
 void ScreenshotOverlay::OnRightButtonDown(POINT point) {
+    if (editorWindow_ != nullptr) {
+        CommitTextEditor();
+    }
     if (IsOverChrome(point)) {
         return;
     }
@@ -934,6 +937,11 @@ void ScreenshotOverlay::OnRightButtonDown(POINT point) {
 }
 
 void ScreenshotOverlay::OnLeftButtonDown(POINT point) {
+    // 文字编辑器开着时，点别处就是「确认」——1.x 也是这样，不需要按回车。
+    // （点在 EDIT 自己身上的消息不会到这里，所以不会误提交。）
+    if (editorWindow_ != nullptr) {
+        CommitTextEditor();
+    }
     if (options_.mode == OverlayMode::RecordRegion) {
         if (phase_ == Phase::Selecting) {
             StartNewSelection(point);
@@ -2031,7 +2039,10 @@ void ScreenshotOverlay::AppendIconPath(core::FramePlan& plan, const core::Rect& 
     }
     // 1.x 用 20 DIP 的 Viewbox 装 160×160 的路径。
     const float size = Scale(20.0f);
-    const float scale = size / 160.0f;
+    // 1.x 是 160 单位的路径画在 200×200 的 Path 里，再被 20 DIP 的 Viewbox 整体缩到 0.1。
+    // 所以这里除以 200而不是 160：图形落在 20 DIP 盒子的中间（约 16 DIP 大），
+    // 除以 160 会让图形偏右下 12.5%，看起来就是「图标没居中」。
+    const float scale = size / 200.0f;
     const float originX = (rect.left + rect.right) * 0.5f - size * 0.5f;
     const float originY = (rect.top + rect.bottom) * 0.5f - size * 0.5f;
     const auto transform = [&](core::Point point) {

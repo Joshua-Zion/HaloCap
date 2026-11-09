@@ -4,6 +4,7 @@
 #include "font_rasterizer.h"
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -81,6 +82,9 @@ struct Annotation {
     // 0 表示还没准备好，计划生成时跳过这一块。
     ImageHandle mosaicTile = 0;
     Size mosaicTileSize{};
+    // CPU 侧的马赛克小图（BGRA，顶朝下）。GPU 覆盖层用上面的句柄；用 GDI+ 直接画的
+    // 贴图窗口没有后端资源表，就从这里取像素。两份互不影响，谁用谁填。
+    std::shared_ptr<const std::vector<std::uint8_t>> mosaicTileCpu;
 };
 
 // ---- 几何（与 1.x AnnotationGeometry 逐条对齐） ----

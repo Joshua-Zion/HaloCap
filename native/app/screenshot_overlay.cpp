@@ -1082,6 +1082,11 @@ void ScreenshotOverlay::OnLeftButtonDown(POINT point) {
     }
 
     if (!selection_.Bounds().Contains(screen)) {
+        // 已经有标注时，点选区外不重开选区：那会把手上的标注全丢掉（1.x 在标注态
+        // 也是把按下当落笔，不重开）。要重选先右键清掉选区/标注。
+        if (!document_.Items().empty()) {
+            return;
+        }
         StartNewSelection(point);
         return;
     }

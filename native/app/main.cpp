@@ -1037,6 +1037,38 @@ int Run(const Options& options) {
     std::string ocrWorkerEngine = "pp";
     std::function<void(const std::uint8_t*, int, int, int, int)> ocrRunner;
 
+    // 贴图窗口的公共接线：右键菜单里的 OCR / 全部关闭 / 外描边都要落到 app 这一层。
+    const auto pinOptions = [&]() {
+        halocap::app::PinWindowOptions options;
+        options.outline = liveSettings.pinGlowEnabled;
+        options.ocrEnabled = liveSettings.ocr.pinOcrEnabled;
+        options.jpeg = settings.screenshotFormat == core::ScreenshotFormat::Jpeg;
+        return options;
+    };
+    const auto wirePin = [&](halocap::app::PinWindow& pin) {
+        pin.SetOcrHandler([&ocrRunner](const std::uint8_t* image, int imageWidth,
+                                       int imageHeight) {
+            if (ocrRunner) {
+                ocrRunner(image, imageWidth, imageHeight, 0, 0);
+            }
+        });
+        // 回调在某个贴图的窗口过程里跑：这里只关窗口，不在回调里删 pins（对象还在栈上）。
+        pin.SetCloseAllHandler([&pins] {
+            for (auto& item : pins) {
+                item->Close();
+            }
+        });
+        pin.SetOutlineChangedHandler([&](bool enabled) {
+            liveSettings.pinGlowEnabled = enabled;
+            if (!core::SaveSettingsTo(store, liveSettings)) {
+                log.Error(std::string("pin: save outline failed (") + store.LastErrorKind() + ")");
+            }
+            for (auto& item : pins) {
+                item->SetOutline(enabled);
+            }
+        });
+    };
+
     const auto openScreenshot = [&]() {
         if (screenshotOverlay != nullptr && screenshotOverlay->Active()) {
             return;
@@ -1047,13 +1079,8 @@ int Run(const Options& options) {
         overlayOptions.pinHotkey = liveSettings.pinHotkey;
         overlayOptions.onPin = [&](const std::uint8_t* bgra, int width, int height, int x, int y) {
             auto pin = std::make_unique<halocap::app::PinWindow>();
-            if (pin->Create(bgra, width, height, x, y)) {
-                pin->SetOcrHandler([&ocrRunner](const std::uint8_t* image, int imageWidth,
-                                                int imageHeight) {
-                    if (ocrRunner) {
-                        ocrRunner(image, imageWidth, imageHeight, 0, 0);
-                    }
-                });
+            if (pin->Create(bgra, width, height, x, y, pinOptions())) {
+                wirePin(*pin);
                 pins.push_back(std::move(pin));
             }
         };
@@ -1298,7 +1325,8 @@ int Run(const Options& options) {
             }
             auto pin = std::make_unique<halocap::app::PinWindow>();
             if (pin->Create(item.image.bgra.data(), item.image.width, item.image.height,
-                            180 + offset, 160 + offset)) {
+                            180 + offset, 160 + offset, pinOptions())) {
+                wirePin(*pin);
                 pins.push_back(std::move(pin));
                 ++created;
                 offset += 28;
@@ -1601,6 +1629,20 @@ int Run(const Options& options) {
                 document.Items().back().tool == core::AnnotationTool::Mosaic &&
                 document.Items().back().mosaicTile != 0;
 
+            // 已经有标注时，点选区外不能重开选区（那会把标注全丢掉）。
+            const core::IntRect beforeOutside = screenshotOverlay->SelectionRectPx();
+            const std::size_t itemsBeforeOutside = document.Items().size();
+            sendMouse(WM_LBUTTONDOWN, baseX + 40, baseY + 40);
+            sendMouse(WM_LBUTTONUP, baseX + 40, baseY + 40);
+            pumpMessages();
+            const core::IntRect afterOutside = screenshotOverlay->SelectionRectPx();
+            const bool outsideGuardOk =
+                afterOutside.left == beforeOutside.left &&
+                afterOutside.top == beforeOutside.top &&
+                afterOutside.right == beforeOutside.right &&
+                afterOutside.bottom == beforeOutside.bottom &&
+                document.Items().size() == itemsBeforeOutside;
+
             screenshotOverlay->Pump();
             Sleep(250);
             const double screenshotMb = PrivateMb();
@@ -1680,6 +1722,7 @@ int Run(const Options& options) {
             AddText(report, "APP_SCREENSHOT_HOVER_RECT", hoverRectText);
             AddFlag(report, "APP_SCREENSHOT_MOSAIC_COMPOSE", mosaicComposeOk);
             AddFlag(report, "APP_SCREENSHOT_MOSAIC_OVER_ANNOTATION", mosaicOverAnnotationOk);
+            AddFlag(report, "APP_SCREENSHOT_OUTSIDE_GUARD", outsideGuardOk);
             AddFlag(report, "APP_SCREENSHOT_EXPORT_ANNOTATED", exportAnnotated);
             AddFlag(report, "APP_SCREENSHOT_HOVER_PROOF", hoverProof);
             AddFlag(report, "APP_SCREENSHOT_LATENCY_OK", latencyOk);
@@ -1699,7 +1742,7 @@ int Run(const Options& options) {
                                    annotated && toolbarOk && optionsOk && clickShapeOk &&
                                    optionsFitOk && wheelOk && mosaicComposeOk &&
                                    mosaicOverAnnotationOk && exportAnnotated && hoverDetectOk &&
-                                   hoverUnderCursor;
+                                   hoverUnderCursor && outsideGuardOk;
             log.Info(screenshotSelftestOk ? "screenshot selftest: ok"
                                           : "screenshot selftest: failed");
         }
@@ -2373,6 +2416,34 @@ int Run(const Options& options) {
             Sleep(300);
         }
 
+        // 贴图标注与菜单：空格进入标注 → 画一笔 → 右键菜单 → Esc 收起菜单。
+        bool pinAnnotateOk = false;
+        bool pinMenuOk = false;
+        if (!pins.empty() && pins.back()->Handle() != nullptr) {
+            HWND pinWindow = pins.back()->Handle();
+            SendMessageW(pinWindow, WM_KEYDOWN, VK_SPACE, 0);
+            const core::IntRect content = pins.back()->ContentRectForTest();
+            const int cx = (content.left + content.right) / 2;
+            const int cy = (content.top + content.bottom) / 2;
+            SendMessageW(pinWindow, WM_LBUTTONDOWN, MK_LBUTTON,
+                         MAKELPARAM(cx - 20, cy));
+            SendMessageW(pinWindow, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(cx + 20, cy));
+            SendMessageW(pinWindow, WM_LBUTTONUP, 0, MAKELPARAM(cx + 20, cy));
+            pinAnnotateOk = pins.back()->AnnotatingForTest() &&
+                            !pins.back()->DocumentForTest().Items().empty();
+            SendMessageW(pinWindow, WM_RBUTTONDOWN, MK_RBUTTON, MAKELPARAM(cx, cy));
+            const bool menuOpened = pins.back()->MenuOpenForTest();
+            Sleep(150);
+            halocap::platform::win32::DesktopImage menuDesktop;
+            halocap::platform::win32::GrabPrimaryDesktop(menuDesktop);
+            halocap::platform::win32::SaveBgraPng(options.pinSelftestPath + L".menu.png",
+                                                  menuDesktop.bgra.data(), menuDesktop.width,
+                                                  menuDesktop.height, menuDesktop.width * 4);
+            SendMessageW(pinWindow, WM_KEYDOWN, VK_ESCAPE, 0);
+            pinMenuOk = menuOpened && !pins.back()->MenuOpenForTest();
+            Sleep(120);
+        }
+
         const bool pinned = pins.size() > afterCurrent;
         halocap::platform::win32::DesktopImage desktop;
         const bool proof =
@@ -2383,10 +2454,12 @@ int Run(const Options& options) {
 
         AddFlag(report, "APP_PIN_CLIPBOARD", wrote);
         AddFlag(report, "APP_PIN_WINDOW", pinned);
+        AddFlag(report, "APP_PIN_ANNOTATE", pinAnnotateOk);
+        AddFlag(report, "APP_PIN_MENU", pinMenuOk);
         AddFlag(report, "APP_PIN_PROOF", proof);
         AddInt(report, "APP_PIN_COUNT", static_cast<long long>(pins.size() - before));
 
-        pinSelftestOk = wrote && pinned && proof;
+        pinSelftestOk = wrote && pinned && proof && pinAnnotateOk && pinMenuOk;
         log.Info(pinSelftestOk ? "pin selftest: ok" : "pin selftest: failed");
         running = false;
     }

@@ -1462,6 +1462,25 @@ int Run(const Options& options) {
             const core::IntRect nudged = toClient(screenshotOverlay->SelectionRectPx());
             const bool nudgeOk = nudged.left == x0 + 51 && nudged.right - nudged.left == 640;
 
+            // 5) 工具栏按 1.x 对齐：拖完才出现、高 38、右边缘贴选区右边缘，
+            //    按钮顺序 = 选择 | 形状 箭头 | 笔 荧光 橡皮 文字 马赛克 序号 |
+            //    撤 重 清空 | 存 贴 识别 | 取消 完成（共 17 个 + 5 条分隔线）。
+            screenshotOverlay->Pump();
+            const core::IntRect toolbar = screenshotOverlay->ToolbarBoundsForTest();
+            const bool toolbarOk = screenshotOverlay->ToolbarVisibleForTest() &&
+                                   toolbar.bottom - toolbar.top == 38 &&
+                                   toolbar.right == nudged.right &&
+                                   screenshotOverlay->ToolbarButtonCountForTest() == 22;
+            // 形状工具：选项栏应当出现（8 色 + 分隔 + 矩形/椭圆/空心/实心）。
+            PostMessageW(overlayWindow, WM_APP + 6, 1, 0);
+            pumpMessages();
+            screenshotOverlay->Pump();
+            const bool optionsOk = screenshotOverlay->AnnotatingForTest() &&
+                                   screenshotOverlay->OptionButtonCountForTest() == 13;
+            // 回到移动态，下一步的右键才是「清选区」而不是「退出标注」。
+            PostMessageW(overlayWindow, WM_APP + 9, 0, 0);
+            pumpMessages();
+
             // 5) 右键：有选区时先清掉选区，不关窗口。
             SendMessageW(overlayWindow, WM_RBUTTONDOWN, MK_RBUTTON,
                          MAKELPARAM(x0 + 300, y0 + 200));
@@ -1483,7 +1502,8 @@ int Run(const Options& options) {
             sendMouse(WM_LBUTTONDOWN, x0, y0);
             sendMouse(WM_MOUSEMOVE, x1, y1);
             sendMouse(WM_LBUTTONUP, x1, y1);
-            PostMessageW(overlayWindow, kMsgAnnotateForTest, 0, 0);
+            // 工具键（P）走 1.x 的字母快捷键那条消息路径。
+            PostMessageW(overlayWindow, WM_APP + 6, 0, 0);
             pumpMessages();
             sendMouse(WM_LBUTTONDOWN, x0 + 60, y0 + 60);
             for (int x = x0 + 70; x <= x0 + 320; x += 10) {
@@ -1569,6 +1589,8 @@ int Run(const Options& options) {
             AddFlag(report, "APP_SCREENSHOT_SELECT_NUDGE", nudgeOk);
             AddFlag(report, "APP_SCREENSHOT_SELECT_RIGHT_CLICK", rightClickOk);
             AddFlag(report, "APP_SCREENSHOT_SELECT_CLICK", clickSelectOk);
+            AddFlag(report, "APP_SCREENSHOT_TOOLBAR", toolbarOk);
+            AddFlag(report, "APP_SCREENSHOT_OPTIONBAR", optionsOk);
             AddFlag(report, "APP_SCREENSHOT_ANNOTATE", annotated);
             AddFlag(report, "APP_SCREENSHOT_HOVER_PROOF", hoverProof);
             AddFlag(report, "APP_SCREENSHOT_LATENCY_OK", latencyOk);
@@ -1585,7 +1607,7 @@ int Run(const Options& options) {
             screenshotSelftestOk = proof && pinProof && saved && pinned && !pins.empty() &&
                                    latencyOk && overlayMemoryOk && afterCloseOk && dragOk &&
                                    moveOk && resizeOk && nudgeOk && rightClickOk && clickSelectOk &&
-                                   annotated;
+                                   annotated && toolbarOk && optionsOk;
             log.Info(screenshotSelftestOk ? "screenshot selftest: ok"
                                           : "screenshot selftest: failed");
         }

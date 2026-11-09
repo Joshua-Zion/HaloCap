@@ -54,21 +54,59 @@ constexpr UINT kMsgSelect = WM_APP + 9;
 constexpr UINT kMsgFill = WM_APP + 10;
 constexpr UINT kMsgAnnotate = WM_APP + 11;   // 空格：切换标注态
 constexpr UINT kMsgNudge = WM_APP + 12;      // 方向键微调：wParam = 方向，lParam = 步长
+constexpr UINT kMsgCopyColor = WM_APP + 13;  // C：复制光标下的颜色（wParam = 1 用 rgb()）
+constexpr UINT kMsgPin = WM_APP + 14;        // Ctrl+T
+constexpr UINT kMsgTextStyle = WM_APP + 15;  // Ctrl+B / Ctrl+I（wParam 1=粗 2=斜）
+constexpr UINT kMsgOption = WM_APP + 16;     // [ / ] 之类的选项步进，wParam = Action
 
-constexpr int kToolbarToolWidth = 34;
-constexpr int kToolbarColorWidth = 22;
-constexpr int kToolbarHeight = 44;
-constexpr int kToolbarGap = 4;
-constexpr int kToolbarPadding = 8;
+// 1.x 的 AnnotationToolButtonStyle：30×30、两侧各 1 px 外边距、圆角 7；工具栏 padding 4。
+constexpr int kToolbarButton = 30;
+constexpr int kToolbarGap = 2;
+constexpr int kToolbarPadding = 4;
+constexpr int kToolbarHeight = kToolbarButton + kToolbarPadding * 2;   // 38
+constexpr int kSeparatorWidth = 1;
+constexpr int kSeparatorMargin = 4;
+constexpr int kOptionButton = 26;
+constexpr int kOptionHeight = kOptionButton + 8;   // 34
+constexpr int kColorWidth = 22;
 constexpr int kHandleSize = 7;
 
-const char* kToolLabels[] = { "笔", "矩", "椭", "箭", "字", "荧", "马", "号", "橡" };
 const AnnotationTool kTools[] = {
     AnnotationTool::Pen,       AnnotationTool::Rectangle, AnnotationTool::Ellipse,
     AnnotationTool::Arrow,     AnnotationTool::Text,      AnnotationTool::Highlighter,
     AnnotationTool::Mosaic,    AnnotationTool::Step,      AnnotationTool::Eraser,
 };
-const char* kActionLabels[] = { "撤", "重", "复", "存", "贴", "关" };
+
+// 复制文本到剪贴板（颜色复制用；选区的图片复制走平台层的 DIB 路径）。
+bool CopyText(const std::wstring& text) {
+    if (text.empty()) {
+        return false;
+    }
+    const std::size_t bytes = (text.size() + 1) * sizeof(wchar_t);
+    HGLOBAL memory = GlobalAlloc(GMEM_MOVEABLE, bytes);
+    if (memory == nullptr) {
+        return false;
+    }
+    if (void* target = GlobalLock(memory); target != nullptr) {
+        std::memcpy(target, text.c_str(), bytes);
+        GlobalUnlock(memory);
+    } else {
+        GlobalFree(memory);
+        return false;
+    }
+    if (!OpenClipboard(nullptr)) {
+        GlobalFree(memory);
+        return false;
+    }
+    EmptyClipboard();
+    if (SetClipboardData(CF_UNICODETEXT, memory) == nullptr) {
+        GlobalFree(memory);
+        CloseClipboard();
+        return false;
+    }
+    CloseClipboard();
+    return true;
+}
 
 std::wstring Utf8ToWide(std::string_view text) {
     if (text.empty()) {
@@ -309,13 +347,37 @@ LRESULT ScreenshotOverlay::HandleMessage(HWND window, UINT message, WPARAM wPara
     case WM_MOUSEACTIVATE:
         return MA_NOACTIVATE;
 
-    case WM_SETCURSOR:
-        SetCursor(LoadCursorW(nullptr, IDC_CROSS));
+    case WM_SETCURSOR: {
+        // 光标形状跟着命中的东西走（把手方向 / 选区内部 / 工具栏），不是永远十字。
+        POINT point{};
+        GetCursorPos(&point);
+        ScreenToClient(window, &point);
+        UpdateCursor(ToScreen(point, windowX_, windowY_));
         return TRUE;
+    }
 
     case WM_TIMER:
         if (wParam == 1) {
             StepHoverAnimation();
+            return 0;
+        }
+        if (wParam == 2) {
+            // 颜色复制的提示。
+            if (GetTickCount64() >= toastUntilMs_) {
+                toast_.clear();
+                KillTimer(window, 2);
+            }
+            dirty_ = true;
+            return 0;
+        }
+        if (wParam == 3) {
+            StepToolbarAnimation();
+            return 0;
+        }
+        if (wParam == 4) {
+            // 悬停满 600 ms：把提示文字画出来。
+            KillTimer(window, 4);
+            dirty_ = true;
             return 0;
         }
         break;
@@ -456,8 +518,42 @@ LRESULT ScreenshotOverlay::HandleMessage(HWND window, UINT message, WPARAM wPara
         if (!selection_.Bounds().IsEmpty() && wParam < std::size(kTools)) {
             annotating_ = true;
             selectedAnnotation_ = -1;
+            // Shift+R / Shift+E：1.x 直接画实心形状。
+            if (lParam != 0) {
+                style_.filled = true;
+            }
             SetTool(kTools[wParam]);
+            if (kTools[wParam] == AnnotationTool::Rectangle ||
+                kTools[wParam] == AnnotationTool::Ellipse) {
+                shapeTool_ = kTools[wParam];
+            }
         }
+        return 0;
+
+    case kMsgCopyColor:
+        CopyColorUnderCursor(wParam != 0);
+        return 0;
+
+    case kMsgPin:
+        if (PinSelection()) {
+            pendingClose_ = true;
+            dirty_ = true;
+        }
+        return 0;
+
+    case kMsgTextStyle:
+        if (tool_ == AnnotationTool::Text) {
+            if (wParam == 1) {
+                style_.bold = !style_.bold;
+            } else {
+                style_.italic = !style_.italic;
+            }
+            dirty_ = true;
+        }
+        return 0;
+
+    case kMsgOption:
+        HandleOption(static_cast<Action>(static_cast<std::int32_t>(wParam)));
         return 0;
 
     default:
@@ -489,8 +585,12 @@ void ScreenshotOverlay::OnMouseMove(POINT point) {
     }
     if (hovered != hoveredToolbar_) {
         hoveredToolbar_ = hovered;
+        hoverSinceMs_ = GetTickCount64();
         hoverAnimating_ = true;
         SetTimer(static_cast<HWND>(window_->Handle()), 1, 16, nullptr);
+        if (hovered >= 0) {
+            SetTimer(static_cast<HWND>(window_->Handle()), 4, 620, nullptr);
+        }
         dirty_ = true;
     }
 
@@ -538,7 +638,7 @@ void ScreenshotOverlay::OnMouseMove(POINT point) {
                            static_cast<float>(point.y) - bounds.top };
 
         if (tool_ == AnnotationTool::Eraser) {
-            document_.EraseAt(local, core::annotation_defaults::kEraserSize * 0.5f);
+            document_.EraseAt(local, eraserSize_ * 0.5f);
         } else if (tool_ == AnnotationTool::Pen || tool_ == AnnotationTool::Highlighter) {
             document_.AddPoint(local, 2.0f);
         } else if (tool_ == AnnotationTool::Arrow && (GetKeyState(VK_SHIFT) & 0x8000) != 0) {
@@ -819,7 +919,7 @@ void ScreenshotOverlay::OnLeftButtonDown(POINT point) {
 
     if (tool_ == AnnotationTool::Eraser) {
         drawing_ = true;
-        document_.EraseAt(local, core::annotation_defaults::kEraserSize * 0.5f);
+        document_.EraseAt(local, eraserSize_ * 0.5f);
         dirty_ = true;
         return;
     }
@@ -912,6 +1012,7 @@ void ScreenshotOverlay::SetTool(AnnotationTool tool) {
     } else if (style_.thickness > core::annotation_defaults::kMaxThickness / 2.0f) {
         style_.thickness = core::annotation_defaults::kThickness;
     }
+    dirty_ = true;
 }
 
 void ScreenshotOverlay::HandleToolbar(const ToolbarButton& button) {
@@ -923,19 +1024,80 @@ void ScreenshotOverlay::HandleToolbar(const ToolbarButton& button) {
         selectedAnnotation_ = -1;
         break;
 
-    case Action::ToolPen:
-    case Action::ToolRectangle:
-    case Action::ToolEllipse:
+    case Action::ToolShape:
+        if (hasSelection) {
+            annotating_ = true;
+            selectedAnnotation_ = -1;
+            SetTool(shapeTool_);
+        }
+        break;
+
     case Action::ToolArrow:
-    case Action::ToolText:
+        if (hasSelection) {
+            annotating_ = true;
+            selectedAnnotation_ = -1;
+            SetTool(AnnotationTool::Arrow);
+        }
+        break;
+
+    case Action::ToolPen:
+        if (hasSelection) {
+            annotating_ = true;
+            selectedAnnotation_ = -1;
+            SetTool(AnnotationTool::Pen);
+        }
+        break;
+
     case Action::ToolHighlighter:
-    case Action::ToolMosaic:
-    case Action::ToolStep:
+        if (hasSelection) {
+            annotating_ = true;
+            selectedAnnotation_ = -1;
+            SetTool(AnnotationTool::Highlighter);
+        }
+        break;
+
     case Action::ToolEraser:
         if (hasSelection) {
             annotating_ = true;
             selectedAnnotation_ = -1;
-            SetTool(kTools[button.toolIndex]);
+            SetTool(AnnotationTool::Eraser);
+        }
+        break;
+
+    case Action::ToolText:
+        if (hasSelection) {
+            annotating_ = true;
+            selectedAnnotation_ = -1;
+            SetTool(AnnotationTool::Text);
+        }
+        break;
+
+    case Action::ToolMosaic:
+        if (hasSelection) {
+            annotating_ = true;
+            selectedAnnotation_ = -1;
+            SetTool(AnnotationTool::Mosaic);
+        }
+        break;
+
+    case Action::ToolStep:
+        if (hasSelection) {
+            annotating_ = true;
+            selectedAnnotation_ = -1;
+            SetTool(AnnotationTool::Step);
+        }
+        break;
+
+    // 工具栏上已经没有矩形/椭圆两个独立按钮了（1.x 用「形状」+ 选项栏），
+    // 但保留这两个分支给旧的输入路径。
+    case Action::ToolRectangle:
+    case Action::ToolEllipse:
+        if (hasSelection) {
+            annotating_ = true;
+            selectedAnnotation_ = -1;
+            shapeTool_ = button.action == Action::ToolRectangle ? AnnotationTool::Rectangle
+                                                                : AnnotationTool::Ellipse;
+            SetTool(shapeTool_);
         }
         break;
 
@@ -951,6 +1113,19 @@ void ScreenshotOverlay::HandleToolbar(const ToolbarButton& button) {
         document_.Redo();
         break;
 
+    case Action::ClearAnnotations:
+        document_.Clear();
+        selectedAnnotation_ = -1;
+        break;
+
+    case Action::Ocr:
+        if (options_.mode == OverlayMode::Ocr) {
+            RunOcr();
+            pendingClose_ = true;
+        }
+        break;
+
+    case Action::DoneAndCopy:
     case Action::Copy:
         if (options_.mode == OverlayMode::Ocr) {
             RunOcr();
@@ -972,6 +1147,7 @@ void ScreenshotOverlay::HandleToolbar(const ToolbarButton& button) {
         }
         break;
 
+    case Action::CancelOverlay:
     case Action::CloseOverlay:
         pendingClose_ = true;
         break;
@@ -1018,6 +1194,20 @@ void ScreenshotOverlay::HandleOption(Action action) {
     case Action::MosaicUp:
         style_.mosaicBlockPx = std::min(30, style_.mosaicBlockPx + 2);
         break;
+    case Action::ShapeRectangle:
+        shapeTool_ = AnnotationTool::Rectangle;
+        tool_ = shapeTool_;
+        break;
+    case Action::ShapeEllipse:
+        shapeTool_ = AnnotationTool::Ellipse;
+        tool_ = shapeTool_;
+        break;
+    case Action::EraserDown:
+        eraserSize_ = std::max(8.0f, eraserSize_ - 8.0f);
+        break;
+    case Action::EraserUp:
+        eraserSize_ = std::min(120.0f, eraserSize_ + 8.0f);
+        break;
     case Action::ArrowEnd:
         style_.arrowHead = core::ArrowHeadMode::End;
         break;
@@ -1037,49 +1227,89 @@ void ScreenshotOverlay::LayoutOptionBar() {
     optionButtons_.clear();
     optionBounds_ = RECT{};
 
-    if (!annotating_) {
+    if (!annotating_ || !toolbarVisible_) {
         return;
     }
 
-    const auto addOption = [&](Action action, const std::string& text, int width, bool active) {
+    const auto addIcon = [&](Action action, ToolbarIcon icon, const char* text, int width,
+                             bool active) {
+        OptionButton button;
+        button.action = action;
+        button.icon = icon;
+        button.text = text ? text : "";
+        button.rect = RECT{ 0, 0, width, kOptionButton };
+        button.active = active;
+        optionButtons_.push_back(button);
+    };
+    const auto addText = [&](Action action, const std::string& text, int width, bool active) {
         OptionButton button;
         button.action = action;
         button.text = text;
+        button.rect = RECT{ 0, 0, width, kOptionButton };
         button.active = active;
-        button.rect = RECT{ 0, 0, width, 32 };
+        optionButtons_.push_back(button);
+    };
+    const auto addSeparator = [&] {
+        OptionButton button;
+        button.action = Action::None;
+        button.rect = RECT{ 0, 0, 1, kOptionButton };
         optionButtons_.push_back(button);
     };
 
+    // 1.x 的选项栏：色板在最左，然后才是当前工具的参数。
+    for (int i = 0; i < core::annotation_defaults::kPaletteCount; ++i) {
+        OptionButton button;
+        button.action = Action::Color;
+        button.rect = RECT{ 0, 0, kColorWidth, kOptionButton };
+        button.colorIndex = i;
+        button.active = style_.color == core::annotation_defaults::PaletteColor(i);
+        optionButtons_.push_back(button);
+    }
+    addSeparator();
+
     switch (tool_) {
-    case core::AnnotationTool::Rectangle:
-    case core::AnnotationTool::Ellipse:
-        addOption(Action::FillOff, "空心", 48, !style_.filled);
-        addOption(Action::FillOn, "实心", 48, style_.filled);
+    case AnnotationTool::Rectangle:
+    case AnnotationTool::Ellipse:
+        addIcon(Action::ShapeRectangle, ToolbarIcon::Rectangle, "", kOptionButton,
+                tool_ == AnnotationTool::Rectangle);
+        addIcon(Action::ShapeEllipse, ToolbarIcon::Ellipse, "", kOptionButton,
+                tool_ == AnnotationTool::Ellipse);
+        addIcon(Action::FillOff, ToolbarIcon::Outline, "", kOptionButton, !style_.filled);
+        addIcon(Action::FillOn, ToolbarIcon::Fill, "", kOptionButton, style_.filled);
         break;
-    case core::AnnotationTool::Pen:
-    case core::AnnotationTool::Highlighter:
-        addOption(Action::ThicknessDown, "-", 28, false);
-        addOption(Action::None, std::to_string(static_cast<int>(std::lround(style_.thickness))),
-                  34, false);
-        addOption(Action::ThicknessUp, "+", 28, false);
+    case AnnotationTool::Pen:
+    case AnnotationTool::Highlighter:
+        addText(Action::ThicknessDown, "-", kOptionButton, false);
+        addText(Action::None, std::to_string(static_cast<int>(std::lround(style_.thickness))),
+                30, false);
+        addText(Action::ThicknessUp, "+", kOptionButton, false);
         break;
-    case core::AnnotationTool::Text:
-        addOption(Action::TextSizeDown, "-", 28, false);
-        addOption(Action::None, std::to_string(static_cast<int>(std::lround(style_.textSize))), 34,
-                  false);
-        addOption(Action::TextSizeUp, "+", 28, false);
-        addOption(Action::Bold, "B", 28, style_.bold);
-        addOption(Action::Italic, "I", 28, style_.italic);
+    case AnnotationTool::Arrow:
+        addIcon(Action::ArrowEnd, ToolbarIcon::Arrow, "", kOptionButton,
+                style_.arrowHead == core::ArrowHeadMode::End);
+        addText(Action::ArrowBoth, "\u2194", kOptionButton,
+                style_.arrowHead == core::ArrowHeadMode::Both);
+        addText(Action::ArrowNone, "\u2014", kOptionButton,
+                style_.arrowHead == core::ArrowHeadMode::None);
         break;
-    case core::AnnotationTool::Mosaic:
-        addOption(Action::MosaicDown, "-", 28, false);
-        addOption(Action::None, std::to_string(style_.mosaicBlockPx), 34, false);
-        addOption(Action::MosaicUp, "+", 28, false);
+    case AnnotationTool::Text:
+        addText(Action::TextSizeDown, "-", kOptionButton, false);
+        addText(Action::None, std::to_string(static_cast<int>(std::lround(style_.textSize))),
+                30, false);
+        addText(Action::TextSizeUp, "+", kOptionButton, false);
+        addText(Action::Bold, "B", kOptionButton, style_.bold);
+        addText(Action::Italic, "I", kOptionButton, style_.italic);
         break;
-    case core::AnnotationTool::Arrow:
-        addOption(Action::ArrowEnd, "→", 34, style_.arrowHead == core::ArrowHeadMode::End);
-        addOption(Action::ArrowBoth, "↔", 34, style_.arrowHead == core::ArrowHeadMode::Both);
-        addOption(Action::ArrowNone, "—", 34, style_.arrowHead == core::ArrowHeadMode::None);
+    case AnnotationTool::Mosaic:
+        addText(Action::MosaicDown, "-", kOptionButton, false);
+        addText(Action::None, std::to_string(style_.mosaicBlockPx), 30, false);
+        addText(Action::MosaicUp, "+", kOptionButton, false);
+        break;
+    case AnnotationTool::Eraser:
+        addText(Action::EraserDown, "-", kOptionButton, false);
+        addText(Action::None, std::to_string(static_cast<int>(std::lround(eraserSize_))), 30,
+                false);
+        addText(Action::EraserUp, "+", kOptionButton, false);
         break;
     default:
         break;
@@ -1089,26 +1319,33 @@ void ScreenshotOverlay::LayoutOptionBar() {
         return;
     }
 
-    int width = kToolbarPadding * 2;
-    for (const OptionButton& option : optionButtons_) {
-        width += option.rect.right;
+    int width = kToolbarPadding;
+    for (std::size_t i = 0; i < optionButtons_.size(); ++i) {
+        width += optionButtons_[i].rect.right;
+        if (i + 1 < optionButtons_.size()) {
+            width += optionButtons_[i + 1].rect.right > 0 ? kToolbarGap : 0;
+        }
+        // 分隔符两侧各留 4 px。
+        if (optionButtons_[i].rect.right == 1) {
+            width += kSeparatorMargin - kToolbarGap;
+        }
     }
-    width += (static_cast<int>(optionButtons_.size()) - 1) * 4;
 
-    int x = static_cast<std::int32_t>(toolbarBounds_.left);
-    int y = static_cast<std::int32_t>(toolbarBounds_.bottom) + 4;
-    if (y + 40 > screenHeight_) {
-        y = static_cast<std::int32_t>(toolbarBounds_.top) - 40;
+    int x = static_cast<int>(toolbarBounds_.left);
+    int y = static_cast<int>(toolbarBounds_.bottom) + 6;
+    if (y + kOptionHeight > screenHeight_ - 8) {
+        y = static_cast<int>(toolbarBounds_.top) - kOptionHeight - 6;
     }
-    x = std::clamp(x, 4, std::max(4, screenWidth_ - width - 4));
-    y = std::clamp(y, 4, std::max(4, screenHeight_ - 40));
+    x = std::clamp(x, 8, std::max(8, screenWidth_ - width - 8));
+    y = std::clamp(y, 8, std::max(8, screenHeight_ - kOptionHeight - 8));
 
     int cursor = x + kToolbarPadding;
     for (OptionButton& option : optionButtons_) {
-        option.rect = RECT{ cursor, y + 4, cursor + option.rect.right, y + 36 };
-        cursor += option.rect.right + 4;
+        const int w = option.rect.right;
+        option.rect = RECT{ cursor, y + 4, cursor + w, y + 4 + kOptionButton };
+        cursor += w + (w == 1 ? kSeparatorMargin * 2 - kToolbarGap : kToolbarGap);
     }
-    optionBounds_ = RECT{ x, y, x + width, y + 40 };
+    optionBounds_ = RECT{ x, y, x + width, y + kOptionHeight };
 }
 
 void ScreenshotOverlay::RenderOptionBar(core::FramePlan& plan) {
@@ -1128,15 +1365,45 @@ void ScreenshotOverlay::RenderOptionBar(core::FramePlan& plan) {
                          static_cast<float>(option.rect.top),
                          static_cast<float>(option.rect.right),
                          static_cast<float>(option.rect.bottom) };
-        if (option.active) {
-            plan.Add(core::FillRoundedRect{ rect, 7.0f, Color{ 0.184f, 0.486f, 0.965f, 1.0f } });
-        } else if (option.action != Action::None) {
-            plan.Add(core::FillRoundedRect{ rect, 7.0f, Color{ 0.0f, 0.0f, 0.0f, 0.04f } });
+
+        if (option.colorIndex >= 0) {
+            // 1.x 的色板：22×22，内圈 12×12 圆点，选中时外面套 2 px 环。
+            const Color color = core::annotation_defaults::PaletteColor(option.colorIndex);
+            const float cx = (rect.left + rect.right) * 0.5f;
+            const float cy = (rect.top + rect.bottom) * 0.5f;
+            const Rect dot{ cx - 6.0f, cy - 6.0f, cx + 6.0f, cy + 6.0f };
+            plan.Add(core::FillEllipse{ dot, color });
+            if (option.colorIndex == 6 || option.colorIndex == 7) {
+                plan.Add(core::StrokeEllipse{ dot, Color{ 0.0f, 0.0f, 0.0f, 0.15f }, 1.0f });
+            }
+            if (option.active) {
+                plan.Add(core::StrokeEllipse{ Rect{ rect.left + 1.0f, rect.top + 2.0f,
+                                                    rect.right - 1.0f, rect.bottom - 2.0f },
+                                              Color{ 0.184f, 0.486f, 0.965f, 1.0f }, 2.0f });
+            }
+            continue;
         }
 
+        if (option.rect.right - option.rect.left == 1) {
+            const float dividerX = rect.left + 0.5f;
+            plan.Add(core::FillRect{ Rect{ dividerX, rect.top + 4.0f, dividerX + 1.0f,
+                                           rect.bottom - 4.0f },
+                                     Color{ 0.0f, 0.0f, 0.0f, 0.10f } });
+            continue;
+        }
+
+        if (option.active) {
+            plan.Add(core::FillRoundedRect{ rect, 7.0f, Color{ 0.184f, 0.486f, 0.965f, 1.0f } });
+        }
+
+        if (option.text.empty() && option.icon != ToolbarIcon::None) {
+            RenderToolbarIcon(plan, rect, option.icon, option.active, true);
+            continue;
+        }
         if (option.text.empty()) {
             continue;
         }
+
         const bool valueOnly = option.action == Action::None;
         const core::FontSpec spec{ options_.fontFamily, valueOnly ? 400 : 600, 12.0f,
                                    option.active ? Color{ 1.0f, 1.0f, 1.0f, 1.0f }
@@ -1221,41 +1488,45 @@ void ScreenshotOverlay::RenderMagnifier(core::FramePlan& plan) {
         return;
     }
 
-    constexpr int kImage = 128;
-    constexpr int kCardWidth = 136;
-    constexpr int kCardHeight = 172;
+    // 1.x 的放大镜：136×136 取景框（深色底、内描边）+ 间隔 5 px 的信息面板。
+    constexpr float kSize = 136.0f;
+    constexpr float kInfoHeight = 46.0f;
+    constexpr float kGap = 5.0f;
+    const float cardWidth = kSize;
+    const float cardHeight = kSize + kGap + kInfoHeight;
     // 一律换算到窗口本地坐标再夹紧：多屏时窗口原点不是 (0,0)。
     const float sampleX = static_cast<float>(lastMouse_.x - windowX_);
     const float sampleY = static_cast<float>(lastMouse_.y - windowY_);
     // 1.x：光标右下 24 px；靠边就翻到左上。
     float x = sampleX + 24.0f;
     float y = sampleY + 24.0f;
-    if (x + kCardWidth > static_cast<float>(screenWidth_) - 6.0f) {
-        x = sampleX - 24.0f - kCardWidth;
+    if (x + cardWidth > static_cast<float>(screenWidth_) - 6.0f) {
+        x = sampleX - 24.0f - cardWidth;
     }
-    if (y + kCardHeight > static_cast<float>(screenHeight_) - 6.0f) {
-        y = sampleY - 24.0f - kCardHeight;
+    if (y + cardHeight > static_cast<float>(screenHeight_) - 6.0f) {
+        y = sampleY - 24.0f - cardHeight;
     }
-    x = std::clamp(x, 6.0f, std::max(6.0f, static_cast<float>(screenWidth_) - kCardWidth - 6.0f));
-    y = std::clamp(y, 6.0f, std::max(6.0f, static_cast<float>(screenHeight_) - kCardHeight - 6.0f));
+    x = std::clamp(x, 6.0f, std::max(6.0f, static_cast<float>(screenWidth_) - cardWidth - 6.0f));
+    y = std::clamp(y, 6.0f, std::max(6.0f, static_cast<float>(screenHeight_) - cardHeight - 6.0f));
 
-    const core::Rect card{ x, y, x + kCardWidth, y + kCardHeight };
-    plan.Add(core::FillRoundedRect{ card, 10.0f, Color{ 1.0f, 1.0f, 1.0f, 0.98f } });
-    plan.Add(core::StrokeRoundedRect{ card, 10.0f, Color{ 0.0f, 0.0f, 0.0f, 0.14f }, 1.0f });
-
-    const core::Rect source{ sampleX - 8.0f, sampleY - 8.0f, sampleX + 8.0f, sampleY + 8.0f };
-    const core::Rect destination{ x + 4.0f, y + 4.0f, x + 4.0f + kImage, y + 4.0f + kImage };
-    plan.Add(core::Blit{ capturedHandle_, source, destination, 1.0f });
-
-    // 中心像素的十字与颜色环。
-    const float centerX = (destination.left + destination.right) * 0.5f;
-    const float centerY = (destination.top + destination.bottom) * 0.5f;
-    plan.Add(core::StrokeRect{ core::Rect{ centerX - 8.0f, centerY - 8.0f, centerX + 8.0f,
-                                           centerY + 8.0f },
-                               Color{ 1.0f, 1.0f, 1.0f, 0.9f }, 1.0f });
-    plan.Add(core::StrokeRect{ core::Rect{ centerX - 9.0f, centerY - 9.0f, centerX + 9.0f,
-                                           centerY + 9.0f },
-                               Color{ 0.0f, 0.0f, 0.0f, 0.7f }, 1.0f });
+    // 取景框：17×17 的设备像素放进 136 px，约 8 倍放大。
+    const core::Rect viewport{ x, y, x + kSize, y + kSize };
+    plan.Add(core::FillRoundedRect{ viewport, 10.0f,
+                                    Color{ 0x0B / 255.0f, 0x0F / 255.0f, 0x16 / 255.0f, 1.0f } });
+    plan.Add(core::Blit{ capturedHandle_,
+                         core::Rect{ sampleX - 8.0f, sampleY - 8.0f, sampleX + 9.0f,
+                                     sampleY + 9.0f },
+                         core::Rect{ x + 1.0f, y + 1.0f, x + kSize - 1.0f, y + kSize - 1.0f },
+                         1.0f });
+    // 中心像素：9×9 的模式色方环（1.x 的 63.5,63.5 那一圈）。
+    const float centerX = x + kSize * 0.5f;
+    const float centerY = y + kSize * 0.5f;
+    plan.Add(core::StrokeRect{ core::Rect{ centerX - 4.5f, centerY - 4.5f, centerX + 4.5f,
+                                           centerY + 4.5f },
+                               SelectionAccent(), 1.5f });
+    plan.Add(core::StrokeRoundedRect{ core::Rect{ x + 1.0f, y + 1.0f, x + kSize - 1.0f,
+                                                  y + kSize - 1.0f },
+                                      9.0f, Color{ 1.0f, 1.0f, 1.0f, 0x5C / 255.0f }, 1.0f });
 
     std::uint8_t r = 0;
     std::uint8_t g = 0;
@@ -1275,29 +1546,38 @@ void ScreenshotOverlay::RenderMagnifier(core::FramePlan& plan) {
     // 坐标读数是屏幕坐标（虚拟桌面），不是窗口本地坐标。
     std::snprintf(coordinates, sizeof(coordinates), "%d, %d", px + windowX_, py + windowY_);
 
-    const float footerY = y + 140.0f;
-    plan.Add(core::FillEllipse{ core::Rect{ x + 10.0f, footerY + 1.0f, x + 22.0f,
-                                            footerY + 13.0f },
-                                Color{ r / 255.0f, g / 255.0f, b / 255.0f, 1.0f } });
-    plan.Add(core::StrokeEllipse{ core::Rect{ x + 10.0f, footerY + 1.0f, x + 22.0f,
-                                              footerY + 13.0f },
-                                  Color{ 0.0f, 0.0f, 0.0f, 0.2f }, 1.0f });
+    // 信息面板：#F210141C 底、#33FFFFFF 边、8 px 圆角。
+    const core::Rect info{ x, y + kSize + kGap, x + cardWidth, y + cardHeight };
+    plan.Add(core::FillRoundedRect{ info, 8.0f,
+                                    Color{ 0x10 / 255.0f, 0x14 / 255.0f, 0x1C / 255.0f,
+                                           0xF2 / 255.0f } });
+    plan.Add(core::StrokeRoundedRect{ info, 8.0f, Color{ 1.0f, 1.0f, 1.0f, 0x33 / 255.0f },
+                                      1.0f });
+    const float swatchX = x + 8.0f;
+    const float swatchY = y + kSize + kGap + 8.0f;
+    plan.Add(core::FillRoundedRect{ core::Rect{ swatchX, swatchY, swatchX + 11.0f,
+                                                swatchY + 11.0f },
+                                    3.0f, Color{ r / 255.0f, g / 255.0f, b / 255.0f, 1.0f } });
+    plan.Add(core::StrokeRoundedRect{ core::Rect{ swatchX, swatchY, swatchX + 11.0f,
+                                                  swatchY + 11.0f },
+                                      3.0f, Color{ 1.0f, 1.0f, 1.0f, 0.18f }, 1.0f });
 
     const core::FontSpec hexSpec{ options_.fontFamily, 600, 11.0f,
-                                  Color{ 0.15f, 0.17f, 0.21f, 1.0f } };
+                                  Color{ 0xE8 / 255.0f, 0xED / 255.0f, 0xF6 / 255.0f, 1.0f } };
     const core::FontSpec coordSpec{ options_.fontFamily, 400, 10.0f,
-                                    Color{ 0.42f, 0.45f, 0.50f, 1.0f } };
+                                    Color{ 0x8D / 255.0f, 0x9A / 255.0f, 0xAF / 255.0f, 1.0f } };
     const core::TextCell hexCell =
-        rasterizer_->LayOut(hex, hexSpec, core::Point{ x + 28.0f, footerY });
+        rasterizer_->LayOut(hex, hexSpec, core::Point{ swatchX + 17.0f, swatchY - 2.0f });
     if (hexCell.atlas != 0) {
         plan.Add(hexCell.ToBlit());
     }
-    const core::TextCell coordCell =
-        rasterizer_->LayOut(coordinates, coordSpec, core::Point{ x + 28.0f, footerY + 15.0f });
+    const core::TextCell coordCell = rasterizer_->LayOut(
+        coordinates, coordSpec, core::Point{ swatchX + 17.0f, swatchY + 13.0f });
     if (coordCell.atlas != 0) {
         plan.Add(coordCell.ToBlit());
     }
 }
+
 void ScreenshotOverlay::StepHoverAnimation() {
     bool settled = true;
     for (int i = 0; i < 32; ++i) {
@@ -1317,18 +1597,187 @@ void ScreenshotOverlay::StepHoverAnimation() {
     dirty_ = true;
 }
 
+void ScreenshotOverlay::StepToolbarAnimation() {
+    toolbarAnim_ = std::min(1.0f, toolbarAnim_ + 0.2f);
+    if (toolbarAnim_ >= 1.0f) {
+        KillTimer(static_cast<HWND>(window_->Handle()), 3);
+    }
+    dirty_ = true;
+}
+
+void ScreenshotOverlay::CopyColorUnderCursor(bool asRgb) {
+    // 1.x 的 C：随时可用的取色，不受选区/工具影响。
+    const int px = lastMouse_.x - windowX_;
+    const int py = lastMouse_.y - windowY_;
+    if (baseBgra_.empty() || px < 0 || py < 0 || px >= screenWidth_ || py >= screenHeight_) {
+        toast_ = L"无法读取光标下的颜色";
+    } else {
+        const std::size_t index = (static_cast<std::size_t>(py) * screenWidth_ + px) * 4;
+        const int b = baseBgra_[index + 0];
+        const int g = baseBgra_[index + 1];
+        const int r = baseBgra_[index + 2];
+        wchar_t text[48] = {};
+        if (asRgb) {
+            std::swprintf(text, 48, L"rgb(%d, %d, %d)", r, g, b);
+        } else {
+            std::swprintf(text, 48, L"#%02X%02X%02X", r, g, b);
+        }
+        toast_ = CopyText(text) ? std::wstring(L"已复制 ") + text : L"复制颜色失败";
+        colorAsRgb_ = asRgb;
+    }
+    toastUntilMs_ = GetTickCount64() + 1200;
+    SetTimer(static_cast<HWND>(window_->Handle()), 2, 50, nullptr);
+    dirty_ = true;
+}
+
+void ScreenshotOverlay::RenderToast(core::FramePlan& plan) {
+    if (toast_.empty() || rasterizer_ == nullptr) {
+        return;
+    }
+    const std::string text = WideToUtf8(toast_);
+    const core::FontSpec spec{ options_.fontFamily, 500, 12.0f,
+                               Color{ 0.91f, 0.93f, 0.96f, 1.0f } };
+    const core::TextCell measured = rasterizer_->LayOut(text, spec, Point{ 0.0f, 0.0f });
+    if (measured.atlas == 0) {
+        return;
+    }
+    const float width = measured.destination.Width() + 20.0f;
+    const float height = 30.0f;
+    float x = static_cast<float>(lastMouse_.x - windowX_) + 20.0f;
+    float y = static_cast<float>(lastMouse_.y - windowY_) + 40.0f;
+    x = std::clamp(x, 8.0f, std::max(8.0f, static_cast<float>(screenWidth_) - width - 8.0f));
+    y = std::clamp(y, 8.0f, std::max(8.0f, static_cast<float>(screenHeight_) - height - 8.0f));
+    plan.Add(core::FillRoundedRect{ Rect{ x, y, x + width, y + height }, 8.0f,
+                                    Color{ 0.086f, 0.102f, 0.133f, 0.94f } });
+    const core::TextCell cell = rasterizer_->LayOut(
+        text, spec,
+        Point{ x + 10.0f, y + (height - measured.destination.Height()) * 0.5f });
+    if (cell.atlas != 0) {
+        plan.Add(cell.ToBlit());
+    }
+}
+
+void ScreenshotOverlay::RenderTooltip(core::FramePlan& plan) {
+    if (!toolbarVisible_ || hoveredToolbar_ < 0 ||
+        hoveredToolbar_ >= static_cast<int>(toolbar_.size()) || rasterizer_ == nullptr) {
+        return;
+    }
+    // 1.x 是 WPF 的默认 tooltip（悬停约 600 ms 出现），这里用同一套浅色卡片。
+    if (GetTickCount64() - hoverSinceMs_ < 600) {
+        return;
+    }
+    const ToolbarButton& button = toolbar_[static_cast<std::size_t>(hoveredToolbar_)];
+    if (button.label.empty() || button.icon == ToolbarIcon::Separator) {
+        return;
+    }
+    const core::FontSpec spec{ options_.fontFamily, 400, 12.0f,
+                               Color{ 0x3C / 255.0f, 0x42 / 255.0f, 0x50 / 255.0f, 1.0f } };
+    const core::TextCell measured = rasterizer_->LayOut(button.label, spec, Point{ 0.0f, 0.0f });
+    if (measured.atlas == 0) {
+        return;
+    }
+    const float width = measured.destination.Width() + 16.0f;
+    const float height = measured.destination.Height() + 10.0f;
+    float x = static_cast<float>(button.rect.left) +
+              (button.rect.right - button.rect.left - static_cast<LONG>(width)) * 0.5f;
+    float y = static_cast<float>(button.rect.bottom) + 8.0f;
+    if (y + height > static_cast<float>(screenHeight_) - 8.0f) {
+        y = static_cast<float>(button.rect.top) - height - 8.0f;
+    }
+    x = std::clamp(x, 8.0f, std::max(8.0f, static_cast<float>(screenWidth_) - width - 8.0f));
+    plan.Add(core::FillRoundedRect{ Rect{ x, y, x + width, y + height }, 6.0f,
+                                    Color{ 1.0f, 1.0f, 1.0f, 0.98f } });
+    plan.Add(core::StrokeRoundedRect{ Rect{ x, y, x + width, y + height }, 6.0f,
+                                      Color{ 0.0f, 0.0f, 0.0f, 0.14f }, 1.0f });
+    const core::TextCell cell = rasterizer_->LayOut(
+        button.label, spec, Point{ x + 8.0f, y + (height - measured.destination.Height()) * 0.5f });
+    if (cell.atlas != 0) {
+        plan.Add(cell.ToBlit());
+    }
+}
+
 void ScreenshotOverlay::LayoutToolbar() {
     toolbar_.clear();
 
-    const int toolCount = static_cast<int>(std::size(kToolLabels));
-    const int colorCount = core::annotation_defaults::kPaletteCount;
-    const int actionCount = static_cast<int>(std::size(kActionLabels));
+    const bool hasSelection = !selection_.Bounds().IsEmpty();
+    const bool recordMode = options_.mode == OverlayMode::RecordRegion;
+    const bool ocrMode = options_.mode == OverlayMode::Ocr;
 
-    int width = kToolbarPadding * 2;
-    width += (toolCount + 1) * kToolbarToolWidth;
-    width += colorCount * kToolbarColorWidth;
-    width += actionCount * kToolbarToolWidth;
-    width += (toolCount + 1 + colorCount + actionCount + 2 - 1) * kToolbarGap;
+    // 先在「工具栏左上角 = (0,0)」的坐标系里排好，最后整体平移到锚点，
+    // 这样宽度和命中区天然一致。
+    int cursorX = kToolbarPadding;
+    const int top = kToolbarPadding;
+
+    const auto add = [&](Action action, ToolbarIcon icon, const char* label, bool enabled,
+                         bool active) {
+        ToolbarButton button;
+        button.rect = RECT{ cursorX, top, cursorX + kToolbarButton, top + kToolbarButton };
+        button.action = action;
+        button.icon = icon;
+        button.label = label;
+        button.enabled = enabled;
+        button.active = active;
+        toolbar_.push_back(button);
+        cursorX += kToolbarButton + kToolbarGap;
+    };
+    const auto separator = [&] {
+        cursorX += kSeparatorMargin - kToolbarGap;
+        ToolbarButton button;
+        button.rect = RECT{ cursorX, top, cursorX + kSeparatorWidth, top + kToolbarButton };
+        button.icon = ToolbarIcon::Separator;
+        toolbar_.push_back(button);
+        cursorX += kSeparatorWidth + kSeparatorMargin;
+    };
+    const auto isShape = [&] {
+        return tool_ == AnnotationTool::Rectangle || tool_ == AnnotationTool::Ellipse;
+    };
+
+    // 1.x 的分组与顺序：选择 | 形状·箭头 | 笔·荧光·橡皮·文字·马赛克·序号 |
+    // 撤·重·清空 | 存·贴·识别 | 取消·完成。颜色在选项栏里，不占工具栏。
+    add(Action::ToolSelect, ToolbarIcon::Select, "选择 / 移动 (V)", true, !annotating_);
+    separator();
+    add(Action::ToolShape, ToolbarIcon::Shape, "形状 (R/E) · 在选项栏切换矩形 / 椭圆",
+        hasSelection, annotating_ && isShape());
+    add(Action::ToolArrow, ToolbarIcon::Arrow, "箭头 (A) · Shift 锁定角度", hasSelection,
+        annotating_ && tool_ == AnnotationTool::Arrow);
+    separator();
+    add(Action::ToolPen, ToolbarIcon::Pen, "画笔 (P) · 滚轮调粗细", hasSelection,
+        annotating_ && tool_ == AnnotationTool::Pen);
+    add(Action::ToolHighlighter, ToolbarIcon::Highlighter, "荧光笔 (H) · 滚轮调粗细",
+        hasSelection, annotating_ && tool_ == AnnotationTool::Highlighter);
+    add(Action::ToolEraser, ToolbarIcon::Eraser, "橡皮擦 (X) · 滚轮调大小 · 划过删除整条标注",
+        hasSelection, annotating_ && tool_ == AnnotationTool::Eraser);
+    add(Action::ToolText, ToolbarIcon::Text, "文字 (T) · 滚轮调字号", hasSelection,
+        annotating_ && tool_ == AnnotationTool::Text);
+    add(Action::ToolMosaic, ToolbarIcon::Mosaic, "马赛克 (M) · 滚轮调密度", hasSelection,
+        annotating_ && tool_ == AnnotationTool::Mosaic);
+    add(Action::ToolStep, ToolbarIcon::Step, "序号 (N)", hasSelection,
+        annotating_ && tool_ == AnnotationTool::Step);
+    separator();
+    add(Action::Undo, ToolbarIcon::Undo, "撤销 (Ctrl+Z)", document_.CanUndo(), false);
+    add(Action::Redo, ToolbarIcon::Redo, "重做 (Ctrl+Y)", document_.CanRedo(), false);
+    add(Action::ClearAnnotations, ToolbarIcon::Clear, "清空标注", !document_.Items().empty(),
+        false);
+
+    separator();
+    if (recordMode) {
+        add(Action::CancelOverlay, ToolbarIcon::Close, "取消 (Esc)", true, false);
+    } else {
+        add(Action::Save, ToolbarIcon::Save, "保存为图片 (Ctrl+S)", hasSelection, false);
+        add(Action::Pin, ToolbarIcon::Pin, "贴图 (Ctrl+T)", hasSelection, false);
+        if (!ocrMode) {
+            add(Action::Ocr, ToolbarIcon::Ocr, "识别文字", hasSelection, false);
+        }
+        separator();
+        add(Action::CancelOverlay, ToolbarIcon::Close, "取消 (Esc)", true, false);
+        if (!ocrMode) {
+            // 1.x 的「完成」就是复制到剪贴板；OCR 模式下松手即识别，所以不显示。
+            add(Action::DoneAndCopy, ToolbarIcon::Done, "完成并复制到剪贴板 (Enter)",
+                hasSelection, false);
+        }
+    }
+
+    const int width = cursorX - kToolbarGap + kToolbarPadding;
 
     const Rect selection = selection_.Bounds();
     const int localRight = static_cast<int>(selection.right) - windowX_;
@@ -1354,71 +1803,183 @@ void ScreenshotOverlay::LayoutToolbar() {
         x = std::clamp(x, 8, std::max(8, screenWidth_ - width - 8));
         y = std::clamp(y, 8, std::max(8, screenHeight_ - kToolbarHeight - 8));
     }
-    // 1.x：刚拖完的选区不算「完成」，工具栏等松手之后才出现。
-    toolbarVisible_ = phase_ == Phase::Annotating && !selection.IsEmpty();
 
-    int cursorX = x + kToolbarPadding;
-    const int cursorY = y + 1;
-
-    const auto addButton = [&](Action action, int payload, int toolIndex, const char* label,
-                               int buttonWidth, bool enabled, bool active,
-                               ToolbarIcon icon = ToolbarIcon::None) {
-        ToolbarButton button;
-        button.rect = RECT{ cursorX, y + 1, cursorX + buttonWidth, y + kToolbarHeight - 1 };
-        button.action = action;
-        button.payload = payload;
-        button.toolIndex = toolIndex;
-        button.label = label;
-        button.icon = icon;
-        button.enabled = enabled;
-        button.active = active;
-        toolbar_.push_back(button);
-        cursorX += buttonWidth + kToolbarGap;
-    };
-
-    const ToolbarIcon toolIcons[] = {
-        ToolbarIcon::Pen,       ToolbarIcon::Rectangle, ToolbarIcon::Ellipse,
-        ToolbarIcon::Arrow,     ToolbarIcon::Text,      ToolbarIcon::Highlighter,
-        ToolbarIcon::Mosaic,    ToolbarIcon::Step,      ToolbarIcon::Eraser,
-    };
-    addButton(Action::ToolSelect, 0, -1, "", kToolbarToolWidth, true, !annotating_,
-              ToolbarIcon::Select);
-
-    for (int i = 0; i < toolCount; ++i) {
-        addButton(static_cast<Action>(static_cast<int>(Action::ToolPen) + i), 0, i, "",
-                  kToolbarToolWidth, !selection.IsEmpty(), annotating_ && kTools[i] == tool_,
-                  toolIcons[i]);
+    // 1.x：刚拖完的选区不算「完成」，工具栏等松手之后才出现；出现时从下往上滑 6 px。
+    const bool visible = phase_ == Phase::Annotating && !selection.IsEmpty();
+    if (visible && !toolbarVisible_) {
+        toolbarAnim_ = 0.0f;
+        SetTimer(static_cast<HWND>(window_->Handle()), 3, 16, nullptr);
     }
+    toolbarVisible_ = visible;
+    y += static_cast<int>((1.0f - toolbarAnim_) * 6.0f);
 
-    addButton(Action::None, 0, -1, "", 1, false, false, ToolbarIcon::Separator);
-
-    for (int i = 0; i < colorCount; ++i) {
-        const bool active = style_.color == core::annotation_defaults::PaletteColor(i);
-        addButton(Action::Color, i, -1, "", kToolbarColorWidth, !selection.IsEmpty(), active);
+    for (ToolbarButton& button : toolbar_) {
+        button.rect.left += x;
+        button.rect.right += x;
+        button.rect.top += y;
+        button.rect.bottom += y;
     }
-
-    addButton(Action::None, 0, -1, "", 1, false, false, ToolbarIcon::Separator);
-
-    const Action actions[] = { Action::Undo,   Action::Redo, Action::Copy,
-                               Action::Save,   Action::Pin,  Action::CloseOverlay };
-    for (int i = 0; i < actionCount; ++i) {
-        bool enabled = true;
-        if (actions[i] == Action::Undo) {
-            enabled = document_.CanUndo();
-        } else if (actions[i] == Action::Redo) {
-            enabled = document_.CanRedo();
-        } else if (actions[i] != Action::CloseOverlay) {
-            enabled = !selection.IsEmpty();
-        }
-        const ToolbarIcon actionIcons[] = { ToolbarIcon::Undo, ToolbarIcon::Redo,
-                                            options_.mode == OverlayMode::Ocr ? ToolbarIcon::Text
-                                                                              : ToolbarIcon::Copy,
-                                            ToolbarIcon::Save, ToolbarIcon::Pin,
-                                            ToolbarIcon::Close };
-        addButton(actions[i], 0, -1, "", kToolbarToolWidth, enabled, false, actionIcons[i]);
-    }
-
     toolbarBounds_ = RECT{ x, y, x + width, y + kToolbarHeight };
+}
+
+void ScreenshotOverlay::RenderToolbarIcon(core::FramePlan& plan, const core::Rect& rect,
+                                          ToolbarIcon icon, bool active, bool enabled) {
+    if (icon == ToolbarIcon::None || icon == ToolbarIcon::Separator) {
+        return;
+    }
+    // 1.x：禁用态整块 0.32 不透明度。
+    const float alpha = enabled ? 1.0f : 0.32f;
+    const Color ink = active ? Color{ 1.0f, 1.0f, 1.0f, alpha }
+                             : Color{ 0.235f, 0.259f, 0.314f, alpha };
+    const float cx = (rect.left + rect.right) * 0.5f;
+    const float cy = (rect.top + rect.bottom) * 0.5f;
+    const auto line = [&](float x1, float y1, float x2, float y2, float thickness) {
+        plan.Add(core::Segment{ core::Point{ cx + x1, cy + y1 }, core::Point{ cx + x2, cy + y2 },
+                                ink, thickness });
+    };
+    const auto addGlyph = [&](const char* text, float size) {
+        if (rasterizer_ == nullptr) {
+            return;
+        }
+        const core::FontSpec spec{ options_.fontFamily, 700, size, ink };
+        const core::TextCell measured =
+            rasterizer_->LayOut(text, spec, core::Point{ 0.0f, 0.0f });
+        if (measured.atlas == 0) {
+            return;
+        }
+        const float width = measured.destination.Width();
+        const float height = measured.destination.Height();
+        const core::TextCell cell = rasterizer_->LayOut(
+            text, spec, core::Point{ cx - width * 0.5f, cy - height * 0.5f });
+        if (cell.atlas != 0) {
+            plan.Add(cell.ToBlit());
+        }
+    };
+
+    switch (icon) {
+    case ToolbarIcon::Pen:
+        line(-7.0f, 7.0f, 6.0f, -6.0f, 2.2f);
+        line(6.0f, -6.0f, 9.0f, -9.0f, 2.2f);
+        break;
+    case ToolbarIcon::Rectangle:
+        plan.Add(core::StrokeRect{ core::Rect{ cx - 8.0f, cy - 6.0f, cx + 8.0f, cy + 6.0f }, ink,
+                                   1.8f });
+        break;
+    case ToolbarIcon::Ellipse:
+        plan.Add(core::StrokeEllipse{ core::Rect{ cx - 8.0f, cy - 6.0f, cx + 8.0f, cy + 6.0f },
+                                      ink, 1.8f });
+        break;
+    case ToolbarIcon::Shape:
+        // 1.x 的「形状」：矩形与椭圆叠在一起。
+        plan.Add(core::StrokeRect{ core::Rect{ cx - 9.0f, cy - 8.0f, cx + 3.0f, cy + 2.0f }, ink,
+                                   1.6f });
+        plan.Add(core::StrokeEllipse{ core::Rect{ cx - 2.0f, cy - 2.0f, cx + 9.0f, cy + 8.0f },
+                                      ink, 1.6f });
+        break;
+    case ToolbarIcon::Arrow:
+        line(-8.0f, 8.0f, 7.0f, -7.0f, 2.0f);
+        line(7.0f, -7.0f, 1.0f, -7.0f, 2.0f);
+        line(7.0f, -7.0f, 7.0f, -1.0f, 2.0f);
+        break;
+    case ToolbarIcon::Text:
+        addGlyph("T", 17.0f);
+        break;
+    case ToolbarIcon::Highlighter: {
+        Color highlight = ink;
+        highlight.a = alpha * 0.55f;
+        plan.Add(core::Segment{ core::Point{ cx - 8.0f, cy + 3.0f },
+                                core::Point{ cx + 8.0f, cy - 3.0f }, highlight, 6.0f });
+        line(-8.0f, 8.0f, 8.0f, 2.0f, 1.4f);
+        break;
+    }
+    case ToolbarIcon::Mosaic:
+        for (int row = 0; row < 2; ++row) {
+            for (int column = 0; column < 3; ++column) {
+                const float x = cx - 8.0f + column * 6.0f;
+                const float y = cy - 6.0f + row * 6.0f;
+                plan.Add(core::FillRect{ core::Rect{ x, y, x + 4.5f, y + 4.5f }, ink });
+            }
+        }
+        break;
+    case ToolbarIcon::Step:
+        plan.Add(core::StrokeEllipse{ core::Rect{ cx - 8.0f, cy - 8.0f, cx + 8.0f, cy + 8.0f },
+                                      ink, 1.8f });
+        addGlyph("1", 10.0f);
+        break;
+    case ToolbarIcon::Eraser:
+        line(-8.0f, 3.0f, 2.0f, -7.0f, 2.2f);
+        line(-8.0f, 8.0f, 8.0f, -2.0f, 2.2f);
+        line(-8.0f, 8.0f, 0.0f, 8.0f, 1.4f);
+        break;
+    case ToolbarIcon::Undo:
+        line(7.0f, -6.0f, -3.0f, -6.0f, 2.0f);
+        line(-3.0f, -6.0f, -7.0f, -2.0f, 2.0f);
+        line(-7.0f, -2.0f, -3.0f, 2.0f, 2.0f);
+        break;
+    case ToolbarIcon::Redo:
+        line(-7.0f, -6.0f, 3.0f, -6.0f, 2.0f);
+        line(3.0f, -6.0f, 7.0f, -2.0f, 2.0f);
+        line(7.0f, -2.0f, 3.0f, 2.0f, 2.0f);
+        break;
+    case ToolbarIcon::Clear:
+        // 一个带斜杠的圆：清空标注。
+        plan.Add(core::StrokeEllipse{ core::Rect{ cx - 7.0f, cy - 7.0f, cx + 7.0f, cy + 7.0f },
+                                      ink, 1.6f });
+        line(-5.0f, 5.0f, 5.0f, -5.0f, 1.8f);
+        break;
+    case ToolbarIcon::Copy:
+        plan.Add(core::StrokeRect{ core::Rect{ cx - 8.0f, cy - 8.0f, cx + 3.0f, cy + 3.0f }, ink,
+                                   1.6f });
+        plan.Add(core::StrokeRect{ core::Rect{ cx - 3.0f, cy - 3.0f, cx + 8.0f, cy + 8.0f }, ink,
+                                   1.6f });
+        break;
+    case ToolbarIcon::Save:
+        line(0.0f, -8.0f, 0.0f, 3.0f, 2.0f);
+        line(-4.0f, -1.0f, 0.0f, 3.0f, 2.0f);
+        line(4.0f, -1.0f, 0.0f, 3.0f, 2.0f);
+        line(-8.0f, 8.0f, -8.0f, 5.0f, 1.6f);
+        line(-8.0f, 5.0f, 8.0f, 5.0f, 1.6f);
+        line(8.0f, 5.0f, 8.0f, 8.0f, 1.6f);
+        break;
+    case ToolbarIcon::Pin:
+        plan.Add(core::FillEllipse{ core::Rect{ cx - 4.0f, cy - 9.0f, cx + 4.0f, cy - 1.0f },
+                                    ink });
+        line(0.0f, -1.0f, 0.0f, 6.0f, 2.0f);
+        line(0.0f, 6.0f, 4.0f, 9.0f, 2.0f);
+        break;
+    case ToolbarIcon::Ocr:
+        // 「识别文字」：一个取景框里放个 T。
+        plan.Add(core::StrokeRect{ core::Rect{ cx - 9.0f, cy - 7.0f, cx + 9.0f, cy + 7.0f }, ink,
+                                   1.4f });
+        addGlyph("T", 11.0f);
+        break;
+    case ToolbarIcon::Close:
+        line(-7.0f, -7.0f, 7.0f, 7.0f, 2.0f);
+        line(7.0f, -7.0f, -7.0f, 7.0f, 2.0f);
+        break;
+    case ToolbarIcon::Outline:
+        plan.Add(core::StrokeRect{ core::Rect{ cx - 7.0f, cy - 6.0f, cx + 7.0f, cy + 6.0f }, ink,
+                                   1.6f });
+        break;
+    case ToolbarIcon::Fill:
+        plan.Add(core::FillRect{ core::Rect{ cx - 7.0f, cy - 6.0f, cx + 7.0f, cy + 6.0f }, ink });
+        break;
+    case ToolbarIcon::Done:
+        line(-7.0f, 0.0f, -2.0f, 6.0f, 2.2f);
+        line(-2.0f, 6.0f, 8.0f, -7.0f, 2.2f);
+        break;
+    case ToolbarIcon::Select:
+        // 1.x 的箭头光标。
+        line(-5.0f, -8.0f, -5.0f, 5.0f, 1.8f);
+        line(-5.0f, 5.0f, -1.0f, 2.0f, 1.8f);
+        line(-1.0f, 2.0f, 3.0f, 8.0f, 1.8f);
+        line(-5.0f, -8.0f, 5.0f, 1.0f, 1.8f);
+        line(5.0f, 1.0f, -1.0f, 2.0f, 1.8f);
+        break;
+    case ToolbarIcon::Separator:
+    case ToolbarIcon::None:
+        break;
+    }
 }
 
 void ScreenshotOverlay::RenderToolbar(core::FramePlan& plan) {
@@ -1431,154 +1992,30 @@ void ScreenshotOverlay::RenderToolbar(core::FramePlan& plan) {
     plan.Add(core::FillRoundedRect{ background, 10.0f, Color{ 0.98f, 0.976f, 0.984f, 0.98f } });
     plan.Add(core::StrokeRoundedRect{ background, 10.0f, Color{ 0.0f, 0.0f, 0.0f, 0.13f }, 1.0f });
 
-    for (const ToolbarButton& button : toolbar_) {
+    for (std::size_t i = 0; i < toolbar_.size(); ++i) {
+        const ToolbarButton& button = toolbar_[i];
         const Rect rect{ static_cast<float>(button.rect.left),
                          static_cast<float>(button.rect.top),
                          static_cast<float>(button.rect.right),
                          static_cast<float>(button.rect.bottom) };
 
-        if (button.active) {
-            plan.Add(core::FillRoundedRect{ rect, 7.0f, Color{ 0.184f, 0.486f, 0.965f, 1.0f } });
-        }
-
         if (button.icon == ToolbarIcon::Separator) {
-            const float dividerX = rect.left + (rect.right - rect.left) * 0.5f;
-            plan.Add(core::FillRect{ Rect{ dividerX, rect.top + 9.0f, dividerX + 1.0f,
-                                           rect.bottom - 9.0f },
+            const float dividerX = (rect.left + rect.right) * 0.5f;
+            plan.Add(core::FillRect{ Rect{ dividerX, rect.top + 4.0f, dividerX + 1.0f,
+                                           rect.bottom - 4.0f },
                                      Color{ 0.0f, 0.0f, 0.0f, 0.10f } });
             continue;
         }
 
-        if (button.action == Action::Color) {
-            const float inset = 4.0f;
-            const Rect swatch{ rect.left + inset, rect.top + inset, rect.right - inset,
-                               rect.bottom - inset };
-            plan.Add(core::FillEllipse{ swatch,
-                                        core::annotation_defaults::PaletteColor(button.payload) });
-            if (button.active) {
-                plan.Add(core::StrokeEllipse{ swatch, Color{ 0.184f, 0.486f, 0.965f, 1.0f },
-                                              2.0f });
-            }
-            continue;
+        // 1.x：悬停 #14000000、按下 #22000000、激活工具/选择态用强调色实底。
+        if (button.active) {
+            plan.Add(core::FillRoundedRect{ rect, 7.0f, Color{ 0.184f, 0.486f, 0.965f, 1.0f } });
+        } else if (i < 32 && hoverAlpha_[i] > 0.01f) {
+            plan.Add(core::FillRoundedRect{ rect, 7.0f,
+                                            Color{ 0.0f, 0.0f, 0.0f, 0.08f * hoverAlpha_[i] } });
         }
 
-        if (button.icon == ToolbarIcon::None) {
-            continue;
-        }
-
-        const float alpha = button.enabled ? 1.0f : 0.4f;
-        const Color ink = button.active
-                              ? Color{ 1.0f, 1.0f, 1.0f, alpha }
-                              : Color{ 0.235f, 0.259f, 0.314f, alpha };
-        const float cx = (rect.left + rect.right) * 0.5f;
-        const float cy = (rect.top + rect.bottom) * 0.5f;
-        const auto line = [&](float x1, float y1, float x2, float y2, float thickness) {
-            plan.Add(core::Segment{ Point{ cx + x1, cy + y1 }, Point{ cx + x2, cy + y2 }, ink,
-                                    thickness });
-        };
-        const auto addGlyph = [&](const char* text, float size) {
-            if (rasterizer_ == nullptr) {
-                return;
-            }
-            const core::FontSpec spec{ options_.fontFamily, 700, size, ink };
-            const core::TextCell measured = rasterizer_->LayOut(text, spec, Point{ 0.0f, 0.0f });
-            if (measured.atlas == 0) {
-                return;
-            }
-            const float width = measured.destination.Width();
-            const float height = measured.destination.Height();
-            const core::TextCell cell =
-                rasterizer_->LayOut(text, spec, Point{ cx - width * 0.5f, cy - height * 0.5f });
-            if (cell.atlas != 0) {
-                plan.Add(cell.ToBlit());
-            }
-        };
-
-        switch (button.icon) {
-        case ToolbarIcon::Pen:
-            line(-7.0f, 7.0f, 6.0f, -6.0f, 2.2f);
-            line(6.0f, -6.0f, 9.0f, -9.0f, 2.2f);
-            break;
-        case ToolbarIcon::Rectangle:
-            plan.Add(core::StrokeRect{
-                Rect{ cx - 8.0f, cy - 6.0f, cx + 8.0f, cy + 6.0f }, ink, 1.8f });
-            break;
-        case ToolbarIcon::Ellipse:
-            plan.Add(core::StrokeEllipse{
-                Rect{ cx - 8.0f, cy - 6.0f, cx + 8.0f, cy + 6.0f }, ink, 1.8f });
-            break;
-        case ToolbarIcon::Arrow:
-            line(-8.0f, 8.0f, 7.0f, -7.0f, 2.0f);
-            line(7.0f, -7.0f, 1.0f, -7.0f, 2.0f);
-            line(7.0f, -7.0f, 7.0f, -1.0f, 2.0f);
-            break;
-        case ToolbarIcon::Text:
-            addGlyph("T", 17.0f);
-            break;
-        case ToolbarIcon::Highlighter: {
-            Color highlight = ink;
-            highlight.a = alpha * 0.55f;
-            plan.Add(core::Segment{ Point{ cx - 8.0f, cy + 3.0f }, Point{ cx + 8.0f, cy - 3.0f },
-                                    highlight, 6.0f });
-            line(-8.0f, 8.0f, 8.0f, 2.0f, 1.4f);
-            break;
-        }
-        case ToolbarIcon::Mosaic:
-            for (int row = 0; row < 2; ++row) {
-                for (int column = 0; column < 3; ++column) {
-                    const float x = cx - 8.0f + column * 6.0f;
-                    const float y = cy - 6.0f + row * 6.0f;
-                    plan.Add(core::FillRect{ Rect{ x, y, x + 4.5f, y + 4.5f }, ink });
-                }
-            }
-            break;
-        case ToolbarIcon::Step:
-            plan.Add(core::StrokeEllipse{ Rect{ cx - 8.0f, cy - 8.0f, cx + 8.0f, cy + 8.0f }, ink,
-                                          1.8f });
-            addGlyph("1", 10.0f);
-            break;
-        case ToolbarIcon::Eraser:
-            line(-8.0f, 3.0f, 2.0f, -7.0f, 2.2f);
-            line(-8.0f, 8.0f, 8.0f, -2.0f, 2.2f);
-            line(-8.0f, 8.0f, 0.0f, 8.0f, 1.4f);
-            break;
-        case ToolbarIcon::Undo:
-            line(7.0f, -6.0f, -3.0f, -6.0f, 2.0f);
-            line(-3.0f, -6.0f, -7.0f, -2.0f, 2.0f);
-            line(-7.0f, -2.0f, -3.0f, 2.0f, 2.0f);
-            break;
-        case ToolbarIcon::Redo:
-            line(-7.0f, -6.0f, 3.0f, -6.0f, 2.0f);
-            line(3.0f, -6.0f, 7.0f, -2.0f, 2.0f);
-            line(7.0f, -2.0f, 3.0f, 2.0f, 2.0f);
-            break;
-        case ToolbarIcon::Copy:
-            plan.Add(core::StrokeRect{ Rect{ cx - 8.0f, cy - 8.0f, cx + 3.0f, cy + 3.0f }, ink,
-                                       1.6f });
-            plan.Add(core::StrokeRect{ Rect{ cx - 3.0f, cy - 3.0f, cx + 8.0f, cy + 8.0f }, ink,
-                                       1.6f });
-            break;
-        case ToolbarIcon::Save:
-            line(0.0f, -8.0f, 0.0f, 3.0f, 2.0f);
-            line(-4.0f, -1.0f, 0.0f, 3.0f, 2.0f);
-            line(4.0f, -1.0f, 0.0f, 3.0f, 2.0f);
-            line(-8.0f, 8.0f, -8.0f, 5.0f, 1.6f);
-            line(-8.0f, 5.0f, 8.0f, 5.0f, 1.6f);
-            line(8.0f, 5.0f, 8.0f, 8.0f, 1.6f);
-            break;
-        case ToolbarIcon::Pin:
-            plan.Add(core::FillEllipse{ Rect{ cx - 4.0f, cy - 9.0f, cx + 4.0f, cy - 1.0f }, ink });
-            line(0.0f, -1.0f, 0.0f, 6.0f, 2.0f);
-            line(0.0f, 6.0f, 4.0f, 9.0f, 2.0f);
-            break;
-        case ToolbarIcon::Close:
-            line(-7.0f, -7.0f, 7.0f, 7.0f, 2.0f);
-            line(7.0f, -7.0f, -7.0f, 7.0f, 2.0f);
-            break;
-        case ToolbarIcon::Separator:
-        case ToolbarIcon::None:
-            break;
-        }
+        RenderToolbarIcon(plan, rect, button.icon, button.active, button.enabled);
     }
 }
 
@@ -1761,12 +2198,14 @@ void ScreenshotOverlay::Render() {
     if (options_.mode != OverlayMode::RecordRegion) {
         if (toolbarVisible_) {
             RenderToolbar(plan);
+            RenderTooltip(plan);
         }
         RenderOptionBar(plan);
         RenderMagnifier(plan);
     }
     RenderHint(plan);
     RenderSizeBadge(plan);
+    RenderToast(plan);
 
     backend_->WaitForFrameSlot();
     backend_->Render(plan, IntRect{});
@@ -1989,14 +2428,21 @@ LRESULT CALLBACK ScreenshotOverlay::KeyHook(int code, WPARAM wParam, LPARAM lPar
     const auto* keyboard = reinterpret_cast<const KBDLLHOOKSTRUCT*>(lParam);
     const DWORD key = keyboard->vkCode;
     const bool control = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+    const bool shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+    const bool alt = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
+    const bool win = ((GetAsyncKeyState(VK_LWIN) | GetAsyncKeyState(VK_RWIN)) & 0x8000) != 0;
+    const bool bare = !control && !alt && !win;
 
+    // kTools 的下标：0 笔、1 矩形、2 椭圆、3 箭头、4 文字、5 荧光、6 马赛克、7 序号、8 橡皮。
     UINT message = 0;
-    int toolIndex = 0;
-    int payload = 0;
+    WPARAM wparam = 0;
+    LPARAM lparam = 0;
     if (key == VK_ESCAPE) {
         message = kMsgEscape;
     } else if (key == VK_RETURN) {
         message = kMsgCopy;
+    } else if (control && shift && key == 'Z') {
+        message = kMsgRedo;
     } else if (control && key == 'Z') {
         message = kMsgUndo;
     } else if (control && key == 'Y') {
@@ -2005,10 +2451,44 @@ LRESULT CALLBACK ScreenshotOverlay::KeyHook(int code, WPARAM wParam, LPARAM lPar
         message = kMsgCopy;
     } else if (control && key == 'S') {
         message = kMsgSave;
-    } else if (!control && key == 'V') {
+    } else if (control && key == 'T') {
+        message = kMsgPin;
+    } else if (control && key == 'B') {
+        message = kMsgTextStyle;
+        wparam = 1;
+    } else if (control && key == 'I') {
+        message = kMsgTextStyle;
+        wparam = 2;
+    } else if (bare && key == 'C') {
+        // 1.x：裸 C 随时复制光标下的颜色，Shift 切换 hex / rgb()。
+        message = kMsgCopyColor;
+        wparam = shift ? 1 : 0;
+    } else if (bare && key == 'V') {
         message = kMsgSelect;
-    } else if (!control && key == 'F') {
+    } else if (bare && key == 'F') {
         message = kMsgFill;
+    } else if (bare && (key == VK_OEM_4 || key == '[' || key == VK_OEM_6 || key == ']')) {
+        message = kMsgOption;
+        wparam = static_cast<WPARAM>(key == VK_OEM_4 || key == '['
+                                         ? static_cast<int>(Action::ThicknessDown)
+                                         : static_cast<int>(Action::ThicknessUp));
+    } else if (bare && (key == 'R' || key == 'E' || key == 'A' || key == 'P' || key == 'T' ||
+                        key == 'H' || key == 'M' || key == 'N' || key == 'X')) {
+        // 1.x 的字母快捷键；Shift+R / Shift+E 直接画实心形状。
+        message = kMsgTool;
+        switch (key) {
+        case 'P': wparam = 0; break;
+        case 'R': wparam = 1; break;
+        case 'E': wparam = 2; break;
+        case 'A': wparam = 3; break;
+        case 'T': wparam = 4; break;
+        case 'H': wparam = 5; break;
+        case 'M': wparam = 6; break;
+        case 'N': wparam = 7; break;
+        case 'X': wparam = 8; break;
+        default: break;
+        }
+        lparam = shift && (key == 'R' || key == 'E') ? 1 : 0;
     } else if (key == VK_DELETE) {
         message = kMsgDelete;
     } else if (key == VK_SPACE) {
@@ -2016,21 +2496,18 @@ LRESULT CALLBACK ScreenshotOverlay::KeyHook(int code, WPARAM wParam, LPARAM lPar
     } else if (key == VK_LEFT || key == VK_RIGHT || key == VK_UP || key == VK_DOWN) {
         // 方向键微调：1 px，按 Shift 是 10 px（1.x 的选区微调）。
         message = kMsgNudge;
-        payload = (GetKeyState(VK_SHIFT) & 0x8000) != 0 ? 10 : 1;
+        wparam = static_cast<WPARAM>(key);
+        lparam = shift ? 10 : 1;
     } else if (key >= '1' && key <= '9') {
         message = kMsgTool;
-        toolIndex = static_cast<int>(key - '1');
+        wparam = static_cast<WPARAM>(key - '1');
     }
 
     if (message == 0) {
         return CallNextHookEx(nullptr, code, wParam, lParam);
     }
 
-    // 微调用键码本身当参数，其余用工具下标。
-    PostMessageW(static_cast<HWND>(g_overlay->window_->Handle()), message,
-                 message == kMsgNudge ? static_cast<WPARAM>(key)
-                                      : static_cast<WPARAM>(toolIndex),
-                 static_cast<LPARAM>(payload));
+    PostMessageW(static_cast<HWND>(g_overlay->window_->Handle()), message, wparam, lparam);
     return 1;
 }
 

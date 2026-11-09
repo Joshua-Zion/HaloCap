@@ -82,6 +82,17 @@ public:
     // 自检用：把当前桌面（含覆盖层 UI）抓成 PNG，用来人工核对界面。
     bool GrabDesktopToPng(const std::wstring& path);
 
+    // 自检用：工具栏/选项栏的几何与状态（对齐 1.x 的那几条判据都读这里）。
+    bool ToolbarVisibleForTest() const { return toolbarVisible_; }
+    int ToolbarButtonCountForTest() const { return static_cast<int>(toolbar_.size()); }
+    core::IntRect ToolbarBoundsForTest() const {
+        return core::IntRect{ toolbarBounds_.left, toolbarBounds_.top, toolbarBounds_.right,
+                              toolbarBounds_.bottom };
+    }
+    int OptionButtonCountForTest() const { return static_cast<int>(optionButtons_.size()); }
+    const std::wstring& ToastForTest() const { return toast_; }
+    bool AnnotatingForTest() const { return annotating_; }
+
     const char* LastErrorKind() const { return errorKind_; }
     core::IntRect SelectionRectPx() const;
 
@@ -95,18 +106,20 @@ private:
 
     enum class Action : std::int32_t {
         None = 0,
-        ToolSelect, ToolPen, ToolRectangle, ToolEllipse, ToolArrow, ToolText, ToolHighlighter,
-        ToolMosaic, ToolStep, ToolEraser,
+        ToolSelect, ToolShape, ToolPen, ToolRectangle, ToolEllipse, ToolArrow, ToolText,
+        ToolHighlighter, ToolMosaic, ToolStep, ToolEraser,
         Color,
-        Undo, Redo, Copy, Save, Pin, CloseOverlay,
-        FillOn, FillOff, ThicknessDown, ThicknessUp, TextSizeDown, TextSizeUp, Bold, Italic,
-        MosaicDown, MosaicUp, ArrowEnd, ArrowBoth, ArrowNone,
+        Undo, Redo, ClearAnnotations, Save, Pin, Ocr, Copy, CancelOverlay, DoneAndCopy,
+        CloseOverlay,
+        FillOn, FillOff, ShapeRectangle, ShapeEllipse,
+        ThicknessDown, ThicknessUp, TextSizeDown, TextSizeUp, Bold, Italic,
+        MosaicDown, MosaicUp, ArrowEnd, ArrowBoth, ArrowNone, EraserDown, EraserUp,
     };
 
     enum class ToolbarIcon : std::int32_t {
         None = 0,
         Pen, Rectangle, Ellipse, Arrow, Text, Highlighter, Mosaic, Step, Eraser,
-        Undo, Redo, Copy, Save, Pin, Close, Select,
+        Undo, Redo, Clear, Copy, Save, Pin, Ocr, Close, Done, Select, Shape, Outline, Fill,
         Separator,
     };
 
@@ -149,6 +162,8 @@ private:
     void RenderSizeBadge(core::FramePlan& plan);
     void Render();
     void RenderToolbar(core::FramePlan& plan);
+    void RenderToolbarIcon(core::FramePlan& plan, const core::Rect& rect, ToolbarIcon icon,
+                           bool active, bool enabled);
     void RenderSelection(core::FramePlan& plan);
     void AddDimAround(core::FramePlan& plan, const core::Rect& hole, const core::Color& dim,
                       float width, float height);
@@ -176,6 +191,7 @@ private:
     core::AnnotationDocument document_;
     core::SelectionModel selection_;
     core::AnnotationStyle style_;
+    float eraserSize_ = core::annotation_defaults::kEraserSize;
     core::AnnotationTool tool_ = core::AnnotationTool::Pen;
 
     std::vector<std::uint8_t> baseBgra_;   // 整屏底图，马赛克取样用
@@ -209,6 +225,8 @@ private:
         Action action = Action::None;
         bool active = false;
         std::string text;
+        int colorIndex = -1;                     // >= 0 时画色板圆点
+        ToolbarIcon icon = ToolbarIcon::None;    // 有图标就画图标
     };
     std::vector<OptionButton> optionButtons_;
     RECT optionBounds_{};
@@ -216,14 +234,29 @@ private:
     // annotating_ = 工具激活（鼠标在选区内是画标注）。1.x 里刚拖完选区不是标注态：
     // 那时拖选区内是「移动整块」，只有按了空格/工具键/工具按钮才进标注。
     bool annotating_ = false;
+    // 「形状」按钮记住上一次用的矩形/椭圆（1.x 的 ToolShape 就是这两个的代理）。
+    core::AnnotationTool shapeTool_ = core::AnnotationTool::Rectangle;
     int selectedAnnotation_ = -1;
     bool movingAnnotation_ = false;
     POINT lastMouse_{};
     bool mouseInside_ = false;
     int hoveredToolbar_ = -1;
+    std::uint64_t hoverSinceMs_ = 0;
     float hoverAlpha_[32] = {};
     bool hoverAnimating_ = false;
     void StepHoverAnimation();
+    void RenderTooltip(core::FramePlan& plan);
+
+    // 颜色复制（1.x 的 C）：一条 1.2 秒的提示，Shift 切换 hex / rgb()。
+    std::wstring toast_;
+    std::uint64_t toastUntilMs_ = 0;
+    bool colorAsRgb_ = false;
+    void CopyColorUnderCursor(bool asRgb);
+    void RenderToast(core::FramePlan& plan);
+
+    // 工具栏入场：1.x 是 opacity 0→1 + 从下往上 6 px，这里只做位移那一段。
+    float toolbarAnim_ = 1.0f;
+    void StepToolbarAnimation();
 
     // 未成选区时，光标下窗口的高亮候选（1.x 的 ElementBorder）。
     HWND hoverWindow_ = nullptr;

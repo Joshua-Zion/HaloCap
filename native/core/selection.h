@@ -30,9 +30,11 @@ enum class SelectionHandle : std::int32_t {
 
 class SelectionModel {
 public:
-    // 选区至少要有这么多像素宽高才算数（1.x 是 1，太小的误触会被丢掉）。
-    static constexpr float kMinSize = 2.0f;
-    static constexpr float kHandleTolerance = 6.0f;
+    // 选区至少要有这么多像素宽高才算数。1.x 的 MinSelectionSizePx = 8：
+    // 比这更短的一拖按「单击」处理（选光标下的窗口，没有窗口就选整块屏）。
+    static constexpr float kMinSize = 8.0f;
+    // 把手命中半径（1.x 的 HandleHitRadius = 9 DIP）。
+    static constexpr float kHandleTolerance = 9.0f;
 
     // 边界的上下限（通常是整块画面）。空矩形 = 不限制。
     void SetLimit(Rect limit);

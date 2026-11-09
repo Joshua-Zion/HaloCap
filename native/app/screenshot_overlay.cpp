@@ -3,6 +3,7 @@
 #include "image_export.h"
 #include "desktop_grab.h"
 #include "mosaic.h"
+#include "window_at_point.h"
 
 #include <windows.h>
 
@@ -48,17 +49,18 @@ constexpr UINT kMsgRedo = WM_APP + 3;
 constexpr UINT kMsgCopy = WM_APP + 4;
 constexpr UINT kMsgSave = WM_APP + 5;
 constexpr UINT kMsgTool = WM_APP + 6;
-constexpr UINT kMsgFullScreen = WM_APP + 7;
 constexpr UINT kMsgDelete = WM_APP + 8;
 constexpr UINT kMsgSelect = WM_APP + 9;
 constexpr UINT kMsgFill = WM_APP + 10;
+constexpr UINT kMsgAnnotate = WM_APP + 11;   // 空格：切换标注态
+constexpr UINT kMsgNudge = WM_APP + 12;      // 方向键微调：wParam = 方向，lParam = 步长
 
 constexpr int kToolbarToolWidth = 34;
 constexpr int kToolbarColorWidth = 22;
 constexpr int kToolbarHeight = 44;
 constexpr int kToolbarGap = 4;
 constexpr int kToolbarPadding = 8;
-constexpr int kHandleSize = 8;
+constexpr int kHandleSize = 7;
 
 const char* kToolLabels[] = { "笔", "矩", "椭", "箭", "字", "荧", "马", "号", "橡" };
 const AnnotationTool kTools[] = {
@@ -147,6 +149,12 @@ bool ScreenshotOverlay::Open(const ScreenshotOverlayOptions& options) {
     document_.Clear();
     selection_.Cancel();
     phase_ = Phase::Selecting;
+    annotating_ = false;
+    hoverWindow_ = nullptr;
+    hoverRect_ = IntRect{};
+    hoverProbed_ = false;
+    lastProbeMs_ = 0;
+    lastClickMs_ = 0;
     dirty_ = true;
     pendingClose_ = false;
     errorKind_ = "ok";
@@ -167,15 +175,18 @@ bool ScreenshotOverlay::Open(const ScreenshotOverlayOptions& options) {
 
     // 截图走 GDI 抓屏：本机的 DuplicateOutput 回读是全黑的（见 desktop_grab.h）。
     // 这样还有一个好处：录制占用复制权时截图照样能开。
+    // 抓的是整块虚拟桌面：1.x 的选区容器就是所有显示器的并集，拖动可以跨屏。
     platform::win32::DesktopImage desktop;
-    if (!platform::win32::GrabPrimaryDesktop(desktop)) {
+    if (!platform::win32::GrabVirtualDesktop(desktop)) {
         errorKind_ = "grab";
         Close();
         return false;
     }
 
-    windowX_ = 0;
-    windowY_ = 0;
+    const platform::win32::DesktopBounds desktopBounds =
+        platform::win32::VirtualDesktopBounds();
+    windowX_ = desktopBounds.left;
+    windowY_ = desktopBounds.top;
     screenWidth_ = desktop.width & ~1;
     screenHeight_ = desktop.height & ~1;
     if (screenWidth_ < 2 || screenHeight_ < 2) {
@@ -183,6 +194,10 @@ bool ScreenshotOverlay::Open(const ScreenshotOverlayOptions& options) {
         Close();
         return false;
     }
+    // 选区不能拖到画面外（之前只有 DebugSelect 设过边界，正常打开时是可以拖出去的）。
+    selection_.SetLimit(Rect{ static_cast<float>(windowX_), static_cast<float>(windowY_),
+                              static_cast<float>(windowX_ + screenWidth_),
+                              static_cast<float>(windowY_ + screenHeight_) });
 
     // 偶数尺寸：裁掉右侧/底部 1px 时行距会变，重排一次。
     if (desktop.width != screenWidth_ || desktop.height != screenHeight_) {
@@ -326,6 +341,18 @@ LRESULT ScreenshotOverlay::HandleMessage(HWND window, UINT message, WPARAM wPara
         return 0;
     }
 
+    case WM_MOUSELEAVE:
+        // 不跟踪离开事件，鼠标滑出窗口后放大镜会一直留在画面上。
+        mouseInside_ = false;
+        dirty_ = true;
+        return 0;
+
+    case WM_RBUTTONDOWN: {
+        POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        OnRightButtonDown(ToScreen(point, windowX_, windowY_));
+        return 0;
+    }
+
     case WM_LBUTTONDOWN: {
         POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
         OnLeftButtonDown(ToScreen(point, windowX_, windowY_));
@@ -361,10 +388,35 @@ LRESULT ScreenshotOverlay::HandleMessage(HWND window, UINT message, WPARAM wPara
         return 0;
 
     case kMsgSelect:
-        selectMode_ = true;
+        annotating_ = false;
         selectedAnnotation_ = -1;
         dirty_ = true;
         return 0;
+
+    case kMsgAnnotate:
+        if (!selection_.Bounds().IsEmpty()) {
+            annotating_ = !annotating_;
+            selectedAnnotation_ = -1;
+            dirty_ = true;
+        }
+        return 0;
+
+    case kMsgNudge: {
+        if (annotating_ || selection_.Bounds().IsEmpty()) {
+            return 0;
+        }
+        int dx = 0;
+        int dy = 0;
+        switch (static_cast<int>(wParam)) {
+        case VK_LEFT: dx = -1; break;
+        case VK_RIGHT: dx = 1; break;
+        case VK_UP: dy = -1; break;
+        case VK_DOWN: dy = 1; break;
+        default: break;
+        }
+        NudgeSelection(dx * static_cast<int>(lParam), dy * static_cast<int>(lParam));
+        return 0;
+    }
 
     case kMsgFill:
         if (tool_ == AnnotationTool::Rectangle || tool_ == AnnotationTool::Ellipse) {
@@ -402,17 +454,9 @@ LRESULT ScreenshotOverlay::HandleMessage(HWND window, UINT message, WPARAM wPara
 
     case kMsgTool:
         if (!selection_.Bounds().IsEmpty() && wParam < std::size(kTools)) {
-            selectMode_ = false;
+            annotating_ = true;
             selectedAnnotation_ = -1;
             SetTool(kTools[wParam]);
-        }
-        return 0;
-
-    case kMsgFullScreen:
-        // 空格 = 全屏标注：没有选区时把整块屏幕当成选区（1.x 的全屏标注入口）。
-        if (selection_.Bounds().IsEmpty()) {
-            DebugSelect(IntRect{ windowX_, windowY_, windowX_ + screenWidth_,
-                                 windowY_ + screenHeight_ });
         }
         return 0;
 
@@ -425,15 +469,22 @@ LRESULT ScreenshotOverlay::HandleMessage(HWND window, UINT message, WPARAM wPara
 
 void ScreenshotOverlay::OnMouseMove(POINT point) {
     lastMouse_ = point;
-    mouseInside_ = true;
+    if (!mouseInside_) {
+        mouseInside_ = true;
+        TRACKMOUSEEVENT track{ sizeof(TRACKMOUSEEVENT), TME_LEAVE,
+                               static_cast<HWND>(window_->Handle()), 0 };
+        TrackMouseEvent(&track);
+    }
 
     int hovered = -1;
-    for (std::size_t i = 0; i < toolbar_.size(); ++i) {
-        const RECT& rect = toolbar_[i].rect;
-        if (point.x >= rect.left && point.x < rect.right && point.y >= rect.top &&
-            point.y < rect.bottom) {
-            hovered = static_cast<int>(i);
-            break;
+    if (toolbarVisible_) {
+        for (std::size_t i = 0; i < toolbar_.size(); ++i) {
+            const RECT& rect = toolbar_[i].rect;
+            if (point.x >= rect.left && point.x < rect.right && point.y >= rect.top &&
+                point.y < rect.bottom) {
+                hovered = static_cast<int>(i);
+                break;
+            }
         }
     }
     if (hovered != hoveredToolbar_) {
@@ -500,16 +551,190 @@ void ScreenshotOverlay::OnMouseMove(POINT point) {
             document_.SetEnd(local);
         }
         dirty_ = true;
+        return;
     }
+
+    // 没在拖：更新光标与「光标下窗口」的悬停候选（1.x 的十字线 + 窗口描边 + 放大镜）。
+    UpdateCursor(point);
+    if (phase_ == Phase::Selecting && selection_.Bounds().IsEmpty()) {
+        UpdateHoverCandidate(point);
+    } else {
+        ClearHoverCandidate();
+    }
+    dirty_ = true;
+}
+
+void ScreenshotOverlay::UpdateHoverCandidate(POINT point) {
+    // 1.x 的节流：24 ms 一次，光标挪不到 2 px 就不重探。
+    constexpr int kProbeIntervalMs = 24;
+    constexpr int kProbeMovePx = 2;
+    const std::uint64_t now = GetTickCount64();
+    const int dx = std::abs(point.x - lastProbePoint_.x);
+    const int dy = std::abs(point.y - lastProbePoint_.y);
+    if (hoverProbed_ && now - lastProbeMs_ < static_cast<std::uint64_t>(kProbeIntervalMs) &&
+        dx < kProbeMovePx && dy < kProbeMovePx) {
+        return;
+    }
+    lastProbeMs_ = now;
+    lastProbePoint_ = point;
+    hoverProbed_ = true;
+
+    if (IsOverChrome(point)) {
+        hoverWindow_ = nullptr;
+        hoverRect_ = IntRect{};
+        return;
+    }
+    RECT rect{};
+    const HWND target = WindowAtPoint(point, static_cast<HWND>(window_->Handle()), 32);
+    if (target == nullptr || !WindowVisibleRect(target, &rect)) {
+        hoverWindow_ = nullptr;
+        hoverRect_ = IntRect{};
+        return;
+    }
+    hoverWindow_ = target;
+    hoverRect_ = IntRect{ rect.left, rect.top, rect.right, rect.bottom };
+}
+
+void ScreenshotOverlay::ClearHoverCandidate() {
+    hoverWindow_ = nullptr;
+    hoverRect_ = IntRect{};
+    hoverProbed_ = false;
+}
+
+core::IntRect ScreenshotOverlay::MonitorBoundsAt(POINT point) const {
+    MONITORINFO info{};
+    info.cbSize = sizeof(info);
+    const HMONITOR monitor = MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST);
+    if (GetMonitorInfoW(monitor, &info)) {
+        return IntRect{ info.rcMonitor.left, info.rcMonitor.top, info.rcMonitor.right,
+                        info.rcMonitor.bottom };
+    }
+    return IntRect{ windowX_, windowY_, windowX_ + screenWidth_, windowY_ + screenHeight_ };
+}
+
+bool ScreenshotOverlay::IsOverChrome(POINT point) const {
+    if (toolbarVisible_ && point.x >= toolbarBounds_.left && point.x < toolbarBounds_.right &&
+        point.y >= toolbarBounds_.top && point.y < toolbarBounds_.bottom) {
+        return true;
+    }
+    if (optionBounds_.right > optionBounds_.left && point.x >= optionBounds_.left &&
+        point.x < optionBounds_.right && point.y >= optionBounds_.top &&
+        point.y < optionBounds_.bottom) {
+        return true;
+    }
+    return false;
+}
+
+void ScreenshotOverlay::UpdateCursor(POINT point) {
+    if (window_ == nullptr) {
+        return;
+    }
+    const wchar_t* name = IDC_CROSS;
+    if (IsOverChrome(point)) {
+        name = IDC_ARROW;
+    } else if (!annotating_ && !selection_.Bounds().IsEmpty()) {
+        switch (selection_.HitTest(Point{ static_cast<float>(point.x),
+                                          static_cast<float>(point.y) })) {
+        case core::SelectionHandle::TopLeft:
+        case core::SelectionHandle::BottomRight:
+            name = IDC_SIZENWSE;
+            break;
+        case core::SelectionHandle::TopRight:
+        case core::SelectionHandle::BottomLeft:
+            name = IDC_SIZENESW;
+            break;
+        case core::SelectionHandle::Left:
+        case core::SelectionHandle::Right:
+            name = IDC_SIZEWE;
+            break;
+        case core::SelectionHandle::Top:
+        case core::SelectionHandle::Bottom:
+            name = IDC_SIZENS;
+            break;
+        case core::SelectionHandle::Move:
+            name = IDC_SIZEALL;
+            break;
+        case core::SelectionHandle::None:
+            break;
+        }
+    }
+    SetCursor(LoadCursorW(nullptr, name));
+}
+
+void ScreenshotOverlay::StartNewSelection(POINT point) {
+    // 1.x：在选区外按下就是「重来」——不保留标注，也没有中间的「取消选中」态。
+    selection_.Cancel();
+    document_.Clear();
+    annotating_ = false;
+    selectedAnnotation_ = -1;
+    movingAnnotation_ = false;
+    phase_ = Phase::Selecting;
+    hoverWindow_ = nullptr;
+    hoverRect_ = IntRect{};
+    hoverProbed_ = false;
+
+    // 松手时如果短于一拖，就用按下那一刻的窗口/显示器兜底。
+    RECT windowRect{};
+    const HWND target = WindowAtPoint(point, static_cast<HWND>(window_->Handle()), 32);
+    pressWindowRect_ = (target != nullptr && WindowVisibleRect(target, &windowRect))
+                           ? IntRect{ windowRect.left, windowRect.top, windowRect.right,
+                                      windowRect.bottom }
+                           : IntRect{};
+    pressMonitorRect_ = MonitorBoundsAt(point);
+
+    selecting_ = true;
+    selection_.Begin(Point{ static_cast<float>(point.x), static_cast<float>(point.y) });
+    dirty_ = true;
+}
+
+void ScreenshotOverlay::SelectWindowOrMonitor(POINT point) {
+    const IntRect fallback =
+        !pressWindowRect_.IsEmpty() ? pressWindowRect_ : MonitorBoundsAt(point);
+    if (fallback.IsEmpty()) {
+        return;
+    }
+    selection_.Begin(Point{ static_cast<float>(fallback.left),
+                            static_cast<float>(fallback.top) });
+    selection_.Update(Point{ static_cast<float>(fallback.right),
+                             static_cast<float>(fallback.bottom) },
+                      false);
+    selection_.Commit();
+}
+
+void ScreenshotOverlay::NudgeSelection(int dx, int dy) {
+    if (selection_.MoveBy(Point{ static_cast<float>(dx), static_cast<float>(dy) })) {
+        dirty_ = true;
+    }
+}
+
+void ScreenshotOverlay::OnRightButtonDown(POINT point) {
+    if (IsOverChrome(point)) {
+        return;
+    }
+    if (annotating_) {
+        // 标注态：右键先退回移动/选择态，选区保留。
+        annotating_ = false;
+        selectedAnnotation_ = -1;
+        movingAnnotation_ = false;
+        dirty_ = true;
+        return;
+    }
+    if (!selection_.Bounds().IsEmpty()) {
+        // 已有选区：清掉它，回到悬停态。
+        selection_.Cancel();
+        document_.Clear();
+        phase_ = Phase::Selecting;
+        ClearHoverCandidate();
+        dirty_ = true;
+        return;
+    }
+    Close();
 }
 
 void ScreenshotOverlay::OnLeftButtonDown(POINT point) {
     if (options_.mode == OverlayMode::RecordRegion) {
         if (phase_ == Phase::Selecting) {
-            selecting_ = true;
-            selection_.Begin(core::Point{ static_cast<float>(point.x),
-                                          static_cast<float>(point.y) });
-            dirty_ = true;
+            StartNewSelection(point);
         }
         return;
     }
@@ -529,7 +754,7 @@ void ScreenshotOverlay::OnLeftButtonDown(POINT point) {
     }
 
     // 工具栏优先：它在选区之上，点按钮不能落成标注。
-    if (point.x >= toolbarBounds_.left && point.x < toolbarBounds_.right &&
+    if (toolbarVisible_ && point.x >= toolbarBounds_.left && point.x < toolbarBounds_.right &&
         point.y >= toolbarBounds_.top && point.y < toolbarBounds_.bottom) {
         for (const ToolbarButton& button : toolbar_) {
             if (point.x >= button.rect.left && point.x < button.rect.right &&
@@ -545,47 +770,47 @@ void ScreenshotOverlay::OnLeftButtonDown(POINT point) {
 
     const Point screen{ static_cast<float>(point.x), static_cast<float>(point.y) };
 
+    // 双击 = 复制（1.x 只在截图模式的选区内部生效）。
+    const std::uint64_t now = GetTickCount64();
+    const bool doubleClick = now - lastClickMs_ <= 400 &&
+                             std::abs(point.x - lastClickPoint_.x) <= 4 &&
+                             std::abs(point.y - lastClickPoint_.y) <= 4;
+    lastClickMs_ = now;
+    lastClickPoint_ = point;
+
     if (phase_ == Phase::Selecting) {
-        selecting_ = true;
-        selection_.Begin(screen);
-        dirty_ = true;
+        StartNewSelection(point);
         return;
     }
 
-    const core::SelectionHandle handle = selection_.HitTest(screen);
-    if (handle != core::SelectionHandle::None && handle != core::SelectionHandle::Move) {
-        resizing_ = true;
-        resizeHandle_ = handle;
-        return;
-    }
-
-    if (selectMode_) {
-        const core::Rect bounds = selection_.Bounds();
-        if (!bounds.Contains(screen)) {
-            selectedAnnotation_ = -1;
-            dirty_ = true;
+    // 完成之后默认是「移动/选择」态；只有标注态里鼠标才画图。
+    if (!annotating_) {
+        const core::SelectionHandle handle = selection_.HitTest(screen);
+        if (handle != core::SelectionHandle::None && handle != core::SelectionHandle::Move) {
+            resizing_ = true;
+            resizeHandle_ = handle;
+            ClearHoverCandidate();
             return;
         }
-        const core::Point local{ screen.x - bounds.left, screen.y - bounds.top };
-        selectedAnnotation_ = -1;
-        for (int index = static_cast<int>(document_.Items().size()) - 1; index >= 0; --index) {
-            if (core::HitTest(document_.Items()[static_cast<std::size_t>(index)], local, 3.0f)) {
-                selectedAnnotation_ = index;
-                break;
+        if (handle == core::SelectionHandle::Move) {
+            if (doubleClick && options_.mode == OverlayMode::Screenshot) {
+                if (CopySelection()) {
+                    Close();
+                }
+                return;
             }
-        }
-        if (selectedAnnotation_ >= 0) {
-            movingAnnotation_ = true;
-            moveOrigin_ = point;
-        } else {
             movingSelection_ = true;
             lastPoint_ = point;
+            ClearHoverCandidate();
+            return;
         }
-        dirty_ = true;
+        // 选区外按下 = 重新框选（标注一起丢掉，1.x 同语义）。
+        StartNewSelection(point);
         return;
     }
 
     if (!selection_.Bounds().Contains(screen)) {
+        StartNewSelection(point);
         return;
     }
 
@@ -619,8 +844,15 @@ void ScreenshotOverlay::OnLeftButtonUp(POINT point) {
     if (selecting_) {
         selection_.Commit();
         selecting_ = false;
+        if (selection_.Bounds().IsEmpty()) {
+            // 短于一拖 = 单击：选光标下的窗口，没有窗口就选整块屏（1.x 的点击语义）。
+            SelectWindowOrMonitor(point);
+        }
         if (!selection_.Bounds().IsEmpty()) {
             phase_ = Phase::Annotating;
+            // 刚拖完不是标注态：此时在选区里拖动是「移动整块」。
+            annotating_ = false;
+            ClearHoverCandidate();
             if (options_.mode == OverlayMode::RecordRegion) {
                 const core::Rect bounds = selection_.Bounds();
                 const core::IntRect rect{ static_cast<int>(bounds.left),
@@ -687,7 +919,7 @@ void ScreenshotOverlay::HandleToolbar(const ToolbarButton& button) {
 
     switch (button.action) {
     case Action::ToolSelect:
-        selectMode_ = true;
+        annotating_ = false;
         selectedAnnotation_ = -1;
         break;
 
@@ -701,7 +933,7 @@ void ScreenshotOverlay::HandleToolbar(const ToolbarButton& button) {
     case Action::ToolStep:
     case Action::ToolEraser:
         if (hasSelection) {
-            selectMode_ = false;
+            annotating_ = true;
             selectedAnnotation_ = -1;
             SetTool(kTools[button.toolIndex]);
         }
@@ -805,7 +1037,7 @@ void ScreenshotOverlay::LayoutOptionBar() {
     optionButtons_.clear();
     optionBounds_ = RECT{};
 
-    if (selectMode_) {
+    if (!annotating_) {
         return;
     }
 
@@ -883,20 +1115,19 @@ void ScreenshotOverlay::RenderOptionBar(core::FramePlan& plan) {
     if (optionButtons_.empty() || rasterizer_ == nullptr) {
         return;
     }
-    const float ox = static_cast<float>(windowX_);
-    const float oy = static_cast<float>(windowY_);
-    const Rect background{ static_cast<float>(optionBounds_.left) - ox,
-                           static_cast<float>(optionBounds_.top) - oy,
-                           static_cast<float>(optionBounds_.right) - ox,
-                           static_cast<float>(optionBounds_.bottom) - oy };
+    // 布局产出的是客户区坐标，这里不再减窗口原点。
+    const Rect background{ static_cast<float>(optionBounds_.left),
+                           static_cast<float>(optionBounds_.top),
+                           static_cast<float>(optionBounds_.right),
+                           static_cast<float>(optionBounds_.bottom) };
     plan.Add(core::FillRoundedRect{ background, 10.0f, Color{ 0.98f, 0.976f, 0.984f, 0.98f } });
     plan.Add(core::StrokeRoundedRect{ background, 10.0f, Color{ 0.0f, 0.0f, 0.0f, 0.13f }, 1.0f });
 
     for (const OptionButton& option : optionButtons_) {
-        const Rect rect{ static_cast<float>(option.rect.left) - ox,
-                         static_cast<float>(option.rect.top) - oy,
-                         static_cast<float>(option.rect.right) - ox,
-                         static_cast<float>(option.rect.bottom) - oy };
+        const Rect rect{ static_cast<float>(option.rect.left),
+                         static_cast<float>(option.rect.top),
+                         static_cast<float>(option.rect.right),
+                         static_cast<float>(option.rect.bottom) };
         if (option.active) {
             plan.Add(core::FillRoundedRect{ rect, 7.0f, Color{ 0.184f, 0.486f, 0.965f, 1.0f } });
         } else if (option.action != Action::None) {
@@ -927,30 +1158,50 @@ void ScreenshotOverlay::RenderOptionBar(core::FramePlan& plan) {
 }
 
 void ScreenshotOverlay::RenderSizeBadge(core::FramePlan& plan) {
-    if (!selecting_ || rasterizer_ == nullptr || selection_.Bounds().IsEmpty()) {
+    if (rasterizer_ == nullptr || annotating_) {
         return;
     }
-    const core::Rect selection = selection_.Bounds();
-    const std::string text = std::to_string(static_cast<int>(selection.Width())) + " × " +
-                             std::to_string(static_cast<int>(selection.Height()));
+    // 1.x：只在「正拖着」与「悬停某个候选窗口」时显示；选区完成后就收起。
+    const bool dragging = selecting_ || resizing_ || movingSelection_;
+    const bool hovering =
+        selection_.Bounds().IsEmpty() && hoverWindow_ != nullptr && !hoverRect_.IsEmpty();
+    if (!dragging && !hovering) {
+        return;
+    }
+
+    IntRect rectPx = hoverRect_;
+    if (!hovering) {
+        const core::Rect bounds = selection_.Bounds();
+        rectPx = IntRect{ static_cast<int>(bounds.left), static_cast<int>(bounds.top),
+                          static_cast<int>(bounds.right), static_cast<int>(bounds.bottom) };
+    }
+    if (rectPx.IsEmpty()) {
+        return;
+    }
+
+    const std::string text = std::to_string(rectPx.right - rectPx.left) + " × " +
+                             std::to_string(rectPx.bottom - rectPx.top);
     const core::FontSpec spec{ options_.fontFamily, 400, 11.0f,
-                               Color{ 0.235f, 0.259f, 0.314f, 1.0f } };
+                               Color{ 0x3C / 255.0f, 0x42 / 255.0f, 0x50 / 255.0f, 1.0f } };
     const core::TextCell measured = rasterizer_->LayOut(text, spec, core::Point{ 0.0f, 0.0f });
     if (measured.atlas == 0) {
         return;
     }
-    const float ox = static_cast<float>(windowX_);
-    const float oy = static_cast<float>(windowY_);
     const float width = measured.destination.Width() + 16.0f;
-    const float left = selection.left - ox;
-    float top = selection.top - oy - 28.0f;
-    if (top < 4.0f) {
-        top = selection.top - oy + 8.0f;
+    const float height = 24.0f;
+    const float left = std::clamp(static_cast<float>(rectPx.left) - windowX_, 6.0f,
+                                  std::max(6.0f, static_cast<float>(screenWidth_) - width - 6.0f));
+    // 1.x：贴选区左边、上边再往上 8 px；放不下就挪到上边线下面 9 px。
+    float top = static_cast<float>(rectPx.top) - windowY_ - 8.0f - height;
+    if (top < 6.0f) {
+        top = static_cast<float>(rectPx.top) - windowY_ + 9.0f;
     }
-    plan.Add(core::FillRoundedRect{ core::Rect{ left, top, left + width, top + 24.0f }, 6.0f,
-                                    Color{ 1.0f, 1.0f, 1.0f, 0.96f } });
-    plan.Add(core::StrokeRoundedRect{ core::Rect{ left, top, left + width, top + 24.0f }, 6.0f,
-                                      Color{ 0.0f, 0.0f, 0.0f, 0.12f }, 1.0f });
+    top = std::clamp(top, 6.0f, std::max(6.0f, static_cast<float>(screenHeight_) - height - 6.0f));
+
+    plan.Add(core::FillRoundedRect{ core::Rect{ left, top, left + width, top + height }, 6.0f,
+                                    Color{ 1.0f, 1.0f, 1.0f, 0xF2 / 255.0f } });
+    plan.Add(core::StrokeRoundedRect{ core::Rect{ left, top, left + width, top + height }, 6.0f,
+                                      Color{ 0.0f, 0.0f, 0.0f, 0x1F / 255.0f }, 1.0f });
     const core::TextCell cell =
         rasterizer_->LayOut(text, spec, core::Point{ left + 8.0f, top + 5.0f });
     if (cell.atlas != 0) {
@@ -959,42 +1210,41 @@ void ScreenshotOverlay::RenderSizeBadge(core::FramePlan& plan) {
 }
 
 void ScreenshotOverlay::RenderMagnifier(core::FramePlan& plan) {
-    if (!mouseInside_ || rasterizer_ == nullptr || baseBgra_.empty() ||
-        selection_.Bounds().IsEmpty()) {
+    if (!mouseInside_ || rasterizer_ == nullptr || baseBgra_.empty()) {
         return;
     }
-    if (lastMouse_.x >= toolbarBounds_.left && lastMouse_.x < toolbarBounds_.right &&
-        lastMouse_.y >= toolbarBounds_.top && lastMouse_.y < toolbarBounds_.bottom) {
+    // 1.x：空闲悬停与拖动/缩放时显示；标注态、移动整块、选区完成后都不显示。
+    if (annotating_ || movingSelection_ || IsOverChrome(lastMouse_)) {
         return;
     }
-    if (optionBounds_.right > optionBounds_.left && lastMouse_.x >= optionBounds_.left &&
-        lastMouse_.x < optionBounds_.right && lastMouse_.y >= optionBounds_.top &&
-        lastMouse_.y < optionBounds_.bottom) {
+    if (!selection_.Bounds().IsEmpty() && !selecting_ && !resizing_) {
         return;
     }
 
     constexpr int kImage = 128;
     constexpr int kCardWidth = 136;
     constexpr int kCardHeight = 172;
-    int x = static_cast<int>(lastMouse_.x) + 20;
-    int y = static_cast<int>(lastMouse_.y) + 20;
-    x = std::clamp(x, 4, screenWidth_ - kCardWidth - 4);
-    y = std::clamp(y, 4, screenHeight_ - kCardHeight - 4);
+    // 一律换算到窗口本地坐标再夹紧：多屏时窗口原点不是 (0,0)。
+    const float sampleX = static_cast<float>(lastMouse_.x - windowX_);
+    const float sampleY = static_cast<float>(lastMouse_.y - windowY_);
+    // 1.x：光标右下 24 px；靠边就翻到左上。
+    float x = sampleX + 24.0f;
+    float y = sampleY + 24.0f;
+    if (x + kCardWidth > static_cast<float>(screenWidth_) - 6.0f) {
+        x = sampleX - 24.0f - kCardWidth;
+    }
+    if (y + kCardHeight > static_cast<float>(screenHeight_) - 6.0f) {
+        y = sampleY - 24.0f - kCardHeight;
+    }
+    x = std::clamp(x, 6.0f, std::max(6.0f, static_cast<float>(screenWidth_) - kCardWidth - 6.0f));
+    y = std::clamp(y, 6.0f, std::max(6.0f, static_cast<float>(screenHeight_) - kCardHeight - 6.0f));
 
-    const float ox = static_cast<float>(windowX_);
-    const float oy = static_cast<float>(windowY_);
-    const core::Rect card{ static_cast<float>(x) - ox, static_cast<float>(y) - oy,
-                           static_cast<float>(x + kCardWidth) - ox,
-                           static_cast<float>(y + kCardHeight) - oy };
+    const core::Rect card{ x, y, x + kCardWidth, y + kCardHeight };
     plan.Add(core::FillRoundedRect{ card, 10.0f, Color{ 1.0f, 1.0f, 1.0f, 0.98f } });
     plan.Add(core::StrokeRoundedRect{ card, 10.0f, Color{ 0.0f, 0.0f, 0.0f, 0.14f }, 1.0f });
 
-    const float sampleX = lastMouse_.x - windowX_;
-    const float sampleY = lastMouse_.y - windowY_;
     const core::Rect source{ sampleX - 8.0f, sampleY - 8.0f, sampleX + 8.0f, sampleY + 8.0f };
-    const core::Rect destination{ static_cast<float>(x + 4) - ox, static_cast<float>(y + 4) - oy,
-                                  static_cast<float>(x + 4 + kImage) - ox,
-                                  static_cast<float>(y + 4 + kImage) - oy };
+    const core::Rect destination{ x + 4.0f, y + 4.0f, x + 4.0f + kImage, y + 4.0f + kImage };
     plan.Add(core::Blit{ capturedHandle_, source, destination, 1.0f });
 
     // 中心像素的十字与颜色环。
@@ -1022,14 +1272,15 @@ void ScreenshotOverlay::RenderMagnifier(core::FramePlan& plan) {
     char hex[16] = {};
     std::snprintf(hex, sizeof(hex), "#%02X%02X%02X", r, g, b);
     char coordinates[32] = {};
-    std::snprintf(coordinates, sizeof(coordinates), "%d, %d", px, py);
+    // 坐标读数是屏幕坐标（虚拟桌面），不是窗口本地坐标。
+    std::snprintf(coordinates, sizeof(coordinates), "%d, %d", px + windowX_, py + windowY_);
 
-    const float footerY = static_cast<float>(y + 140) - oy;
-    plan.Add(core::FillEllipse{ core::Rect{ static_cast<float>(x + 10) - ox, footerY + 1.0f,
-                                            static_cast<float>(x + 22) - ox, footerY + 13.0f },
+    const float footerY = y + 140.0f;
+    plan.Add(core::FillEllipse{ core::Rect{ x + 10.0f, footerY + 1.0f, x + 22.0f,
+                                            footerY + 13.0f },
                                 Color{ r / 255.0f, g / 255.0f, b / 255.0f, 1.0f } });
-    plan.Add(core::StrokeEllipse{ core::Rect{ static_cast<float>(x + 10) - ox, footerY + 1.0f,
-                                              static_cast<float>(x + 22) - ox, footerY + 13.0f },
+    plan.Add(core::StrokeEllipse{ core::Rect{ x + 10.0f, footerY + 1.0f, x + 22.0f,
+                                              footerY + 13.0f },
                                   Color{ 0.0f, 0.0f, 0.0f, 0.2f }, 1.0f });
 
     const core::FontSpec hexSpec{ options_.fontFamily, 600, 11.0f,
@@ -1037,14 +1288,12 @@ void ScreenshotOverlay::RenderMagnifier(core::FramePlan& plan) {
     const core::FontSpec coordSpec{ options_.fontFamily, 400, 10.0f,
                                     Color{ 0.42f, 0.45f, 0.50f, 1.0f } };
     const core::TextCell hexCell =
-        rasterizer_->LayOut(hex, hexSpec, core::Point{ static_cast<float>(x + 28) - ox,
-                                                       footerY });
+        rasterizer_->LayOut(hex, hexSpec, core::Point{ x + 28.0f, footerY });
     if (hexCell.atlas != 0) {
         plan.Add(hexCell.ToBlit());
     }
     const core::TextCell coordCell =
-        rasterizer_->LayOut(coordinates, coordSpec,
-                            core::Point{ static_cast<float>(x + 28) - ox, footerY + 15.0f });
+        rasterizer_->LayOut(coordinates, coordSpec, core::Point{ x + 28.0f, footerY + 15.0f });
     if (coordCell.atlas != 0) {
         plan.Add(coordCell.ToBlit());
     }
@@ -1082,20 +1331,31 @@ void ScreenshotOverlay::LayoutToolbar() {
     width += (toolCount + 1 + colorCount + actionCount + 2 - 1) * kToolbarGap;
 
     const Rect selection = selection_.Bounds();
+    const int localRight = static_cast<int>(selection.right) - windowX_;
+    const int localTop = static_cast<int>(selection.top) - windowY_;
+    const int localBottom = static_cast<int>(selection.bottom) - windowY_;
     int x = 0;
     int y = 0;
     if (selection.IsEmpty()) {
         x = (screenWidth_ - width) / 2;
         y = 20;
     } else {
-        x = static_cast<int>(selection.left);
-        y = static_cast<int>(selection.top) - kToolbarHeight - 10;
-        if (y < 4) {
-            y = static_cast<int>(selection.bottom) + 10;
+        // 1.x：贴选区右下角、往下 12 px；下面放不下就翻到上面，再放不下就压进选区底部。
+        // 横向只夹紧、不翻到左边。
+        x = localRight - width;
+        y = localBottom + 12;
+        if (y + kToolbarHeight > screenHeight_ - 8) {
+            y = localTop - kToolbarHeight - 12;
         }
-        x = std::clamp(x, 4, std::max(4, screenWidth_ - width - 4));
-        y = std::clamp(y, 4, std::max(4, screenHeight_ - kToolbarHeight - 4));
+        if (y < 8) {
+            y = std::clamp(localBottom - kToolbarHeight - 10, 8,
+                           std::max(8, screenHeight_ - kToolbarHeight - 8));
+        }
+        x = std::clamp(x, 8, std::max(8, screenWidth_ - width - 8));
+        y = std::clamp(y, 8, std::max(8, screenHeight_ - kToolbarHeight - 8));
     }
+    // 1.x：刚拖完的选区不算「完成」，工具栏等松手之后才出现。
+    toolbarVisible_ = phase_ == Phase::Annotating && !selection.IsEmpty();
 
     int cursorX = x + kToolbarPadding;
     const int cursorY = y + 1;
@@ -1121,12 +1381,12 @@ void ScreenshotOverlay::LayoutToolbar() {
         ToolbarIcon::Arrow,     ToolbarIcon::Text,      ToolbarIcon::Highlighter,
         ToolbarIcon::Mosaic,    ToolbarIcon::Step,      ToolbarIcon::Eraser,
     };
-    addButton(Action::ToolSelect, 0, -1, "", kToolbarToolWidth, true, selectMode_,
+    addButton(Action::ToolSelect, 0, -1, "", kToolbarToolWidth, true, !annotating_,
               ToolbarIcon::Select);
 
     for (int i = 0; i < toolCount; ++i) {
         addButton(static_cast<Action>(static_cast<int>(Action::ToolPen) + i), 0, i, "",
-                  kToolbarToolWidth, !selection.IsEmpty(), !selectMode_ && kTools[i] == tool_,
+                  kToolbarToolWidth, !selection.IsEmpty(), annotating_ && kTools[i] == tool_,
                   toolIcons[i]);
     }
 
@@ -1162,22 +1422,20 @@ void ScreenshotOverlay::LayoutToolbar() {
 }
 
 void ScreenshotOverlay::RenderToolbar(core::FramePlan& plan) {
-    const float ox = static_cast<float>(windowX_);
-    const float oy = static_cast<float>(windowY_);
-
-    const Rect background{ static_cast<float>(toolbarBounds_.left) - ox,
-                           static_cast<float>(toolbarBounds_.top) - oy,
-                           static_cast<float>(toolbarBounds_.right) - ox,
-                           static_cast<float>(toolbarBounds_.bottom) - oy };
+    // 与鼠标命中同一套坐标：LayoutToolbar 已经产出客户区坐标，这里不再减窗口原点。
+    const Rect background{ static_cast<float>(toolbarBounds_.left),
+                           static_cast<float>(toolbarBounds_.top),
+                           static_cast<float>(toolbarBounds_.right),
+                           static_cast<float>(toolbarBounds_.bottom) };
     // 1.x 的工具栏：浅色 #FAF8F9FB、10 px 圆角、#22000000 边框。
     plan.Add(core::FillRoundedRect{ background, 10.0f, Color{ 0.98f, 0.976f, 0.984f, 0.98f } });
     plan.Add(core::StrokeRoundedRect{ background, 10.0f, Color{ 0.0f, 0.0f, 0.0f, 0.13f }, 1.0f });
 
     for (const ToolbarButton& button : toolbar_) {
-        const Rect rect{ static_cast<float>(button.rect.left) - ox,
-                         static_cast<float>(button.rect.top) - oy,
-                         static_cast<float>(button.rect.right) - ox,
-                         static_cast<float>(button.rect.bottom) - oy };
+        const Rect rect{ static_cast<float>(button.rect.left),
+                         static_cast<float>(button.rect.top),
+                         static_cast<float>(button.rect.right),
+                         static_cast<float>(button.rect.bottom) };
 
         if (button.active) {
             plan.Add(core::FillRoundedRect{ rect, 7.0f, Color{ 0.184f, 0.486f, 0.965f, 1.0f } });
@@ -1325,73 +1583,130 @@ void ScreenshotOverlay::RenderToolbar(core::FramePlan& plan) {
 }
 
 void ScreenshotOverlay::RenderSelection(core::FramePlan& plan) {
-    const Rect selection = selection_.Bounds();
-    if (selection.IsEmpty()) {
-        return;
-    }
-
     const float ox = static_cast<float>(windowX_);
     const float oy = static_cast<float>(windowY_);
-    const Rect local{ selection.left - ox, selection.top - oy, selection.right - ox,
-                      selection.bottom - oy };
-    const Color dim{ 0.0f, 0.0f, 0.0f, 0.45f };
     const float width = static_cast<float>(screenWidth_);
     const float height = static_cast<float>(screenHeight_);
 
-    // 选区之外压暗：四条矩形拼起来，不需要额外的遮罩纹理。
-    plan.Add(core::FillRect{ Rect{ 0.0f, 0.0f, width, local.top }, dim });
-    plan.Add(core::FillRect{ Rect{ 0.0f, local.bottom, width, height }, dim });
-    plan.Add(core::FillRect{ Rect{ 0.0f, local.top, local.left, local.bottom }, dim });
-    plan.Add(core::FillRect{ Rect{ local.right, local.top, width, local.bottom }, dim });
+    // 1.x 的两档暗度：还没选区时 36% 黑，选区出现后 55% 黑。
+    const Color hoverDim{ 0.0f, 0.0f, 0.0f, 0x5C / 255.0f };
+    const Color activeDim{ 0.0f, 0.0f, 0.0f, 0x8C / 255.0f };
+    const Color accent = SelectionAccent();
 
-    // 1.x 的选区：蓝色 #2F7CF6 边框，把手是 7×7 的蓝色小方块。
-    const Color accent{ 0.184f, 0.486f, 0.965f, 1.0f };
+    const Rect selection = selection_.Bounds();
+    if (selection.IsEmpty()) {
+        // 悬停窗口：把那块挖出来（同 hover 暗度）+ 1.5 px 描边，其余压暗。
+        if (hoverWindow_ != nullptr && !hoverRect_.IsEmpty()) {
+            const Rect hole{ static_cast<float>(hoverRect_.left) - ox,
+                             static_cast<float>(hoverRect_.top) - oy,
+                             static_cast<float>(hoverRect_.right) - ox,
+                             static_cast<float>(hoverRect_.bottom) - oy };
+            AddDimAround(plan, hole, hoverDim, width, height);
+            plan.Add(core::StrokeRect{ hole, accent, 1.5f });
+            return;
+        }
+        plan.Add(core::FillRect{ Rect{ 0.0f, 0.0f, width, height }, hoverDim });
+        return;
+    }
+
+    const Rect local{ selection.left - ox, selection.top - oy, selection.right - ox,
+                      selection.bottom - oy };
+    AddDimAround(plan, local, activeDim, width, height);
     plan.Add(core::StrokeRect{ local, accent, 1.5f });
 
-    if (phase_ != Phase::Annotating) {
+    // 1.x：标注态不画把手，其余时候（拖选中 / 完成后移动缩放）都画。
+    if (annotating_) {
         return;
     }
 
     const float cx = (local.left + local.right) * 0.5f;
     const float cy = (local.top + local.bottom) * 0.5f;
-    const Point handles[] = { { local.left, local.top },    { cx, local.top },
-                              { local.right, local.top },   { local.right, cy },
+    const float half = kHandleSize * 0.5f;
+    const Point handles[] = { { local.left, local.top },     { cx, local.top },
+                              { local.right, local.top },    { local.right, cy },
                               { local.right, local.bottom }, { cx, local.bottom },
-                              { local.left, local.bottom }, { local.left, cy } };
+                              { local.left, local.bottom },  { local.left, cy } };
 
     for (const Point& handle : handles) {
-        const Rect rect{ handle.x - 3.5f, handle.y - 3.5f, handle.x + 3.5f, handle.y + 3.5f };
+        const Rect rect{ handle.x - half, handle.y - half, handle.x + half, handle.y + half };
         plan.Add(core::FillRect{ rect, accent });
     }
+}
+
+void ScreenshotOverlay::AddDimAround(core::FramePlan& plan, const Rect& hole, const Color& dim,
+                                     float width, float height) {
+    // 洞之外压暗：四条矩形拼起来，不需要额外的遮罩纹理。
+    plan.Add(core::FillRect{ Rect{ 0.0f, 0.0f, width, hole.top }, dim });
+    plan.Add(core::FillRect{ Rect{ 0.0f, hole.bottom, width, height }, dim });
+    plan.Add(core::FillRect{ Rect{ 0.0f, hole.top, hole.left, hole.bottom }, dim });
+    plan.Add(core::FillRect{ Rect{ hole.right, hole.top, width, hole.bottom }, dim });
+}
+
+core::Color ScreenshotOverlay::SelectionAccent() const {
+    // 1.x 按模式换描边色：截图 #7CA8FF、录制 #FF7A7A、OCR #B08CFF。
+    switch (options_.mode) {
+    case OverlayMode::RecordRegion:
+        return Color{ 1.0f, 0.478f, 0.478f, 1.0f };
+    case OverlayMode::Ocr:
+        return Color{ 0x69 / 255.0f, 0x8C / 255.0f, 1.0f, 1.0f };
+    case OverlayMode::Screenshot:
+    default:
+        return Color{ 0x7C / 255.0f, 0xA8 / 255.0f, 1.0f, 1.0f };
+    }
+}
+
+void ScreenshotOverlay::RenderCrosshair(core::FramePlan& plan) {
+    // 1.x：只有「还没选区、也没在拖」的时候画，1 px、55% 白，贯穿整块画面。
+    if (!mouseInside_ || !selection_.Bounds().IsEmpty() || selecting_ || annotating_) {
+        return;
+    }
+    if (IsOverChrome(lastMouse_)) {
+        return;
+    }
+    const Color ink{ 1.0f, 1.0f, 1.0f, 0x8C / 255.0f };
+    const float x = static_cast<float>(lastMouse_.x - windowX_);
+    const float y = static_cast<float>(lastMouse_.y - windowY_);
+    plan.Add(core::FillRect{ Rect{ x, 0.0f, x + 1.0f, static_cast<float>(screenHeight_) }, ink });
+    plan.Add(core::FillRect{ Rect{ 0.0f, y, static_cast<float>(screenWidth_), y + 1.0f }, ink });
 }
 
 void ScreenshotOverlay::RenderHint(core::FramePlan& plan) {
     if (rasterizer_ == nullptr) {
         return;
     }
+    // 1.x：提示条只在还没选区时显示；选区一出现就收起（快捷键交给工具栏 tooltip）。
+    if (!selection_.Bounds().IsEmpty()) {
+        return;
+    }
 
-    const bool recordMode = options_.mode == OverlayMode::RecordRegion;
-    const bool ocrMode = options_.mode == OverlayMode::Ocr;
-    const char* hint = selection_.Bounds().IsEmpty()
-                           ? (recordMode ? "拖动选择录制区域 · Esc 取消"
-                              : ocrMode ? "拖动选择区域 · Enter 识别 · Esc 退出"
-                                      : "拖动选择区域 · 空格全屏标注 · Esc 退出")
-                           : (ocrMode ? "OCR · Enter 识别 · Esc 退出"
-                                      : "标注中 · 1-9 选工具 · Ctrl+Z 撤销 · Ctrl+C 复制 · Ctrl+S 保存");
-    const core::FontSpec spec{ options_.fontFamily, 400, 13.0f,
+    const char* hint = "拖动框选或单击窗口 · Enter 复制 · Esc 取消";
+    switch (options_.mode) {
+    case OverlayMode::RecordRegion:
+        hint = "拖动框选或单击窗口 · Esc 取消";
+        break;
+    case OverlayMode::Ocr:
+        hint = "拖动框选或单击窗口 · Enter 识别 · Esc 取消";
+        break;
+    case OverlayMode::Screenshot:
+    default:
+        break;
+    }
+    const core::FontSpec spec{ options_.fontFamily, 400, 12.0f,
                                Color{ 0.235f, 0.259f, 0.314f, 1.0f } };
     const core::TextCell measured = rasterizer_->LayOut(hint, spec, Point{ 0.0f, 0.0f });
     if (measured.atlas == 0) {
         return;
     }
 
-    // 1.x 的提示条：顶部居中、白色圆角、左边一个蓝色圆点、深色文字。
+    // 1.x 的提示条：白色圆角、左边一个模式色圆点、深色文字；贴在光标所在那块屏的顶部。
     const float textWidth = measured.destination.Width();
     const float textHeight = measured.destination.Height();
-    const float chipWidth = textWidth + 34.0f;
-    const float chipHeight = textHeight + 16.0f;
-    const float chipLeft = (static_cast<float>(screenWidth_) - chipWidth) * 0.5f;
-    const float chipTop = 26.0f;
+    const float chipWidth = textWidth + 36.0f;
+    const float chipHeight = textHeight + 18.0f;
+    const IntRect monitor = MonitorBoundsAt(lastMouse_);
+    const float chipLeft = static_cast<float>(monitor.left) + (monitor.right - monitor.left -
+                                                              chipWidth) * 0.5f - windowX_;
+    const float chipTop = static_cast<float>(monitor.top) + 26.0f - windowY_;
 
     plan.Add(core::FillRoundedRect{ Rect{ chipLeft, chipTop, chipLeft + chipWidth,
                                          chipTop + chipHeight },
@@ -1402,9 +1717,9 @@ void ScreenshotOverlay::RenderHint(core::FramePlan& plan) {
     const float dotX = chipLeft + 14.0f;
     const float dotY = chipTop + chipHeight * 0.5f;
     plan.Add(core::FillEllipse{ Rect{ dotX - 3.0f, dotY - 3.0f, dotX + 3.0f, dotY + 3.0f },
-                                Color{ 0.184f, 0.486f, 0.965f, 1.0f } });
+                                SelectionAccent() });
     const core::TextCell cell =
-        rasterizer_->LayOut(hint, spec, Point{ dotX + 9.0f, chipTop + 8.0f });
+        rasterizer_->LayOut(hint, spec, Point{ dotX + 9.0f, chipTop + 9.0f });
     if (cell.atlas != 0) {
         plan.Add(cell.ToBlit());
     }
@@ -1435,11 +1750,16 @@ void ScreenshotOverlay::Render() {
         options.origin = Point{ selection_.Bounds().left - windowX_,
                                 selection_.Bounds().top - windowY_ };
         core::AppendAnnotationPlan(document_.Items(), options, plan);
-        RenderSelection(plan);
     }
 
+    // 选区/压暗/悬停描边/把手的绘制现在统一在这里（没有选区时画整屏悬停暗度）。
+    RenderSelection(plan);
+    RenderCrosshair(plan);
+
     if (options_.mode != OverlayMode::RecordRegion) {
-        RenderToolbar(plan);
+        if (toolbarVisible_) {
+            RenderToolbar(plan);
+        }
         RenderOptionBar(plan);
         RenderMagnifier(plan);
     }
@@ -1670,6 +1990,7 @@ LRESULT CALLBACK ScreenshotOverlay::KeyHook(int code, WPARAM wParam, LPARAM lPar
 
     UINT message = 0;
     int toolIndex = 0;
+    int payload = 0;
     if (key == VK_ESCAPE) {
         message = kMsgEscape;
     } else if (key == VK_RETURN) {
@@ -1689,7 +2010,11 @@ LRESULT CALLBACK ScreenshotOverlay::KeyHook(int code, WPARAM wParam, LPARAM lPar
     } else if (key == VK_DELETE) {
         message = kMsgDelete;
     } else if (key == VK_SPACE) {
-        message = kMsgFullScreen;
+        message = kMsgAnnotate;
+    } else if (key == VK_LEFT || key == VK_RIGHT || key == VK_UP || key == VK_DOWN) {
+        // 方向键微调：1 px，按 Shift 是 10 px（1.x 的选区微调）。
+        message = kMsgNudge;
+        payload = (GetKeyState(VK_SHIFT) & 0x8000) != 0 ? 10 : 1;
     } else if (key >= '1' && key <= '9') {
         message = kMsgTool;
         toolIndex = static_cast<int>(key - '1');
@@ -1699,7 +2024,11 @@ LRESULT CALLBACK ScreenshotOverlay::KeyHook(int code, WPARAM wParam, LPARAM lPar
         return CallNextHookEx(nullptr, code, wParam, lParam);
     }
 
-    PostMessageW(static_cast<HWND>(g_overlay->window_->Handle()), message, toolIndex, 0);
+    // 微调用键码本身当参数，其余用工具下标。
+    PostMessageW(static_cast<HWND>(g_overlay->window_->Handle()), message,
+                 message == kMsgNudge ? static_cast<WPARAM>(key)
+                                      : static_cast<WPARAM>(toolIndex),
+                 static_cast<LPARAM>(payload));
     return 1;
 }
 
@@ -1914,7 +2243,9 @@ void ScreenshotOverlay::DebugSelect(IntRect rect) {
     selection_.Commit();
     if (!selection_.Bounds().IsEmpty()) {
         phase_ = Phase::Annotating;
+        annotating_ = false;
     }
+    ClearHoverCandidate();
     dirty_ = true;
 }
 

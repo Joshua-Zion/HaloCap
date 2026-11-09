@@ -1,5 +1,7 @@
 ﻿#include "window_picker.h"
 
+#include "window_at_point.h"
+
 #include <windowsx.h>
 
 #include <objbase.h>
@@ -32,10 +34,6 @@ std::wstring WindowTitle(HWND window) {
     wchar_t buffer[256] = {};
     GetWindowTextW(window, buffer, 256);
     return buffer;
-}
-
-bool IsDesktopWindow(HWND window) {
-    return window == GetShellWindow() || window == GetDesktopWindow();
 }
 
 }  // namespace
@@ -143,28 +141,13 @@ void WindowPicker::Close() {
 
 HWND WindowPicker::TargetAt(POINT screen) const {
     HWND window = reinterpret_cast<HWND>(const_cast<WindowPicker*>(this)->window_);
-    if (window != nullptr) {
-        // 拾取层自己全屏且 topmost，不临时禁用就会永远命中它。
-        EnableWindow(window, FALSE);
-        HWND target = WindowFromPoint(screen);
-        EnableWindow(window, TRUE);
-        // WindowFromPoint 常常给到 Chrome 这类应用的子窗口；录制要顶层窗口。
-        if (target != nullptr) {
-            const HWND root = GetAncestor(target, GA_ROOT);
-            if (root != nullptr) {
-                target = root;
-            }
-        }
-        if (target != nullptr) {
-            DWORD processId = 0;
-            GetWindowThreadProcessId(target, &processId);
-            RECT rect{};
-            GetWindowRect(target, &rect);
-            if (processId != GetCurrentProcessId() && IsWindowVisible(target) &&
-                !IsDesktopWindow(target) && rect.right - rect.left > 80 &&
-                rect.bottom - rect.top > 60) {
-                return target;
-            }
+    HWND target = WindowAtPoint(screen, window, 32);
+    // 录制区域比截图选区更挑剔：太小的窗口（工具面板、浮动条）不适合当录制目标。
+    if (target != nullptr) {
+        RECT rect{};
+        if (WindowVisibleRect(target, &rect) && rect.right - rect.left > 80 &&
+            rect.bottom - rect.top > 60) {
+            return target;
         }
     }
     return nullptr;

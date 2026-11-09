@@ -4,9 +4,9 @@
 
 namespace halocap::platform::win32 {
 
-bool GrabPrimaryDesktop(DesktopImage& image) {
-    const int width = GetSystemMetrics(SM_CXSCREEN);
-    const int height = GetSystemMetrics(SM_CYSCREEN);
+namespace {
+
+bool Grab(int left, int top, int width, int height, DesktopImage& image) {
     if (width <= 0 || height <= 0) {
         return false;
     }
@@ -42,7 +42,9 @@ bool GrabPrimaryDesktop(DesktopImage& image) {
     }
 
     HGDIOBJ oldBitmap = SelectObject(memory, bitmap);
-    const BOOL copied = BitBlt(memory, 0, 0, width, height, screen, 0, 0, SRCCOPY | CAPTUREBLT);
+    // 屏幕 DC 的原点是主屏左上角，所以多屏要靠源坐标偏到虚拟桌面左上角。
+    const BOOL copied =
+        BitBlt(memory, 0, 0, width, height, screen, left, top, SRCCOPY | CAPTUREBLT);
 
     if (copied) {
         image.width = width;
@@ -61,6 +63,32 @@ bool GrabPrimaryDesktop(DesktopImage& image) {
     DeleteDC(memory);
     ReleaseDC(nullptr, screen);
     return copied != FALSE;
+}
+
+}  // namespace
+
+DesktopBounds VirtualDesktopBounds() {
+    DesktopBounds bounds;
+    bounds.left = GetSystemMetrics(SM_XVIRTUALSCREEN);
+    bounds.top = GetSystemMetrics(SM_YVIRTUALSCREEN);
+    bounds.width = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+    bounds.height = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+    if (bounds.width <= 0 || bounds.height <= 0) {
+        bounds.left = 0;
+        bounds.top = 0;
+        bounds.width = GetSystemMetrics(SM_CXSCREEN);
+        bounds.height = GetSystemMetrics(SM_CYSCREEN);
+    }
+    return bounds;
+}
+
+bool GrabPrimaryDesktop(DesktopImage& image) {
+    return Grab(0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN), image);
+}
+
+bool GrabVirtualDesktop(DesktopImage& image) {
+    const DesktopBounds bounds = VirtualDesktopBounds();
+    return Grab(bounds.left, bounds.top, bounds.width, bounds.height, image);
 }
 
 }

@@ -86,6 +86,8 @@ public:
     core::IntRect SelectionRectPx() const;
 
 private:
+    // Selecting = 还在拖第一块选区；Annotating = 选区已完成（这一相位里可以移动/缩放，
+    // 只有 annotating_ 为真时鼠标才是画标注）。
     enum class Phase {
         Selecting,
         Annotating,
@@ -128,6 +130,15 @@ private:
     void OnMouseMove(POINT point);
     void OnLeftButtonDown(POINT point);
     void OnLeftButtonUp(POINT point);
+    void OnRightButtonDown(POINT point);
+    void UpdateCursor(POINT point);
+    bool IsOverChrome(POINT point) const;
+    void StartNewSelection(POINT point);
+    void SelectWindowOrMonitor(POINT point);
+    void UpdateHoverCandidate(POINT point);
+    void ClearHoverCandidate();
+    core::IntRect MonitorBoundsAt(POINT point) const;
+    void NudgeSelection(int dx, int dy);
     void SetTool(core::AnnotationTool tool);
     void HandleToolbar(const ToolbarButton& button);
     void HandleOption(Action action);
@@ -139,6 +150,10 @@ private:
     void Render();
     void RenderToolbar(core::FramePlan& plan);
     void RenderSelection(core::FramePlan& plan);
+    void AddDimAround(core::FramePlan& plan, const core::Rect& hole, const core::Color& dim,
+                      float width, float height);
+    core::Color SelectionAccent() const;
+    void RenderCrosshair(core::FramePlan& plan);
     void RenderHint(core::FramePlan& plan);
     void UpdateMosaicTile(core::Annotation& annotation);
     void RunOcr();
@@ -198,7 +213,9 @@ private:
     std::vector<OptionButton> optionButtons_;
     RECT optionBounds_{};
 
-    bool selectMode_ = false;
+    // annotating_ = 工具激活（鼠标在选区内是画标注）。1.x 里刚拖完选区不是标注态：
+    // 那时拖选区内是「移动整块」，只有按了空格/工具键/工具按钮才进标注。
+    bool annotating_ = false;
     int selectedAnnotation_ = -1;
     bool movingAnnotation_ = false;
     POINT lastMouse_{};
@@ -207,6 +224,22 @@ private:
     float hoverAlpha_[32] = {};
     bool hoverAnimating_ = false;
     void StepHoverAnimation();
+
+    // 未成选区时，光标下窗口的高亮候选（1.x 的 ElementBorder）。
+    HWND hoverWindow_ = nullptr;
+    core::IntRect hoverRect_{};
+    POINT lastProbePoint_{-100000, -100000};
+    std::uint64_t lastProbeMs_ = 0;
+    bool hoverProbed_ = false;
+
+    // 双击判定自己做：窗口类没开 CS_DBLCLKS，也不值得为此改窗口创建（1.x 双击复制）。
+    POINT lastClickPoint_{-100000, -100000};
+    std::uint64_t lastClickMs_ = 0;
+
+    // 按下那一刻光标下的窗口/所在显示器：短于一拖的「单击」用它兜底（1.x 的 _clickElementPx）。
+    core::IntRect pressWindowRect_{};
+    core::IntRect pressMonitorRect_{};
+    bool toolbarVisible_ = false;
 
     // 文字输入弹窗
     HWND editorWindow_ = nullptr;

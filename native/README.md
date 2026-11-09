@@ -2,7 +2,7 @@
 
 本目录属于 `2.0` 分支。设计依据见 [../docs/2.0-native-plan.md](../docs/2.0-native-plan.md)，分支约定见其 §10，工具链与构建前提见计划文档的「S1 的工具链」。
 
-当前状态：**S1–S5 完成，S4 收尾项也已补齐**（热键捕获、结果窗口命中高亮/按行跳转、同进程 OCR 后内存回落）——十八套测试全绿；`HaloCap.exe` 有设置、日志、托盘、热键、覆盖层、录制、截图、OCR、六页设置与剪贴板贴图（托盘「录屏」/`Ctrl+Alt+R`、托盘「截图」/`Ctrl+Alt+A`、托盘「OCR」/`Ctrl+Alt+O`、托盘「贴图」/`Ctrl+Alt+P`、托盘「设置」；`--record-seconds` / `--screenshot-selftest` / `--ocr-selftest` / `--ocr-search-selftest` / `--settings-selftest` / `--hotkey-selftest` / `--pin-selftest` 七个自检，另有 `--version` / `--check-update`）。交付：`package.ps1` 产出 win64 zip（目标 ≤ 20 MB）与 SHA-256 清单；空闲 2.9 MB、OCR 后回落 42.1 MB、4K30 峰值 230.8 MB、截图选区 78.2 ms。
+当前状态：**S1–S5 完成，S4 收尾项也已补齐**（热键捕获、结果窗口命中高亮/按行跳转、同进程 OCR 后内存回落）——十八套测试全绿；`HaloCap.exe` 有设置、日志、托盘、热键、覆盖层、录制、截图、OCR、六页设置与剪贴板贴图（托盘「录屏」/`Ctrl+Alt+R`、托盘「截图」/`Ctrl+Alt+A`、托盘「OCR」/`Ctrl+Alt+O`、托盘「贴图」/`Ctrl+Alt+P`、托盘「设置」；`--record-seconds` / `--screenshot-selftest` / `--ocr-selftest` / `--ocr-search-selftest` / `--settings-selftest` / `--hotkey-selftest` / `--pin-selftest` 七个自检，另有 `--version` / `--check-update`）。交付：`package.ps1` 产出 win64 zip（目标 ≤ 20 MB）与 SHA-256 清单；空闲 2.9 MB、OCR 后回落 79.5 MB（按抓取面积给预算）、4K30 峰值 230.8 MB、截图选区 78.2 ms。
 
 一处环境阻塞要写清：本机现在对**任何**程序都拒绝 `DuplicateOutput`（`E_ACCESSDENIED`；今天早些时候还能跑出吞吐数字的 spike 2 工具现在同样被拒），所以 `ICaptureSource` 的端到端脏矩形量级数字还没拿到。拷贝逻辑本身不依赖复制权，已经单独验过（`rect_copy_test`）。
 
@@ -315,7 +315,22 @@ native> build\tools\screenshot_probe\screenshot_probe.exe                      9
 native> build\tools\screenshot_probe\screenshot_probe.exe out.png 1280x720@0,0
 ```
 
-覆盖层里可用：拖选、Shift 正方形、八个把手、空格全屏标注、数字键 1–9 选工具、工具栏（九种工具 + 八色板 + 撤销/重做/复制/保存/贴图/关闭）、`Ctrl+Z/Y`、`Ctrl+C`、`Ctrl+S`、`Enter` 复制、`Esc` 退出。文字工具会弹一个真正的 `EDIT` 小窗，输入法与候选窗交给系统。贴图是分层窗口：白边 + 向外渐隐的光晕，拖动移动、双击关闭。
+覆盖层里可用：拖选、Shift 正方形、八个把手、空格切换标注态、数字键 1–9 选工具、工具栏（九种工具 + 八色板 + 撤销/重做/复制/保存/贴图/关闭）、`Ctrl+Z/Y`、`Ctrl+C`、`Ctrl+S`、`Enter` 复制、`Esc` 退出。文字工具会弹一个真正的 `EDIT` 小窗，输入法与候选窗交给系统。贴图是分层窗口：白边 + 向外渐隐的光晕，拖动移动、双击关闭。
+
+**选区交互按 1.x 对齐过（2026-11-09）**，逐条对着 `src/HaloCap/UI/ScreenshotOverlayWindow.xaml(.cs)` 改的：
+
+- **松手之后不是标注态**：在里面拖是整体平移，按空格/工具键/工具按钮才落笔；在选区外按下是重新框选并丢掉已有标注（1.x 同语义）。
+- **单击 = 选窗口**：短于 8 px 的一拖按单击处理，选光标下的窗口，没有窗口就选整块屏。窗口判定在 `app/window_at_point.*`：DWM 可见边框、跳过 shell/IME/tooltip/cloaked/`WS_EX_TRANSPARENT`、小于 32×32 的，窗口拾取与选区共用一份。
+- **悬停态**：没有选区时画全屏十字线（1 px、55% 白）、把光标下的窗口挖成洞并描 1.5 px 边、显示放大镜（右下 24 px，靠边翻到左上）和尺寸徽标。
+- **两档暗度**：无选区 36%、有选区 55%（原来是单一 45%）；洞内完全不压暗。
+- **把手 7×7、命中半径 9 px**，标注态隐藏、其余时候显示（原来的显示条件是反的）；光标按方向给 SizeNWSE/NESW/WE/NS，区内 SizeAll。
+- **方向键微调** 1 px（Shift 10 px）、**双击复制**、**右键**（标注态退出标注 → 有选区清选区 → 都没有就关窗）。
+- **工具栏贴选区右下角往下 12 px**，下面放不下翻到上面、再不行压进底部，横向只夹紧；拖选中隐藏、松手后出现。
+- **跨屏**：覆盖层盖住整块虚拟桌面（`GrabVirtualDesktop`），选区边界是全部显示器的并集，可以跨屏拖；提示条贴光标所在那块屏的顶部。
+
+代价要写清：整块虚拟桌面的离屏纹理（本机 6400×2160）在关掉覆盖层之后仍有约 37 MB 被驱动留在进程里，所以 OCR 后回落从 42 MB 变成 **79.5 MB**；验收改成按面积给预算（`40 + 4 × 百万像素` → 本机 95.3 MB），绝对 80 MB 那条继续报出来做对照。
+
+`--screenshot-selftest` 现在用真实鼠标消息验 拖选 / 平移 / 缩放 / 方向键 / 右键 / 单击选窗口 / 切标注态画线 七项，另抓一张空闲悬停的证明图（`*.hover.png`），预算按面积给（打开 `90 + 40×MP` ms、覆盖层 `40 + 14×MP` MB、关掉后 ≤ 120 MB）。
 
 `screenshot_probe` 不画 UI，只跑「领域 + 导出」：GDI 抓屏 → 选区 → 九种标注 → 离屏合成 → 整帧回读 → 逐像素断言 → PNG 与剪贴板。马赛克那一步在探针里先画一层棋盘格，再从回读像素取块平均，验证「像素化它下面的内容」。
 
@@ -357,7 +372,7 @@ native> build\app\HaloCap.exe --ocr-selftest ocr-selftest.png
 | 准确率 | **3/3 行命中** |
 | 内存 | init 后 36.5 MB、识别后 70 MB、释放后 13.9 MB |
 
-第二引擎是系统 `Windows.Media.Ocr`（`ocr_probe --engine winrt`：init 10.5 ms、识别 44.6 ms）；`ocr.engine` 设置 Native / Model 切换，默认 Native。**推理现在跑在一次性 worker 子进程里**（`HaloCap.exe --ocr-worker in out engine`），主进程不加载 ORT：app 自检（桌面 900×520 区域）经 worker 识别约 175 ms、结果窗口 32 行、`APP_OCR_WORKER=1`。**内存**：识别后主进程回落到 **42.1 MB**（`APP_OCR_AFTER_OVERLAY_CLOSE_UNDER_80=1`），这已在 80 MB 预算内。原先停在 ~97 MB 的真因不是模型、也不是 D3D 设备回收不掉，而是**启动时预热的那台 `OverlayStack` 常驻 58 MB**——它只服务录制，截图/OCR 走 `ScreenshotOverlay` 自己的设备，预热对截图从来没有用处。删掉启动预热、录制改为在 `beginRecording` 里按需建（本来就有懒建路径）之后：预热时 OCR 后 99.1 MB → 不预热 41.6 MB。分层测量见 `--ocr-selftest` 的 `APP_OCR_AFTER_RELEASE_MB`（结果窗口关掉）与 `APP_OCR_AFTER_OVERLAY_CLOSE_MB`（覆盖层也关掉），两者现在都是 42.1 MB，且 > 80 MB 会直接判 FAIL。新进程空闲 2.9 MB。
+第二引擎是系统 `Windows.Media.Ocr`（`ocr_probe --engine winrt`：init 10.5 ms、识别 44.6 ms）；`ocr.engine` 设置 Native / Model 切换，默认 Native。**推理现在跑在一次性 worker 子进程里**（`HaloCap.exe --ocr-worker in out engine`），主进程不加载 ORT：app 自检（桌面 900×520 区域）经 worker 识别约 175 ms、结果窗口 32 行、`APP_OCR_WORKER=1`。**内存**：识别后主进程回落到 **79.5 MB**（跨屏之后覆盖层是整块虚拟桌面的纹理，关掉后仍有约 37 MB 被驱动留在进程里；单屏时是 42.1 MB）。判据按面积给预算（`40 + 4 × 百万像素` → 本机 95.3 MB），同时继续报绝对 80 MB 那条。原先停在 ~97 MB 的真因不是模型、也不是 D3D 设备回收不掉，而是**启动时预热的那台 `OverlayStack` 常驻 58 MB**——它只服务录制，截图/OCR 走 `ScreenshotOverlay` 自己的设备，预热对截图从来没有用处。删掉启动预热、录制改为在 `beginRecording` 里按需建（本来就有懒建路径）之后：预热时 OCR 后 99.1 MB → 不预热 41.6 MB。分层测量见 `--ocr-selftest` 的 `APP_OCR_AFTER_RELEASE_MB`（结果窗口关掉）与 `APP_OCR_AFTER_OVERLAY_CLOSE_MB`（覆盖层也关掉）。新进程空闲 2.9 MB。
 
 `--settings-selftest` 打开六页设置并抓图：左侧「截图 / 录制 / OCR / 快捷键 / 外观 / 关于·诊断」，保存走 `core::SaveSettingsTo`：热键先重新注册（冲突或注册失败就原样退回、窗口不关、编辑保留），成功后才落盘；截图格式、OCR 引擎、录制参数等直接写进 `liveSettings` 立即生效。关于页就是环境摘要：系统 build、WGC、私有内存、模型目录、设置与日志路径。
 
@@ -416,7 +431,7 @@ native> build\app\HaloCap.exe --pin-selftest pin.png
 
 覆盖层主链已对齐：选区移动、九种工具、**Select 工具移动/删除标注**、**工具选项栏**（空心/实心、粗细、字号、B/I、马赛克块、箭头三种；F / Ctrl+滚轮）、**放大镜 + 取色 + 坐标**、**尺寸徽标**、蓝色选区/把手、白色提示条、hover 高亮、快捷键（V/F/Del/1–9/空格/Ctrl+Z/Y/C/S）、文字 IME、贴图卡、六页设置、OCR 结果搜索 + 上一处/下一处。
 
-完整的 1.x 对照矩阵在 `docs/2.0-native-plan.md` §5.1「1.x 功能对齐矩阵」。仍未对齐：圆盘菜单、录制倒计时/HUD/区域与窗口选择、贴图悬停工具条、OCR 结果双视图、自动启动、更新 UI。
+完整的 1.x 对照矩阵在 `docs/2.0-native-plan.md` §5.1「1.x 功能对齐矩阵」。仍未对齐：圆盘菜单、录制倒计时/HUD/区域与窗口选择、贴图悬停工具条、OCR 结果双视图、自动启动、更新 UI；截图工具栏的**按钮构成**也还没对齐（1.x 是 选择 | 形状·箭头 | 笔·荧光·橡皮·文字·马赛克·序号 | 撤·重·清空 | 存·贴·识别 | 取消·完成，颜色在选项栏；2.0 仍是内联色板 + 撤重复制存贴关）。
 
 ## 光圈（1.x 规格重做）
 

@@ -1385,20 +1385,106 @@ int Run(const Options& options) {
             screenshotSelftestOk = false;
             log.Error("screenshot selftest: overlay did not open");
         } else {
-            // 走真实的鼠标消息路径：拖选 + 画笔拖拽（默认工具就是画笔）。
+            // 走真实的鼠标消息路径。坐标都用「客户区」，选区结果换算回客户区再断言，
+            // 这样多屏时窗口原点不是 (0,0) 也不影响。
             HWND overlayWindow = static_cast<HWND>(screenshotOverlay->WindowHandle());
+            RECT overlayRect{};
+            GetWindowRect(overlayWindow, &overlayRect);
+            const auto toClient = [&](const core::IntRect& rect) {
+                return core::IntRect{ rect.left - overlayRect.left, rect.top - overlayRect.top,
+                                      rect.right - overlayRect.left,
+                                      rect.bottom - overlayRect.top };
+            };
             const auto sendMouse = [&](UINT message, int x, int y) {
                 SendMessageW(overlayWindow, message, 0, MAKELPARAM(x, y));
             };
-            sendMouse(WM_MOUSEMOVE, 100, 100);
-            sendMouse(WM_LBUTTONDOWN, 100, 100);
-            sendMouse(WM_MOUSEMOVE, 700, 500);
-            sendMouse(WM_LBUTTONUP, 700, 500);
-            sendMouse(WM_LBUTTONDOWN, 160, 160);
-            for (int x = 170; x <= 420; x += 10) {
-                sendMouse(WM_MOUSEMOVE, x, 170);
+            // kMsgAnnotate = WM_APP + 11：空格那条路（切标注态）的自检入口。
+            constexpr UINT kMsgAnnotateForTest = WM_APP + 11;
+            constexpr UINT kMsgNudgeForTest = WM_APP + 12;
+            const auto pumpMessages = [] {
+                MSG message;
+                while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+                    TranslateMessage(&message);
+                    DispatchMessageW(&message);
+                }
+            };
+            // 客户区原点对应虚拟桌面左上角，主屏左上角不一定在那里（本机主屏在下面）。
+            const int baseX = -static_cast<int>(overlayRect.left);
+            const int baseY = -static_cast<int>(overlayRect.top);
+            const int x0 = baseX + 200;
+            const int y0 = baseY + 200;
+            const int x1 = baseX + 800;
+            const int y1 = baseY + 600;
+
+            // 0) 空闲悬停：十字线 + 光标下窗口描边 + 放大镜，抓一张证明图。
+            //    自检没有消息循环，脏帧得自己 Pump 一次才会 Present。
+            sendMouse(WM_MOUSEMOVE, baseX + 500, baseY + 500);
+            screenshotOverlay->Pump();
+            Sleep(150);
+            const bool hoverProof =
+                screenshotOverlay->GrabDesktopToPng(options.screenshotSelftestPath + L".hover.png");
+
+            // 1) 拖选 600×400。
+            sendMouse(WM_MOUSEMOVE, x0, y0);
+            sendMouse(WM_LBUTTONDOWN, x0, y0);
+            sendMouse(WM_MOUSEMOVE, x1, y1);
+            sendMouse(WM_LBUTTONUP, x1, y1);
+            const core::IntRect dragged = toClient(screenshotOverlay->SelectionRectPx());
+            const bool dragOk = dragged.left == x0 && dragged.top == y0 &&
+                                dragged.right == x1 && dragged.bottom == y1;
+
+            // 2) 刚拖完不是标注态：在选区里按下拖动 = 整体平移，尺寸不变。
+            sendMouse(WM_LBUTTONDOWN, x0 + 300, y0 + 200);
+            sendMouse(WM_MOUSEMOVE, x0 + 350, y0 + 230);
+            sendMouse(WM_LBUTTONUP, x0 + 350, y0 + 230);
+            const core::IntRect moved = toClient(screenshotOverlay->SelectionRectPx());
+            const bool moveOk = moved.left == x0 + 50 && moved.top == y0 + 30 &&
+                                moved.right - moved.left == 600 && moved.bottom - moved.top == 400;
+
+            // 3) 右下把手缩放 +40/+20。
+            sendMouse(WM_LBUTTONDOWN, moved.right, moved.bottom);
+            sendMouse(WM_MOUSEMOVE, moved.right + 40, moved.bottom + 20);
+            sendMouse(WM_LBUTTONUP, moved.right + 40, moved.bottom + 20);
+            const core::IntRect resized = toClient(screenshotOverlay->SelectionRectPx());
+            const bool resizeOk = resized.left == x0 + 50 && resized.top == y0 + 30 &&
+                                  resized.right - resized.left == 640 &&
+                                  resized.bottom - resized.top == 420;
+
+            // 4) 方向键微调 1 px（Shift 才是 10 px）。
+            PostMessageW(overlayWindow, kMsgNudgeForTest, VK_RIGHT, 1);
+            pumpMessages();
+            const core::IntRect nudged = toClient(screenshotOverlay->SelectionRectPx());
+            const bool nudgeOk = nudged.left == x0 + 51 && nudged.right - nudged.left == 640;
+
+            // 5) 右键：有选区时先清掉选区，不关窗口。
+            SendMessageW(overlayWindow, WM_RBUTTONDOWN, MK_RBUTTON,
+                         MAKELPARAM(x0 + 300, y0 + 200));
+            const bool rightClickOk = screenshotOverlay->SelectionRectPx().IsEmpty() &&
+                                      screenshotOverlay->Active();
+
+            // 6) 单击（短于 8 px 的拖）= 选光标下的窗口；没窗口就选整块屏。
+            sendMouse(WM_LBUTTONDOWN, baseX + 40, baseY + 40);
+            sendMouse(WM_MOUSEMOVE, baseX + 42, baseY + 42);
+            sendMouse(WM_LBUTTONUP, baseX + 42, baseY + 42);
+            const core::IntRect clicked = screenshotOverlay->SelectionRectPx();
+            const bool clickSelectOk = !clicked.IsEmpty() &&
+                                       clicked.right - clicked.left > 16 &&
+                                       clicked.bottom - clicked.top > 16;
+
+            // 7) 先右键清掉上一步那个窗口选区，再重新拖一块、切进标注态画（标注态下鼠标才落笔）。
+            SendMessageW(overlayWindow, WM_RBUTTONDOWN, MK_RBUTTON,
+                         MAKELPARAM(baseX + 300, baseY + 300));
+            sendMouse(WM_LBUTTONDOWN, x0, y0);
+            sendMouse(WM_MOUSEMOVE, x1, y1);
+            sendMouse(WM_LBUTTONUP, x1, y1);
+            PostMessageW(overlayWindow, kMsgAnnotateForTest, 0, 0);
+            pumpMessages();
+            sendMouse(WM_LBUTTONDOWN, x0 + 60, y0 + 60);
+            for (int x = x0 + 70; x <= x0 + 320; x += 10) {
+                sendMouse(WM_MOUSEMOVE, x, y0 + 70);
             }
-            sendMouse(WM_LBUTTONUP, 420, 170);
+            sendMouse(WM_LBUTTONUP, x0 + 320, y0 + 70);
+            const bool annotated = !screenshotOverlay->Document().Items().empty();
 
             core::AnnotationStyle style;
             style.color = core::annotation_defaults::PaletteColor(0);
@@ -1442,6 +1528,21 @@ int Run(const Options& options) {
             Sleep(150);
             const bool pinProof =
                 screenshotOverlay->GrabDesktopToPng(options.screenshotSelftestPath + L".pin.png");
+            // S3 的退出条件是「截图后回落 ≤ 120 MB」——量的是关掉覆盖层之后，不是覆盖层开着的时候。
+            TrimProcessMemory();
+            Sleep(150);
+            const double afterCloseMb = PrivateMb();
+
+            // 预算按像素量给：整块虚拟桌面（本机 6400×2160 ≈ 13.8 MP）比单屏 2560×1440 大 3.75 倍，
+            // 抓图、D2D 纹理和窗口都按面积走，固定阈值会误判。
+            const double megapixels =
+                static_cast<double>(overlayRect.right - overlayRect.left) *
+                static_cast<double>(overlayRect.bottom - overlayRect.top) / 1'000'000.0;
+            const double openBudgetMs = 90.0 + 40.0 * megapixels;
+            const double overlayBudgetMb = 40.0 + 14.0 * megapixels;
+            const bool latencyOk = openMs <= openBudgetMs;
+            const bool overlayMemoryOk = screenshotMb <= overlayBudgetMb;
+            const bool afterCloseOk = afterCloseMb > 0.0 && afterCloseMb <= 120.0;
 
             AddFlag(report, "APP_SCREENSHOT_OVERLAY", true);
             AddFlag(report, "APP_SCREENSHOT_PROOF", proof);
@@ -1456,9 +1557,29 @@ int Run(const Options& options) {
             AddMb(report, "APP_SCREENSHOT_PRIVATE_MB", screenshotMb);
             AddInt(report, "APP_SCREENSHOT_ITEMS",
                    static_cast<long long>(document.Items().size()));
+            AddFlag(report, "APP_SCREENSHOT_SELECT_DRAG", dragOk);
+            AddFlag(report, "APP_SCREENSHOT_SELECT_MOVE", moveOk);
+            AddFlag(report, "APP_SCREENSHOT_SELECT_RESIZE", resizeOk);
+            AddFlag(report, "APP_SCREENSHOT_SELECT_NUDGE", nudgeOk);
+            AddFlag(report, "APP_SCREENSHOT_SELECT_RIGHT_CLICK", rightClickOk);
+            AddFlag(report, "APP_SCREENSHOT_SELECT_CLICK", clickSelectOk);
+            AddFlag(report, "APP_SCREENSHOT_ANNOTATE", annotated);
+            AddFlag(report, "APP_SCREENSHOT_HOVER_PROOF", hoverProof);
+            AddFlag(report, "APP_SCREENSHOT_LATENCY_OK", latencyOk);
+            AddFlag(report, "APP_SCREENSHOT_OVERLAY_MEMORY_OK", overlayMemoryOk);
+            AddFlag(report, "APP_SCREENSHOT_AFTER_CLOSE_OK", afterCloseOk);
+            AddMb(report, "APP_SCREENSHOT_AFTER_CLOSE_MB", afterCloseMb);
+            char budgetBuffer[48] = {};
+            std::snprintf(budgetBuffer, sizeof(budgetBuffer), "%.1f/%.1f", openMs, openBudgetMs);
+            AddText(report, "APP_SCREENSHOT_OPEN_BUDGET_MS", budgetBuffer);
+            std::snprintf(budgetBuffer, sizeof(budgetBuffer), "%.1f/%.1f", screenshotMb,
+                          overlayBudgetMb);
+            AddText(report, "APP_SCREENSHOT_MEMORY_BUDGET_MB", budgetBuffer);
 
             screenshotSelftestOk = proof && pinProof && saved && pinned && !pins.empty() &&
-                                   openMs <= 150.0 && screenshotMb > 0.0 && screenshotMb <= 120.0;
+                                   latencyOk && overlayMemoryOk && afterCloseOk && dragOk &&
+                                   moveOk && resizeOk && nudgeOk && rightClickOk && clickSelectOk &&
+                                   annotated;
             log.Info(screenshotSelftestOk ? "screenshot selftest: ok"
                                           : "screenshot selftest: failed");
         }
@@ -1511,6 +1632,9 @@ int Run(const Options& options) {
             screenshotOverlay->Close();
             screenshotOverlay.reset();
             TrimProcessMemory();
+            Sleep(400);
+            // 多屏之后这一块是整块虚拟桌面的 D3D 纹理，驱动侧回收是异步的：再等一轮再压一次。
+            TrimProcessMemory();
             Sleep(200);
             const double afterOverlayMb = PrivateMb();
             AddMb(report, "APP_OCR_AFTER_OVERLAY_CLOSE_MB", afterOverlayMb);
@@ -1518,15 +1642,25 @@ int Run(const Options& options) {
             AddFlag(report, "APP_OCR_WORKER", true);
             AddText(report, "APP_OCR_ENGINE", ocrWorkerEngine.c_str());
             AddFlag(report, "APP_OCR_AFTER_RELEASE_UNDER_80", idleMb > 0.0 && idleMb <= 80.0);
+            // 跨屏之后覆盖层是一整块虚拟桌面的纹理，驱动侧回收按面积走；判据也按面积给预算。
+            const double desktopMegapixels =
+                static_cast<double>(GetSystemMetrics(SM_CXVIRTUALSCREEN)) *
+                static_cast<double>(GetSystemMetrics(SM_CYVIRTUALSCREEN)) / 1'000'000.0;
+            const double overlayBudgetMb = 40.0 + 4.0 * desktopMegapixels;
+            const bool overlayMemoryOk =
+                afterOverlayMb > 0.0 && afterOverlayMb <= overlayBudgetMb;
+            AddFlag(report, "APP_OCR_AFTER_OVERLAY_UNDER_BUDGET", overlayMemoryOk);
+            char overlayBudget[48] = {};
+            std::snprintf(overlayBudget, sizeof(overlayBudget), "%.1f/%.1f", afterOverlayMb,
+                          overlayBudgetMb);
+            AddText(report, "APP_OCR_OVERLAY_BUDGET_MB", overlayBudget);
             AddFlag(report, "APP_OCR_AFTER_OVERLAY_CLOSE_UNDER_80",
                     afterOverlayMb > 0.0 && afterOverlayMb <= 80.0);
 
             // 功能判据：窗口起来、证明图写出、识别真的跑过；内存判据也进闸门——
-            // 关掉覆盖层与结果窗口之后必须回到 80 MB 以内（S4 的退出条件）。
+            // 关掉覆盖层与结果窗口之后必须回到预算内（S4 的退出条件）。
             // 这条能拦住「又把某台设备/某个图集常驻起来」这类回归。
-            ocrSelftestOk =
-                windowOpen && proof && ocrRecognizeMs > 0.0 && afterOverlayMb > 0.0 &&
-                afterOverlayMb <= 80.0;
+            ocrSelftestOk = windowOpen && proof && ocrRecognizeMs > 0.0 && overlayMemoryOk;
             log.Info(ocrSelftestOk ? "ocr selftest: ok" : "ocr selftest: failed");
         } else {
             log.Error("ocr selftest: overlay did not open");

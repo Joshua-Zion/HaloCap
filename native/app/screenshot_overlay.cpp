@@ -2478,6 +2478,54 @@ void ScreenshotOverlay::PaintMosaicBlock(core::Point local) {
     }
 }
 
+std::vector<core::Annotation> ScreenshotOverlay::BelowMosaics() const {
+    if (document_.Items().size() <= 1) {
+        return {};
+    }
+    return std::vector<core::Annotation>(document_.Items().begin(),
+                                         document_.Items().end() - 1);
+}
+
+bool ScreenshotOverlay::ComposeRegion(const core::IntRect& region,
+                                      const std::vector<core::Annotation>& annotations,
+                                      std::vector<std::uint8_t>& bgra, int& width, int& height) {
+    const int regionWidth = region.right - region.left;
+    const int regionHeight = region.bottom - region.top;
+    if (regionWidth <= 0 || regionHeight <= 0 || backend_ == nullptr || window_ == nullptr) {
+        return false;
+    }
+    backend_->DetachWindow();
+    if (!backend_->Resize(regionWidth, regionHeight)) {
+        backend_->AttachWindow(window_->Handle(), screenWidth_, screenHeight_);
+        return false;
+    }
+    core::FramePlan plan;
+    plan.Add(core::Blit{
+        capturedHandle_,
+        Rect{ static_cast<float>(region.left), static_cast<float>(region.top),
+              static_cast<float>(region.right), static_cast<float>(region.bottom) },
+        Rect{ 0.0f, 0.0f, static_cast<float>(regionWidth),
+              static_cast<float>(regionHeight) },
+        1.0f });
+    core::AnnotationPlanOptions options;
+    options.rasterizer = rasterizer_.get();
+    options.fontFamily = options_.fontFamily;
+    options.scale = 1.0f;
+    options.sizeScale = uiScale_;
+    options.origin = Point{ -static_cast<float>(region.left),
+                            -static_cast<float>(region.top) };
+    core::AppendAnnotationPlan(annotations, options, plan);
+    backend_->Render(plan, core::IntRect{});
+    int readWidth = 0;
+    int readHeight = 0;
+    const bool ok = backend_->ReadPixels(bgra, readWidth, readHeight) &&
+                    readWidth == regionWidth && readHeight == regionHeight;
+    backend_->AttachWindow(window_->Handle(), screenWidth_, screenHeight_);
+    width = regionWidth;
+    height = regionHeight;
+    return ok;
+}
+
 void ScreenshotOverlay::UpdateMosaicTile(core::Annotation& annotation) {
     if (annotation.tool != AnnotationTool::Mosaic || annotation.points.size() < 2 ||
         baseBgra_.empty() || backend_ == nullptr) {
@@ -2491,9 +2539,22 @@ void ScreenshotOverlay::UpdateMosaicTile(core::Annotation& annotation) {
                           static_cast<int>(localRect.right + bounds.left) - windowX_,
                           static_cast<int>(localRect.bottom + bounds.top) - windowY_ };
 
-    const core::ImageRef base{ baseBgra_.data(), screenWidth_, screenHeight_, screenWidth_ * 4 };
+    // 采样源要包含「这条马赛克下面的标注」：先合成底图 + 前面那些标注，再降采样。
+    // 马赛克永远是最后一条，所以「下面的」就是除它以外的全部。
+    std::vector<std::uint8_t> composed;
+    int composedWidth = 0;
+    int composedHeight = 0;
+    const bool composedOk = ComposeRegion(region, BelowMosaics(), composed, composedWidth,
+                                          composedHeight);
+    const core::ImageRef base =
+        composedOk ? core::ImageRef{ composed.data(), composedWidth, composedHeight,
+                                     composedWidth * 4 }
+                   : core::ImageRef{ baseBgra_.data(), screenWidth_, screenHeight_,
+                                     screenWidth_ * 4 };
+    const core::IntRect sampleRegion =
+        composedOk ? core::IntRect{ 0, 0, composedWidth, composedHeight } : region;
     const int block = core::MosaicBlockPixels(annotation.style.mosaicBlockPx, 1.0f);
-    const core::MosaicTile tile = core::DownsampleRegion(base, region, block);
+    const core::MosaicTile tile = core::DownsampleRegion(base, sampleRegion, block);
     if (tile.width <= 0 || tile.height <= 0) {
         return;
     }

@@ -1734,10 +1734,12 @@ void ScreenshotOverlay::Render() {
     LayoutOptionBar();
 
     core::FramePlan plan;
+    // 底图的源矩形是**图片自己的坐标**：capturedHandle_ 的像素 (0,0) 就是虚拟桌面左上角，
+    // 和窗口原点 (windowX_, windowY_) 无关。之前这里传了屏幕坐标，多屏之后 windowY_ = -720，
+    // D2D 会去采样图片外的区域——上面那块变成透明（露出实时桌面）、其余整体错位 720 px。
     plan.Add(core::Blit{ capturedHandle_,
-                         Rect{ static_cast<float>(windowX_), static_cast<float>(windowY_),
-                               static_cast<float>(windowX_ + screenWidth_),
-                               static_cast<float>(windowY_ + screenHeight_) },
+                         Rect{ 0.0f, 0.0f, static_cast<float>(screenWidth_),
+                               static_cast<float>(screenHeight_) },
                          Rect{ 0.0f, 0.0f, static_cast<float>(screenWidth_),
                                static_cast<float>(screenHeight_) },
                          1.0f });

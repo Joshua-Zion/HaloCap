@@ -1486,11 +1486,44 @@ void ScreenshotOverlay::LayoutOptionBar() {
     }
     width += padding;
 
-    int x = static_cast<int>(toolbarBounds_.left);
-    int y = static_cast<int>(toolbarBounds_.bottom) + Scale(6);
-    if (y + optionHeight > screenHeight_ - Scale(8)) {
-        y = static_cast<int>(toolbarBounds_.top) - optionHeight - Scale(6);
+    // 位置自动判断：默认贴工具栏下方；如果那块压在选区上（工具栏本身翻到选区上方时
+    // 就很常见），改放工具栏上方；两边都压选区时取不越界的那一个。
+    const Rect selection = selection_.Bounds();
+    const RECT selectionLocal{
+        static_cast<LONG>(selection.left) - windowX_, static_cast<LONG>(selection.top) - windowY_,
+        static_cast<LONG>(selection.right) - windowX_,
+        static_cast<LONG>(selection.bottom) - windowY_ };
+    const auto overlapsSelection = [&](int top) {
+        if (selection.IsEmpty()) {
+            return false;
+        }
+        const bool vertical = top < selectionLocal.bottom && top + optionHeight > selectionLocal.top;
+        return vertical;   // x 方向上选项栏本来就贴着工具栏，横向几乎必然重叠，只看纵向。
+    };
+    const int gapToToolbar = Scale(6);
+    const int screenEdge = Scale(8);
+    int below = static_cast<int>(toolbarBounds_.bottom) + gapToToolbar;
+    if (below + optionHeight > screenHeight_ - screenEdge) {
+        below = -1;
     }
+    int above = static_cast<int>(toolbarBounds_.top) - optionHeight - gapToToolbar;
+    if (above < screenEdge) {
+        above = -1;
+    }
+    int y = -1;
+    if (below >= 0 && !overlapsSelection(below)) {
+        y = below;
+    } else if (above >= 0 && !overlapsSelection(above)) {
+        y = above;
+    } else if (below >= 0) {
+        y = below;
+    } else if (above >= 0) {
+        y = above;
+    } else {
+        y = std::clamp(static_cast<int>(toolbarBounds_.bottom) + gapToToolbar, screenEdge,
+                       std::max(screenEdge, screenHeight_ - optionHeight - screenEdge));
+    }
+    int x = static_cast<int>(toolbarBounds_.left);
     x = std::clamp(x, Scale(8), std::max(Scale(8), screenWidth_ - width - Scale(8)));
     y = std::clamp(y, Scale(8), std::max(Scale(8), screenHeight_ - optionHeight - Scale(8)));
 
@@ -1805,8 +1838,10 @@ void ScreenshotOverlay::CopyColorUnderCursor(bool asRgb) {
         toast_ = CopyText(text) ? std::wstring(L"已复制 ") + text : L"复制颜色失败";
         colorAsRgb_ = asRgb;
     }
-    toastUntilMs_ = GetTickCount64() + 1200;
-    SetTimer(static_cast<HWND>(window_->Handle()), 2, 50, nullptr);
+    // 取色本身就是要「拿走颜色」，所以不弹提示、直接收工（1.x 会留一条 HUD，
+    // 但这里按产品要求关掉选区）。
+    toast_.clear();
+    pendingClose_ = true;
     dirty_ = true;
 }
 
@@ -1863,9 +1898,10 @@ void ScreenshotOverlay::RenderTooltip(core::FramePlan& plan) {
     const float margin = Scale(8.0f);
     float x = static_cast<float>(button.rect.left) +
               (button.rect.right - button.rect.left - static_cast<LONG>(width)) * 0.5f;
-    float y = static_cast<float>(button.rect.bottom) + Scale(8.0f);
-    if (y + height > static_cast<float>(screenHeight_) - margin) {
-        y = static_cast<float>(button.rect.top) - height - Scale(8.0f);
+    // 提示放在按钮上方：下方就是二级工具栏，放下面会互相遮挡。
+    float y = static_cast<float>(button.rect.top) - height - Scale(8.0f);
+    if (y < margin) {
+        y = static_cast<float>(button.rect.bottom) + Scale(8.0f);
     }
     x = std::clamp(x, margin, std::max(margin, static_cast<float>(screenWidth_) - width - margin));
     plan.Add(core::FillRoundedRect{ Rect{ x, y, x + width, y + height }, Scale(6.0f),
@@ -2614,6 +2650,31 @@ LRESULT CALLBACK ScreenshotOverlay::KeyHook(int code, WPARAM wParam, LPARAM lPar
     const bool alt = (GetAsyncKeyState(VK_MENU) & 0x8000) != 0;
     const bool win = ((GetAsyncKeyState(VK_LWIN) | GetAsyncKeyState(VK_RWIN)) & 0x8000) != 0;
     const bool bare = !control && !alt && !win;
+
+    // 覆盖层吞掉按键，所以全局注册的「贴图」热键要在这里自己匹配一次。
+    const core::HotkeySpec pinHotkey = g_overlay->options_.pinHotkey;
+    if (pinHotkey.key != core::KeySymbol::None) {
+        core::HotkeySpec pressed;
+        pressed.key = platform::win32::FromNativeVirtualKey(key);
+        if (control) {
+            pressed.modifiers |= core::kModControl;
+        }
+        if (alt) {
+            pressed.modifiers |= core::kModAlt;
+        }
+        if (shift) {
+            pressed.modifiers |= core::kModShift;
+        }
+        if (win) {
+            pressed.modifiers |= core::kModWin;
+        }
+        if (pressed.key != core::KeySymbol::None && pressed.key == pinHotkey.key &&
+            (pressed.modifiers & core::kStateModifiers) ==
+                (pinHotkey.modifiers & core::kStateModifiers)) {
+            PostMessageW(static_cast<HWND>(g_overlay->window_->Handle()), kMsgPin, 0, 0);
+            return 1;
+        }
+    }
 
     // kTools 的下标：0 笔、1 矩形、2 椭圆、3 箭头、4 文字、5 荧光、6 马赛克、7 序号、8 橡皮。
     UINT message = 0;

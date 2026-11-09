@@ -4,7 +4,9 @@
 #include "d2d_font_rasterizer.h"
 #include "d2d_render_backend.h"
 #include "dxgi_desktop_duplication.h"
+#include "input_host.h"
 #include "selection.h"
+#include "win32_input_host.h"
 #include "win32_surface_window.h"
 
 #include <cstdint>
@@ -28,6 +30,8 @@ struct ScreenshotOverlayOptions {
     // 空 = 图片\HaloCap。
     std::wstring saveDirectory;
     bool jpeg = false;
+    // 截图页开着的全局「贴图」热键：覆盖层吞键，注册表那条收不到，所以在这里自己匹配。
+    core::HotkeySpec pinHotkey{};
     std::string fontFamily = "Microsoft YaHei UI";
 
     // 贴图：把合成好的选区交给调用方（由 app 持有 PinWindow 的生命周期）。

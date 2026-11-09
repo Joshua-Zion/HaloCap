@@ -1044,6 +1044,7 @@ int Run(const Options& options) {
         screenshotOverlay = std::make_unique<halocap::app::ScreenshotOverlay>();
         halocap::app::ScreenshotOverlayOptions overlayOptions;
         overlayOptions.jpeg = settings.screenshotFormat == core::ScreenshotFormat::Jpeg;
+        overlayOptions.pinHotkey = liveSettings.pinHotkey;
         overlayOptions.onPin = [&](const std::uint8_t* bgra, int width, int height, int x, int y) {
             auto pin = std::make_unique<halocap::app::PinWindow>();
             if (pin->Create(bgra, width, height, x, y)) {
@@ -1150,6 +1151,7 @@ int Run(const Options& options) {
         halocap::app::ScreenshotOverlayOptions overlayOptions;
         overlayOptions.mode = halocap::app::OverlayMode::Ocr;
         overlayOptions.onOcr = runOcr;
+        overlayOptions.pinHotkey = liveSettings.pinHotkey;
 
         if (!screenshotOverlay->Open(overlayOptions)) {
             log.Error(std::string("ocr: overlay failed (") +

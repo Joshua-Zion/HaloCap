@@ -235,6 +235,9 @@ private:
     bool RunOcr();
     // 区域录制：把当前选区换成偶数尺寸的屏幕矩形交给 app，然后关闭覆盖层。
     void DeliverRecordRegionAndClose();
+    // 选区历史：成功用掉一个选区时记住它；按 R 逐条回退（最多 10 条，跨会话保留）。
+    void RememberSelection();
+    void RestorePreviousSelection();
     void OpenTextEditor(core::Point localPoint);
     void CommitTextEditor();
     void CancelTextEditor();

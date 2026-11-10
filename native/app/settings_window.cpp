@@ -1442,10 +1442,14 @@ void SettingsWindow::Render() {
         divider(scrollX, scrollW);
         {
             const float rowTop = y;
-            const float fieldW = 300.0f;
             const float fieldH = 34.0f;
-            const float fieldX = scrollX + scrollW - cardPad - fieldW;
+            const float fieldW = 220.0f;
+            const float buttonW = 64.0f;
+            const float gap = 8.0f;
+            const float rightEdge = scrollX + scrollW - cardPad;
+            const float fieldX = rightEdge - buttonW - gap - fieldW;
             const float fieldY = rowTop + (62.0f - fieldH) * 0.5f;
+            // 输入框只做回显：不给它加热区，点击不触发选择；触发由右侧「浏览…」按钮负责。
             FillRoundRect(g, RectF(fieldX, fieldY, fieldW, fieldH), 7.0f,
                           Color(255, 255, 255, 255));
             StrokeRoundRect(g, RectF(fieldX, fieldY, fieldW, fieldH), 7.0f,
@@ -1456,8 +1460,16 @@ void SettingsWindow::Render() {
             }
             DrawText(g, Ellipsize(g, directory, &fonts->field, fieldW - 20.0f), &fonts->field,
                      RectF(fieldX + 10.0f, fieldY, fieldW - 20.0f, fieldH), textPrimary);
-            AddHotspot(RECT{ static_cast<LONG>(fieldX), static_cast<LONG>(fieldY),
-                             static_cast<LONG>(fieldX + fieldW),
+
+            const float buttonX = rightEdge - buttonW;
+            FillRoundRect(g, RectF(buttonX, fieldY, buttonW, fieldH), 7.0f,
+                          Color(255, 255, 255, 255));
+            StrokeRoundRect(g, RectF(buttonX, fieldY, buttonW, fieldH), 7.0f,
+                            Color(255, 0xD9, 0xD9, 0xDE));
+            DrawText(g, L"浏览…", &fonts->button, RectF(buttonX, fieldY, buttonW, fieldH),
+                     textPrimary, StringAlignmentCenter);
+            AddHotspot(RECT{ static_cast<LONG>(buttonX), static_cast<LONG>(fieldY),
+                             static_cast<LONG>(buttonX + buttonW),
                              static_cast<LONG>(fieldY + fieldH) },
                        kIdDirectory);
         }
@@ -1565,9 +1577,13 @@ void SettingsWindow::Render() {
     }
 
     {
-        FillRoundRect(g, RectF(cancelX, buttonY, cancelW, buttonH), 7.0f, Color(0, 0, 0, 0));
+        // 取消：白底 + 描边，和保存并排时是一个明确的按钮（之前透明底+浅灰字看不出来）。
+        FillRoundRect(g, RectF(cancelX, buttonY, cancelW, buttonH), 7.0f,
+                      Color(255, 255, 255, 255));
+        StrokeRoundRect(g, RectF(cancelX, buttonY, cancelW, buttonH), 7.0f,
+                        Color(255, 0xD9, 0xD9, 0xDE));
         DrawText(g, L"取消", &fonts->button, RectF(cancelX, buttonY, cancelW, buttonH),
-                 textSecondary, StringAlignmentCenter);
+                 textPrimary, StringAlignmentCenter);
         AddHotspot(RECT{ static_cast<LONG>(cancelX), static_cast<LONG>(buttonY),
                          static_cast<LONG>(cancelX + cancelW),
                          static_cast<LONG>(buttonY + buttonH) },

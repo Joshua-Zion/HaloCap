@@ -18,6 +18,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <deque>
 #include <iterator>
 #include <string>
 #include <utility>
@@ -61,6 +62,13 @@ constexpr UINT kMsgCopyColor = WM_APP + 13;  // C：复制光标下的颜色（w
 constexpr UINT kMsgPin = WM_APP + 14;        // Ctrl+T
 constexpr UINT kMsgTextStyle = WM_APP + 15;  // Ctrl+B / Ctrl+I（wParam 1=粗 2=斜）
 constexpr UINT kMsgOption = WM_APP + 16;     // [ / ] 之类的选项步进，wParam = Action
+constexpr UINT kMsgRestoreSelection = WM_APP + 17;   // R：回到上一次选过的区域
+
+// 最近用过的选区（屏幕坐标）。跨覆盖层会话保留，按 R 一条条往回翻，最多 10 条。
+// 覆盖层每次截图都会重建，所以历史放在文件作用域而不是实例上。
+constexpr std::size_t kRecentSelectionLimit = 10;
+std::deque<core::IntRect> g_recentSelections;
+int g_recentCursor = -1;   // -1 = 还没开始往回翻；否则指向当前应用的那一条
 
 // 1.x 的 AnnotationToolButtonStyle：30×30、两侧各 1 px 外边距、圆角 7；工具栏 padding 4。
 constexpr int kToolbarButton = 30;
@@ -685,6 +693,10 @@ LRESULT ScreenshotOverlay::HandleMessage(HWND window, UINT message, WPARAM wPara
         HandleOption(static_cast<Action>(static_cast<std::int32_t>(wParam)));
         return 0;
 
+    case kMsgRestoreSelection:
+        RestorePreviousSelection();
+        return 0;
+
     default:
         break;
     }
@@ -935,6 +947,8 @@ void ScreenshotOverlay::StartNewSelection(POINT point) {
     selectedAnnotation_ = -1;
     movingAnnotation_ = false;
     phase_ = Phase::Selecting;
+    // 新的选区一开始，R 的回退游标归零：下一次 R 从最近用过的选区开始。
+    g_recentCursor = -1;
     hoverWindow_ = nullptr;
     hoverRect_ = IntRect{};
     hoverProbed_ = false;
@@ -2082,7 +2096,7 @@ void ScreenshotOverlay::LayoutToolbar() {
     // 撤·重·清空 | 存·贴·识别 | 取消·完成。颜色在选项栏里，不占工具栏。
     add(Action::ToolSelect, ToolbarIcon::Select, "选择 / 移动 (V)", true, !annotating_);
     separator();
-    add(Action::ToolShape, ToolbarIcon::Shape, "形状 (R/E) · 在选项栏切换矩形 / 椭圆",
+    add(Action::ToolShape, ToolbarIcon::Shape, "形状 (E) · 在选项栏切换矩形 / 椭圆",
         hasSelection, annotating_ && isShape());
     add(Action::ToolArrow, ToolbarIcon::Arrow, "箭头 (A) · Shift 锁定角度", hasSelection,
         annotating_ && tool_ == AnnotationTool::Arrow);
@@ -2425,14 +2439,15 @@ void ScreenshotOverlay::RenderHint(core::FramePlan& plan) {
         return;
     }
 
-    const char* hint = "拖动框选或单击窗口 · Enter 复制 · Esc 取消";
+    const char* hint = "拖动框选或单击窗口 · Enter 复制 · R 上次选区 · Esc 取消";
     switch (options_.mode) {
     case OverlayMode::RecordRegion:
-        hint = options_.autoStart ? "拖动框选或单击窗口 · Esc 取消"
-                                  : "拖动框选或单击窗口 · Enter 开始录制 · Esc 取消";
+        hint = options_.autoStart
+                   ? "拖动框选或单击窗口 · R 上次选区 · Esc 取消"
+                   : "拖动框选或单击窗口 · Enter 开始录制 · R 上次选区 · Esc 取消";
         break;
     case OverlayMode::Ocr:
-        hint = "拖动框选或单击窗口 · Enter 识别 · Esc 取消";
+        hint = "拖动框选或单击窗口 · Enter 识别 · R 上次选区 · Esc 取消";
         break;
     case OverlayMode::Screenshot:
     default:
@@ -2544,6 +2559,7 @@ void ScreenshotOverlay::DeliverRecordRegionAndClose() {
     if (selection_.Bounds().IsEmpty() || !options_.onRegion) {
         return;
     }
+    RememberSelection();
     const core::Rect bounds = selection_.Bounds();
     const core::IntRect rect{ static_cast<int>(bounds.left), static_cast<int>(bounds.top),
                               static_cast<int>(bounds.left) +
@@ -2553,6 +2569,69 @@ void ScreenshotOverlay::DeliverRecordRegionAndClose() {
     const auto handler = options_.onRegion;
     Close();
     handler(rect);
+}
+
+namespace {
+core::IntRect ScreenRectOf(const core::Rect& rect) {
+    return core::IntRect{ static_cast<int>(rect.left), static_cast<int>(rect.top),
+                          static_cast<int>(rect.right), static_cast<int>(rect.bottom) };
+}
+bool SameScreenRect(const core::IntRect& a, const core::IntRect& b) {
+    return a.left == b.left && a.top == b.top && a.right == b.right && a.bottom == b.bottom;
+}
+}  // namespace
+
+void ScreenshotOverlay::RememberSelection() {
+    const core::Rect bounds = selection_.Bounds();
+    if (bounds.IsEmpty()) {
+        return;
+    }
+    const core::IntRect rect = ScreenRectOf(bounds);
+    if (!g_recentSelections.empty() && SameScreenRect(g_recentSelections.back(), rect)) {
+        g_recentCursor = -1;
+        return;
+    }
+    g_recentSelections.push_back(rect);
+    while (g_recentSelections.size() > kRecentSelectionLimit) {
+        g_recentSelections.pop_front();
+    }
+    g_recentCursor = -1;
+}
+
+void ScreenshotOverlay::RestorePreviousSelection() {
+    if (g_recentSelections.empty()) {
+        return;
+    }
+    if (g_recentCursor < 0) {
+        g_recentCursor = static_cast<int>(g_recentSelections.size()) - 1;
+    } else if (g_recentCursor > 0) {
+        --g_recentCursor;
+    } else {
+        return;   // 已经翻到最早一条，不再往回
+    }
+
+    // 最近一条正好是当前选区（刚用它截完图又按 R）时跳过它，直接给更早的那条。
+    const core::Rect current = selection_.Bounds();
+    if (!current.IsEmpty() && g_recentCursor > 0 &&
+        SameScreenRect(g_recentSelections[static_cast<std::size_t>(g_recentCursor)],
+                       ScreenRectOf(current))) {
+        --g_recentCursor;
+    }
+
+    const core::IntRect rect = g_recentSelections[static_cast<std::size_t>(g_recentCursor)];
+    selection_.SetLimit(Rect{ static_cast<float>(windowX_), static_cast<float>(windowY_),
+                              static_cast<float>(windowX_ + screenWidth_),
+                              static_cast<float>(windowY_ + screenHeight_) });
+    selection_.Begin(Point{ static_cast<float>(rect.left), static_cast<float>(rect.top) });
+    selection_.Update(Point{ static_cast<float>(rect.right), static_cast<float>(rect.bottom) },
+                      false);
+    selection_.Commit();
+    if (!selection_.Bounds().IsEmpty()) {
+        phase_ = Phase::Annotating;
+        annotating_ = false;
+    }
+    ClearHoverCandidate();
+    dirty_ = true;
 }
 
 bool ScreenshotOverlay::RunOcr() {
@@ -2570,6 +2649,7 @@ bool ScreenshotOverlay::RunOcr() {
     const core::Rect selection = selection_.Bounds();
     options_.onOcr(bgra.data(), width, height, static_cast<int>(selection.left),
                    static_cast<int>(selection.top));
+    RememberSelection();
     return true;
 }
 
@@ -2934,13 +3014,15 @@ LRESULT CALLBACK ScreenshotOverlay::KeyHook(int code, WPARAM wParam, LPARAM lPar
         wparam = static_cast<WPARAM>(key == VK_OEM_4 || key == '['
                                          ? static_cast<int>(Action::ThicknessDown)
                                          : static_cast<int>(Action::ThicknessUp));
-    } else if (bare && (key == 'R' || key == 'E' || key == 'A' || key == 'P' || key == 'T' ||
+    } else if (bare && key == 'R') {
+        // R：回到上一次选过的区域（多次按往前翻，最多 10 条）。
+        message = kMsgRestoreSelection;
+    } else if (bare && (key == 'E' || key == 'A' || key == 'P' || key == 'T' ||
                         key == 'H' || key == 'M' || key == 'N' || key == 'X')) {
-        // 1.x 的字母快捷键；Shift+R / Shift+E 直接画实心形状。
+        // 1.x 的字母快捷键；Shift+E 直接画实心形状（R 改用于「回到上次选区」）。
         message = kMsgTool;
         switch (key) {
         case 'P': wparam = 0; break;
-        case 'R': wparam = 1; break;
         case 'E': wparam = 2; break;
         case 'A': wparam = 3; break;
         case 'T': wparam = 4; break;
@@ -2950,7 +3032,7 @@ LRESULT CALLBACK ScreenshotOverlay::KeyHook(int code, WPARAM wParam, LPARAM lPar
         case 'X': wparam = 8; break;
         default: break;
         }
-        lparam = shift && (key == 'R' || key == 'E') ? 1 : 0;
+        lparam = shift && key == 'E' ? 1 : 0;
     } else if (key == VK_DELETE) {
         message = kMsgDelete;
     } else if (key == VK_SPACE) {
@@ -3059,6 +3141,7 @@ bool ScreenshotOverlay::CopySelection() {
         errorKind_ = "clipboard";
         return false;
     }
+    RememberSelection();
     return true;
 }
 
@@ -3118,6 +3201,7 @@ bool ScreenshotOverlay::SaveSelection(std::string* pathOut) {
     if (pathOut != nullptr) {
         *pathOut = WideToUtf8(path);
     }
+    RememberSelection();
     return true;
 }
 
@@ -3138,6 +3222,7 @@ bool ScreenshotOverlay::PinSelection() {
     const Rect selection = selection_.Bounds();
     options_.onPin(bgra.data(), width, height, static_cast<int>(selection.left),
                    static_cast<int>(selection.top));
+    RememberSelection();
     return true;
 }
 

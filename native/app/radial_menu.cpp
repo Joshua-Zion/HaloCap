@@ -476,22 +476,6 @@ void RadialMenu::DrawDesign(Gdiplus::Graphics& graphics, int hoverIndex) {    //
     Pen centerBorder(Color(20, 0, 0, 0), 1.0f);
     graphics.DrawEllipse(&centerBorder, 190.0f - 52.0f, 190.0f - 52.0f, 104.0f, 104.0f);
 
-    // 中心圆也延续同一套接缝：从圆边收到半径 22，停在 HaloCap 标签外侧，
-    // 四块的分隔能连进中心，又不压字。比外圈更淡（0x14 / 0x06）。
-    for (int i = 0; i < 4; ++i) {
-        const float seamAngle = 45.0f + i * 90.0f;
-        const PointF from = DesignPoint(seamAngle, 52.0f);
-        const PointF to = DesignPoint(seamAngle, 22.0f);
-        Pen halo(Color(0x06, 0x2A, 0x2E, 0x38), 2.5f);
-        halo.SetStartCap(LineCapRound);
-        halo.SetEndCap(LineCapRound);
-        graphics.DrawLine(&halo, from, to);
-        Pen seam(Color(0x14, 0x2A, 0x2E, 0x38), 1.0f);
-        seam.SetStartCap(LineCapRound);
-        seam.SetEndCap(LineCapRound);
-        graphics.DrawLine(&seam, from, to);
-    }
-
     int active = hoverIndex;
 
     if (active >= 0) {

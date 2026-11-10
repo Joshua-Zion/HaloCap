@@ -59,6 +59,9 @@ public:
     // 菜单命令经由 WM_COMMAND 回来的那一半（自绘菜单不走这里，测试与将来的键盘路径走）。
     core::TrayCommand PollCommand();
 
+    // 用户点了「气泡通知」：由消息循环取走，用来跳转到通知对应的位置。
+    bool PollBalloonClick();
+
     // 只给探针与消息循环：抽干本线程的消息。
     void PumpMessages();
 
@@ -94,6 +97,7 @@ private:
 
     Click pendingClick_ = Click::None;
     core::TrayCommand pendingCommand_ = core::TrayCommand::None;
+    bool pendingBalloonClick_ = false;
     std::string tooltip_;
 
     const char* errorKind_ = "none";

@@ -418,6 +418,12 @@ core::TrayCommand Win32Tray::PollCommand() {
     return command;
 }
 
+bool Win32Tray::PollBalloonClick() {
+    const bool clicked = pendingBalloonClick_;
+    pendingBalloonClick_ = false;
+    return clicked;
+}
+
 void Win32Tray::PumpMessages() {
     MSG message{};
     while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
@@ -514,6 +520,10 @@ LRESULT Win32Tray::HandleMessage(UINT message, WPARAM wParam, LPARAM lParam) {
         case WM_RBUTTONUP:
         case WM_CONTEXTMENU:
             pendingClick_ = Click::Right;
+            break;
+        case NIN_BALLOONUSERCLICK:
+            // 用户点了气泡：app 侧据此打开「已保存」对应的文件位置。
+            pendingBalloonClick_ = true;
             break;
         default:
             break;

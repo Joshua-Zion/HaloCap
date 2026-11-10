@@ -761,8 +761,14 @@ void SettingsWindow::CheckUpdate() {
 
 void SettingsWindow::ChooseDirectory() {
     std::wstring chosen;
+
+    // 对话框归调用线程所有：先把自己放到前台，再开模态文件夹选择，避免它出现在
+    // 别的窗口后面（非置顶设置窗被盖住时，用户会以为整个程序卡死）。
+    SetForegroundWindow(window_);
+
     IFileOpenDialog* dialog = nullptr;
-    if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
+    if (comInitialized_ &&
+        SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
                                    IID_PPV_ARGS(&dialog)))) {
         DWORD options = 0;
         dialog->GetOptions(&options);
@@ -1626,8 +1632,17 @@ LRESULT SettingsWindow::Handle(HWND window, UINT message, WPARAM wParam, LPARAM 
     case WM_LBUTTONDOWN: {
         const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
         const int id = HitTest(point);
-        if (id != kIdNone) {
+        // 目录选择要在鼠标松开后做：在按下时弹模态文件对话框，会带着按下的鼠标键
+        // 进入它自己的模态循环，表现为对话框点不动 / 像卡死。
+        if (id != kIdNone && id != kIdDirectory) {
             Click(id);
+        }
+        return 0;
+    }
+    case WM_LBUTTONUP: {
+        const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        if (HitTest(point) == kIdDirectory) {
+            Click(kIdDirectory);
         }
         return 0;
     }

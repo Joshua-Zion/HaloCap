@@ -54,6 +54,7 @@
 
 #include <knownfolders.h>
 #include <shlobj.h>
+#include <shellapi.h>
 #include <shobjidl.h>
 #include "win32_tray.h"
 
@@ -544,6 +545,24 @@ std::wstring RecordingDirectory(const core::AppSettings& settings) {
     return std::wstring(profile) + L"\\Videos\\Captures";
 }
 
+// 在资源管理器里定位文件；文件不在了就退回到它的目录。
+void RevealInExplorer(const std::wstring& path) {
+    if (path.empty()) {
+        return;
+    }
+    std::wstring arguments;
+    if (GetFileAttributesW(path.c_str()) != INVALID_FILE_ATTRIBUTES) {
+        arguments = L"/select,\"" + path + L"\"";
+    } else {
+        const std::filesystem::path parent = std::filesystem::path(path).parent_path();
+        if (parent.empty()) {
+            return;
+        }
+        arguments = L"\"" + parent.wstring() + L"\"";
+    }
+    ShellExecuteW(nullptr, L"open", L"explorer.exe", arguments.c_str(), nullptr, SW_SHOWNORMAL);
+}
+
 std::wstring RecordingPathFor(const core::AppSettings& settings) {
     const std::wstring directory = RecordingDirectory(settings);
     if (directory.empty()) {
@@ -910,6 +929,16 @@ int Run(const Options& options) {
     }
 
     AddFlag(report, "APP_TRAY_ICON", trayIcon);
+
+    // 气泡点击通路：给托盘窗口投一条 NIN_BALLOONUSERCLICK（WM_APP+1 是托盘回调消息，
+    // wParam 1 是图标 id），PollBalloonClick 必须拿到，否则点「已保存」不会有反应。
+    bool balloonClick = false;
+    if (trayIcon && tray.Window() != nullptr) {
+        SendMessageW(static_cast<HWND>(tray.Window()), WM_APP + 1, 1,
+                     static_cast<LPARAM>(NIN_BALLOONUSERCLICK));
+        balloonClick = tray.PollBalloonClick();
+    }
+    AddFlag(report, "APP_TRAY_BALLOON_CLICK", balloonClick);
     AddFlag(report, "APP_INPUT_HOST", inputStarted);
     AddInt(report, "APP_HOTKEYS_REGISTERED", hotkeysRegistered);
 
@@ -981,6 +1010,19 @@ int Run(const Options& options) {
         }
     };
 
+    // 气泡通知：只有「已保存」那条可点击跳转（点气泡 = 在资源管理器里选中文件）；
+    // 其它通知一出现就把记住的路径清掉，免得点到旧气泡却打开上一次的文件。
+    std::string savedBalloonPath;
+    const auto notify = [&](std::string_view message) {
+        savedBalloonPath.clear();
+        tray.Notify("HaloCap", message);
+    };
+    const auto notifySaved = [&](const std::string& path) {
+        savedBalloonPath = path;
+        const std::string message = "已保存：" + path;
+        tray.Notify("HaloCap", message);
+    };
+
     // 1.x WindowGeometry.TryGet 的同款判据：活着、没最小化、可见、表面 ≥16×16、可见矩形非空。
     const auto recordWindowUsable = [](HWND window, RECT* visible) {
         if (window == nullptr || !IsWindow(window) || IsIconic(window) ||
@@ -1045,7 +1087,7 @@ int Run(const Options& options) {
         if (target != nullptr) {
             RECT visible{};
             if (!recordWindowUsable(target, &visible)) {
-                tray.Notify("HaloCap", "目标窗口已关闭或尺寸太小，请重新选择窗口。");
+                notify("目标窗口已关闭或尺寸太小，请重新选择窗口。");
                 return;
             }
             anchor = core::IntRect{ visible.left, visible.top, visible.right, visible.bottom };
@@ -1071,7 +1113,7 @@ int Run(const Options& options) {
             if (!countdown.Show(settings.recording.CountdownSeconds(), anchor)) {
                 log.Info("recording: cancelled during countdown");
                 closeRecordingUi();
-                tray.Notify("HaloCap", "已取消录制");
+                notify("已取消录制");
                 return;
             }
             // 倒计时期间目标窗口可能已经关闭或挪走。
@@ -1079,7 +1121,7 @@ int Run(const Options& options) {
                 RECT visible{};
                 if (!recordWindowUsable(target, &visible)) {
                     closeRecordingUi();
-                    tray.Notify("HaloCap", "倒计时期间目标窗口已关闭。");
+                    notify("倒计时期间目标窗口已关闭。");
                     return;
                 }
                 anchor = core::IntRect{ visible.left, visible.top, visible.right,
@@ -1110,12 +1152,12 @@ int Run(const Options& options) {
                 recordingHud.reset();
             }
             log.Info("recording: started -> " + recording.OutputPath());
-            tray.Notify("HaloCap", "开始录制");
+            notify("开始录制");
         } else {
             closeRecordingUi();
             log.Error("recording: start failed (" +
                       (overlayReady ? kind : std::string("overlay")) + ")");
-            tray.Notify("HaloCap", "无法开始录制");
+            notify("无法开始录制");
         }
     };
 
@@ -1130,7 +1172,7 @@ int Run(const Options& options) {
                         beginRecording(target, core::IntRect{});
                     })) {
                     windowPicker.reset();
-                    tray.Notify("HaloCap", "无法选择录制窗口");
+                    notify("无法选择录制窗口");
                 }
                 return;
             }
@@ -1147,7 +1189,7 @@ int Run(const Options& options) {
                 };
                 if (!screenshotOverlay->Open(overlayOptions)) {
                     screenshotOverlay.reset();
-                    tray.Notify("HaloCap", "无法选择录制区域");
+                    notify("无法选择录制区域");
                 }
                 return;
             }
@@ -1162,9 +1204,9 @@ int Run(const Options& options) {
         refreshTray();
         log.Info(stopped ? "recording: stopped" : "recording: stop failed");
         if (stopped) {
-            tray.Notify("HaloCap", "已保存：" + recording.OutputPath());
+            notifySaved(recording.OutputPath());
         } else {
-            tray.Notify("HaloCap", "录制失败，详见日志");
+            notify("录制失败，详见日志");
         }
     };
 
@@ -1394,7 +1436,7 @@ int Run(const Options& options) {
             log.Error(std::string("screenshot: overlay failed (") +
                       screenshotOverlay->LastErrorKind() + ")");
             screenshotOverlay.reset();
-            tray.Notify("HaloCap", "截图失败：无法获取屏幕");
+            notify("截图失败：无法获取屏幕");
             return;
         }
         log.Info("screenshot: overlay opened");
@@ -1420,7 +1462,7 @@ int Run(const Options& options) {
             log.Error(std::string("ocr: overlay failed (") +
                       screenshotOverlay->LastErrorKind() + ")");
             screenshotOverlay.reset();
-            tray.Notify("HaloCap", "OCR 无法获取屏幕");
+            notify("OCR 无法获取屏幕");
             return;
         }
         log.Info("ocr: overlay opened");
@@ -1472,7 +1514,7 @@ int Run(const Options& options) {
                 trayState.autoStart = halocap::platform::win32::IsAutoStartEnabled(selfPath);
                 tray.Apply(trayState);
                 log.Info("settings: saved");
-                tray.Notify("HaloCap", "设置已保存（录制参数下次启动生效）");
+                notify("设置已保存（录制参数下次启动生效）");
                 return true;
             });
         if (!created) {
@@ -1486,7 +1528,7 @@ int Run(const Options& options) {
         halocap::platform::win32::ClipboardReadResult data;
         if (!halocap::platform::win32::ReadClipboard(&data)) {
             log.Error("pin: cannot read clipboard");
-            tray.Notify("HaloCap", "无法读取剪贴板");
+            notify("无法读取剪贴板");
             return;
         }
 
@@ -1500,7 +1542,7 @@ int Run(const Options& options) {
         input.text = data.text;
         const core::clipboard::Snapshot snapshot = core::clipboard::NormalizeSnapshot(input);
         if (!snapshot.HasContent()) {
-            tray.Notify("HaloCap", "剪贴板里没有可贴图的内容");
+            notify("剪贴板里没有可贴图的内容");
             return;
         }
 
@@ -1571,7 +1613,7 @@ int Run(const Options& options) {
 
         log.Info("pin: " + std::to_string(created) + " item(s) from clipboard");
         if (created == 0) {
-            tray.Notify("HaloCap", "贴图失败");
+            notify("贴图失败");
         }
     };
 
@@ -3483,6 +3525,12 @@ int Run(const Options& options) {
             onAction(command);
         }
 
+        // 点「已保存」气泡：在资源管理器里选中刚录好的文件。
+        if (tray.PollBalloonClick() && !savedBalloonPath.empty()) {
+            RevealInExplorer(Utf8ToWide(savedBalloonPath));
+            savedBalloonPath.clear();
+        }
+
         // OCR 结果窗口关闭后释放；引擎空闲 60 秒后卸载，回到空闲内存预算内。
         if (std::any_of(ocrWindows.begin(), ocrWindows.end(),
                         [](const std::unique_ptr<halocap::app::OcrResultWindow>& window) {
@@ -3535,8 +3583,11 @@ int Run(const Options& options) {
                         const std::string savedPath = recording.OutputPath();
                         closeRecordingUi();
                         refreshTray();
-                        tray.Notify("HaloCap", saved ? "已保存：" + savedPath
-                                                     : "录制失败，详见日志");
+                        if (saved) {
+                            notifySaved(savedPath);
+                        } else {
+                            notify("录制失败，详见日志");
+                        }
                         if (recordRequested) {
                             recordStopped = saved;
                             recordStats = windowStats;
@@ -3597,7 +3648,7 @@ int Run(const Options& options) {
                 recordingActive = false;
                 closeRecordingUi();
                 refreshTray();
-                tray.Notify("HaloCap", "录制中断：采集源丢失");
+                notify("录制中断：采集源丢失");
                 if (recordRequested) {
                     running = false;
                 }

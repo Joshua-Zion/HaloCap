@@ -6,6 +6,7 @@ obj/
 publish/
 artifacts/
 native/build/
+native/build-release/
 native/build.log
 
 native/dist/

@@ -1,7 +1,3 @@
-> **这是 2.0 原生重构的开发分支，不是可安装版本。** 1.x 的功能与发布（Releases、安装包、更新日志）都在 [`main`](https://github.com/Joshua-Zion/HaloCap/tree/main) 上，需要 HaloCap 请去那里下载。本分支的边界与合并约定见 [docs/2.0-native-plan.md §10](docs/2.0-native-plan.md)。
->
-> 说明：这一整块引用仅存在于 `2.0` 分支，合回 `main` 前删除。
-
 # HaloCap · 光圈
 
 在光标处展开的 Windows 效率工具，把**截图、文字识别、录屏和贴图**收进一个光圈菜单。
@@ -28,16 +24,16 @@
 ### 运行要求
 
 - Windows 10 1903 或更高版本 / Windows 11，x64。
-- 免安装运行时：发布包已内置 .NET 10 与 WPF 组件，不需要另外安装 .NET 或其他依赖。
-- 文字识别的原生引擎需要对应语言的 Windows 识别组件；模型引擎使用内置模型，不需要额外组件。Windows N / KN 版本使用录屏（含 AAC 音轨）前需安装 Media Feature Pack。
+- 免安装：发布包是原生的 `HaloCap.exe`（约 1.4 MB），不再依赖 .NET 或 WPF；包内自带 ONNX Runtime、VC++ 运行库与内置识别模型。
+- 文字识别的原生引擎需要对应语言的 Windows 识别组件；模型引擎使用包内模型，不需要额外组件。Windows N / KN 版本使用录屏（含 AAC 音轨）前需安装 Media Feature Pack。
 
 ### 安装步骤
 
 1. 从 [Releases](https://github.com/Joshua-Zion/HaloCap/releases) 下载 `HaloCap-<版本>-win-x64.zip`。
-2. 解压到固定目录，双击 `HaloCap.exe`。程序会驻留系统托盘，不显示主窗口。
-3. 首次启动会把内置运行库解压到系统临时目录，首次启动会稍慢；模型识别首次使用时还会把内置模型解压到本地应用数据目录。
+2. 解压到固定目录（保持 `HaloCap.exe`、`onnxruntime.dll`、VC 运行库 DLL 与 `models\` 在同一层级），双击 `HaloCap.exe`。程序会驻留系统托盘，不显示主窗口。
+3. 首次启动即可使用，不需要另外安装运行时；选择「模型识别」时直接使用包内 `models\ppocrv6-tiny-1` 的模型。
 
-HaloCap 是便携应用：删除程序文件夹即可卸载，设置、日志与 OCR 模型可按下方「设置与本地数据」手动清理。
+HaloCap 是便携应用：删除程序文件夹即可卸载，设置与日志可按下方「设置与本地数据」手动清理。
 
 ## 快速开始
 
@@ -147,7 +143,7 @@ HaloCap 是便携应用：删除程序文件夹即可卸载，设置、日志与
 - 结果按检测到的文本行输出，不额外重建排版。窗口中的文字可以直接选择；`Ctrl + F` 搜索并高亮匹配内容，工具栏可在「文本」与「逐行」视图间切换，逐行视图单击任意一行即可复制。`Ctrl + Shift + C` 复制全部。
 - 顶部可在「原生」与「模型」两个识别引擎间切换，当前窗口会立即用另一引擎重新识别，不需要重新框选。
   - **原生**：使用 Windows 自带的离线引擎，速度快、占用低；中文识别需要系统中安装对应语言的光学字符识别组件。
-  - **模型**：使用内置的 PP-OCRv6 tiny 轻量模型（检测与识别模型合计约 6 MB），对中英混排和小字更稳，深色截图会自动反色后识别，速度比原生稍慢。模型随程序离线提供，首次使用时解压到 `%LOCALAPPDATA%\HaloCap\models`，不需要下载。
+  - **模型**：使用包内自带的 PP-OCRv6 tiny 轻量模型（检测与识别模型合计约 6 MB），对中英混排和小字更稳，深色截图会自动反色后识别，速度比原生稍慢。模型随程序离线提供（`models\ppocrv6-tiny-1`），不需要下载。
 - 「原图」按钮可展开原图缩略图对照；设置中可开启「自动复制」，识别成功后自动把全部文字放入剪贴板。
 - 底部「重试」会用当前引擎重新识别；没有识别到文字或识别失败时，可以直接切换到另一引擎重试。
 - 在贴图上右键选择「识别文字」，或在非标注模式下按 `O`，会识别贴图的原图，不包含后加的标注。
@@ -175,12 +171,12 @@ HaloCap 是便携应用：删除程序文件夹即可卸载，设置、日志与
 
 | 页面 | 内容 |
 | --- | --- |
-| 通用 | 开机自启、呼出光圈的方式、光圈大小（小 / 中 / 大）与贴图光晕默认值 |
+| 通用 | 开机自启、光圈大小（小 / 中 / 大）、复制文件路径转图片、贴图光晕默认值 |
 | 快捷键 | 呼出光圈与截图 / 文字识别 / 录屏 / 贴图四个操作的全局按键 |
-| 截图与贴图 | PNG / JPG 格式与质量、复制文件路径转图片、贴图相关开关 |
-| 文字识别 | 原生 / 模型引擎、识别语言与排版模式、自动复制、贴图识别入口 |
-| 录屏 | 分辨率、帧率、画质、光标、倒计时、录制范围、声音与保存目录；底部按当前选择汇总输出尺寸与码率，改动在下一次录制生效 |
-| 关于 | 版本、本地数据位置（设置 / 日志 / 识别模型，可一键打开所在目录）与「环境摘要」复制 |
+| 截图与贴图 | PNG / JPG 格式与质量、贴图相关开关 |
+| 文字识别 | 原生 / 模型引擎、自动复制、选好区域后自动识别、贴图右键识别 |
+| 录屏 | 分辨率、帧率、画质、录制范围、选好区域后自动开始、倒计时、系统声音、麦克风、录制光标与保存目录；改动在下一次录制生效 |
+| 关于 | 版本、检查更新、环境摘要复制与本地数据位置 |
 
 「关于 → 环境摘要 → 复制」会把系统版本、显示器与缩放、屏幕捕获能力、H.264 与 AAC 编码器、可用的原生识别语言以及当前内存一次性复制到剪贴板；同样的内容在每次启动时也会写进日志。遇到「录屏没有声音」「为什么是软件编码」「识别不出中文」这类问题，先把这份摘要发出来，不用来回猜环境。开机自启也可在托盘菜单中切换；启用后请避免移动程序目录，移动后需重新开启。设置以非模态窗口打开，期间仍可使用托盘菜单和全局快捷键。托盘菜单在点击菜单外区域或托盘区域时会自动关闭。
 
@@ -188,57 +184,69 @@ HaloCap 是便携应用：删除程序文件夹即可卸载，设置、日志与
 
 | 数据 | 位置 |
 | --- | --- |
-| 设置 | `%APPDATA%\HaloCap\settings.json` |
-| 日志 | `%APPDATA%\HaloCap\logs\`，按天分文件；单个文件超过 8 MB 换下一片，每天最多 6 片，超过 14 天的自动删除 |
-| OCR 模型 | `%LOCALAPPDATA%\HaloCap\models\`，首次使用模型引擎时解压，之后离线复用 |
-| 默认录屏目录 | 系统“视频”目录下的 `Captures` |
+| 设置 | `%APPDATA%\HaloCap2\settings.json` |
+| 日志 | `%APPDATA%\HaloCap2\logs\`，按天分文件；单个文件超过 8 MB 换下一片，每天最多 6 片，超过 14 天的自动删除 |
+| OCR 模型 | 程序目录下的 `models\ppocrv6-tiny-1`（随包提供）；也可放到 `%LOCALAPPDATA%\HaloCap2\models\ppocrv6-tiny-1` |
+| 默认录屏目录 | 系统“视频”目录下的 `Captures`（首次启动自动回显真实路径，可在设置里修改） |
 
-HaloCap 不发起网络请求。原生识别使用 `Windows.Media.Ocr`；模型识别使用随程序内置的 PP-OCRv6 tiny 模型与 ONNX Runtime。录屏使用 `Windows.Graphics.Capture`（区域或窗口）与 Media Foundation：帧纹理在 D3D11 上按选区裁剪后拷入暂存纹理，需要时再做面积平均下采样，编码优先申请硬件 H.264 MFT、失败回退软件编码。音频用 WASAPI 共享模式采集（系统声音走 loopback，麦克风走普通采集），在独立线程里重采样并混音成 48kHz 立体声，再交给 Media Foundation 的 AAC 编码器与画面写进同一个 MP4；两条流共用一个录制时钟打时间戳。完成或取消选区、关闭贴图与识别结果窗口、录制结束后都会释放对应的位图与帧缓冲；如果当时正忙没来得及回收，空闲一分钟会补做一次，不会每分钟空转一遍完整 GC。回收前先放手常驻的识别模型缓存，且只在私有内存确实偏高时才做，避免每次识别都重新初始化。后台内存会回落到运行库基线。OCR 模型与第三方组件许可见 [第三方声明](THIRD-PARTY-NOTICES.md)。
+HaloCap 2.0 是原生实现：选区与标注由 Direct2D / DirectComposition 合成；录屏使用 `Windows.Graphics.Capture`（窗口）或桌面复制（区域）与 Media Foundation，帧纹理在 D3D11 上按选区裁剪、需要时面积平均下采样，编码优先申请硬件 H.264 MFT、失败回退软件编码；音频用 WASAPI 采集并在独立线程重采样、混音成 48kHz 立体声 AAC，两条流共用一个录制时钟。原生识别使用 `Windows.Media.Ocr`；模型识别使用包内的 PP-OCRv6 tiny 与 ONNX Runtime。除「检查更新」会读取你配置的更新清单外，程序不发起网络请求。OCR 模型与第三方组件许可见 [第三方声明](THIRD-PARTY-NOTICES.md)。
 
 ## 从源码开发
 
+2.0 是 C++20 / Win32 原生实现，源码在 `native/`；`src/HaloCap/` 是 1.x 的 WPF 实现，保留作行为参照，不参与 2.0 的构建。
+
 ### 环境
 
-- Windows，x64。
-- .NET 10 SDK（`global.json` 已按 10.0 主版本对齐），包含 Windows Desktop / WPF 支持。
-- C# 12、WPF；模型识别依赖 RapidOcrNet、ONNX Runtime 与 SkiaSharp（NuGet），其余功能使用 Windows 自带能力。
+- Windows 10 1903+ / Windows 11，x64。
+- Visual Studio 2022 Build Tools（MSVC 14.4x + Windows SDK 10.0.26100）。
+- CMake 3.25+ 与 Ninja；ONNX Runtime 的二进制随仓库放在 `native/third_party/onnxruntime`，构建不需要联网。
 
 ### 构建与运行
 
-```powershell
-dotnet build HaloCap.sln -c Debug
-dotnet run --project src/HaloCap/HaloCap.csproj
+```bat
+cd native
+build.cmd
 ```
 
-开发前先退出已运行的 HaloCap，避免程序文件被占用，或新进程仅激活旧实例。启动后通过托盘和全局快捷键操作。
+`build.cmd` 会进入 vcvars64、用 CMake + Ninja 构建全部目标并跑单测；Debug 产物在 `native/build/app/HaloCap.exe`。发布版用同目录的 `build-release.cmd`（独立的 `native/build-release`，`CMAKE_BUILD_TYPE=Release`）。
 
 ### 测试
 
-```powershell
-dotnet run --project tests/HaloCap.CoordinateTests/HaloCap.CoordinateTests.csproj -c Release
+```bat
+ctest --test-dir native\build --output-on-failure
 ```
 
-测试使用轻量控制台 runner，通过退出码报告结果，覆盖坐标与 DPI 换算、选区调整、标注合成、马赛克、剪贴板、OCR 原生 / 模型引擎识别、结果窗口搜索与视图切换、设置分页与入口，以及录屏的参数换算、帧缩放、GPU 裁剪、音频重采样与混音环形缓冲、真实采集编码（区域 / 窗口、暂停时间轴、窗口改尺寸后重建、系统声音录出 AAC 音轨与音画时长一致）等；另有环境摘要、日志保留规则与系统版本下限的用例。多屏、语言包缺失与无边框权限等场景仍需在实际 Windows 环境中检查。
+18 组单元测试覆盖坐标与选区、标注与马赛克、设置与 JSON、热键策略、录制会话与音频策略、托盘菜单模型等。另有运行时自检（写 `KEY=value` 报告与证明图）：
+
+```bat
+HaloCap.exe --selftest --report out.txt
+HaloCap.exe --screenshot-selftest proof.png
+HaloCap.exe --ocr-selftest proof.png
+HaloCap.exe --recording-ui-selftest proof.png
+HaloCap.exe --tray-menu-selftest proof.png
+```
+
+多屏、语言包缺失、真实采集与编码器等场景仍需在实际 Windows 环境里验证。
 
 ### 发布
 
-```powershell
-dotnet publish src/HaloCap/HaloCap.csproj -p:PublishProfile=Standalone -o artifacts/publish
+```bat
+cd native
+build-release.cmd
 ```
 
-使用自包含单文件发布（配置见 `Properties/PublishProfiles/Standalone.pubxml`）：产物是单个 `HaloCap.exe`，内置 .NET 10 运行时与 WPF 原生库并启用压缩，运行机器无需安装任何运行时。将 exe 与 `README.txt`、`CHANGELOG.md` 打包为 ZIP 分发。不要对 WPF 使用不受支持的裁剪或 NativeAOT。
+把 `native/build-release/app/HaloCap.exe`、`onnxruntime.dll`、VS 的四个运行库（`msvcp140.dll`、`msvcp140_1.dll`、`vcruntime140.dll`、`vcruntime140_1.dll`）、`models\ppocrv6-tiny-1`（来自 `src/HaloCap/Assets/OcrModel`）与 `README.txt`、`CHANGELOG.md`、`THIRD-PARTY-NOTICES.md` 一起打包为 ZIP。`tools/logo_icon` 可从同一套渲染重新生成 `app.ico`。
 
 ### 项目结构
 
 ```text
-src/HaloCap/
-  Assets/       内置 OCR 模型
-  Models/       设置、坐标、截图与标注数据
-  UI/           光圈、截图、贴图、文字识别、录制与设置界面
-  Services/     快捷键、截图、文字识别、录制与标注渲染
-  Interop/      Win32、Windows Capture 与 Media Foundation 互操作
-  Diagnostics/  本地日志、环境摘要与系统版本下限
-tests/HaloCap.CoordinateTests/  自动化回归测试
+native/
+  core/         纯逻辑：设置与 JSON、坐标与选区、标注、录制会话与音视频策略、热键、托盘菜单模型
+  platform/     Win32 适配：D3D11/D2D 渲染、WGC 与桌面复制、Media Foundation、WASAPI、输入、托盘、存储
+  app/          UI 与组装：选区覆盖层、贴图、OCR 窗口、光圈、录制浮层、托盘菜单、设置窗
+  tests/        CTest 单元测试
+  tools/        探针与自检小工具（含 logo_icon）
+src/HaloCap/    1.x 的 WPF 实现（main 分支发布线，保留作行为参照）
 ```
 
 ## 使用限制
@@ -248,7 +256,7 @@ tests/HaloCap.CoordinateTests/  自动化回归测试
 - 文字贴图对极长内容使用省略显示；单张图像上限为 6400 万像素，一批最多转换 16 张图片且像素缓存预算为 256 MB，超限文件按路径显示。
 - OCR 对极小字、手写、低对比度和复杂混排的准确率有限；模型引擎对中英混排更稳，但速度比原生引擎稍慢，也不能保证所有样本。
 - 录屏音频采集本机播放的声音与默认录音设备，但受 DRM 保护的内容不会被系统交付给 loopback，这类声音录不到；4K / 60fps 档位是否稳定取决于机器的编码能力，负载过高时会丢帧并在完成通知里给出丢帧数。
-- 4K 录制的体积与内存实测（3840×2160、30fps、硬件 H.264 编码）：均衡档约 184 MB/分钟，按档位换算高约 337 MB/分钟、紧凑约 103 MB/分钟；录制期间进程峰值私有内存约 840 MB。长时间 4K 录制建议改用紧凑档并留意磁盘余量，逐帧 CPU 拷贝带来的内存占用要到 2.0 的原生实现才会明显下降。
+- 4K 录制的体积按码率公式估算（3840×2160、30fps、硬件 H.264）：均衡档约 184 MB/分钟，高约 337 MB/分钟、紧凑约 103 MB/分钟；长时间 4K 录制建议改用紧凑档并留意磁盘余量。2.0 在 GPU 上按选区裁剪、需要时再下采样，编码优先硬件 MFT、失败回退软件。
 - 窗口录制时，若系统要求无边框授权（打包应用或未授予 `graphicsCaptureWithoutBorder`），WGC 仍会在被录制的窗口外围绘制彩色边框；程序会尝试关闭它，失败时保持系统默认。
 - 快捷键、单实例与开机自启依赖当前 Windows 用户会话，远程桌面或权限隔离环境可能影响行为。
 - Windows 的捕获提示边框由系统控制，HaloCap 不关闭或修改该隐私指示器。

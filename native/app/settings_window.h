@@ -122,6 +122,8 @@ private:
     bool dragging_ = false;
     POINT dragOrigin_{};
     RECT dragWindow_{};
+    // 目录选择线程还开着时忽略重复点击；结果消息到了再置回 false。
+    bool pickerOpen_ = false;
 };
 
 }

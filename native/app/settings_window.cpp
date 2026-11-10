@@ -17,6 +17,7 @@
 #include <fstream>
 #include <memory>
 #include <sstream>
+#include <thread>
 #include <vector>
 
 #include "update.h"
@@ -32,6 +33,8 @@ namespace {
 using namespace Gdiplus;
 
 constexpr wchar_t kClassName[] = L"HaloCapSettings";
+// 目录选择线程把结果（堆上的 std::wstring*）通过这条消息交回主线程。
+constexpr UINT kMsgDirectoryPicked = WM_APP + 0x51;
 constexpr float kWindowW = 916.0f;   // 820 卡片 + 48 DIP/侧 透明边给阴影
 constexpr float kWindowH = 716.0f;
 constexpr float kMargin = 48.0f;    // 卡片 inset：48 DIP 阴影余量
@@ -760,57 +763,70 @@ void SettingsWindow::CheckUpdate() {
 }
 
 void SettingsWindow::ChooseDirectory() {
-    std::wstring chosen;
-
-    // 对话框归调用线程所有：先把自己放到前台，再开模态文件夹选择，避免它出现在
-    // 别的窗口后面（非置顶设置窗被盖住时，用户会以为整个程序卡死）。
+    if (pickerOpen_ || window_ == nullptr) {
+        return;
+    }
+    pickerOpen_ = true;
     SetForegroundWindow(window_);
+    const HWND window = window_;
 
-    IFileOpenDialog* dialog = nullptr;
-    if (comInitialized_ &&
-        SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
-                                   IID_PPV_ARGS(&dialog)))) {
-        DWORD options = 0;
-        dialog->GetOptions(&options);
-        dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM);
-        dialog->SetTitle(L"选择录制保存目录");
-        if (SUCCEEDED(dialog->Show(window_))) {
-            IShellItem* item = nullptr;
-            if (SUCCEEDED(dialog->GetResult(&item))) {
-                PWSTR path = nullptr;
-                if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path))) {
-                    chosen = path;
-                    CoTaskMemFree(path);
+    // 文件夹选择放到独立 STA 线程。模态 Shell 对话框与主线程已有的 COM/MF/低级键盘钩子
+    // 搅在一起时，会把主线程卡在 Show 的模态循环里（用户看到的「点目录卡死」）。独立
+    // 线程有自己的干净 STA，主循环照常跑；结果用 PostMessage 把堆上的字符串交回来。
+    // 线程只捕获 HWND 的值，不碰 SettingsWindow 对象，窗口先关掉也不会悬空。
+    std::thread([window]() {
+        const HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+
+        std::wstring chosen;
+        bool dialogAvailable = false;
+        IFileOpenDialog* dialog = nullptr;
+        if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
+                                       IID_PPV_ARGS(&dialog)))) {
+            dialogAvailable = true;
+            DWORD options = 0;
+            dialog->GetOptions(&options);
+            dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM);
+            dialog->SetTitle(L"选择录制保存目录");
+            // 无 owner：对话框在本线程是顶层窗口，主线程的设置窗不被禁用、也不会被卡住。
+            if (SUCCEEDED(dialog->Show(nullptr))) {
+                IShellItem* item = nullptr;
+                if (SUCCEEDED(dialog->GetResult(&item))) {
+                    PWSTR path = nullptr;
+                    if (SUCCEEDED(item->GetDisplayName(SIGDN_FILESYSPATH, &path))) {
+                        chosen = path;
+                        CoTaskMemFree(path);
+                    }
+                    item->Release();
                 }
-                item->Release();
+            }
+            dialog->Release();
+        }
+
+        if (!dialogAvailable) {
+            // 现代对话框建不出来才退回旧式浏览框（同样在这个线程的 STA 里）。
+            BROWSEINFOW browse{};
+            browse.hwndOwner = nullptr;
+            browse.lpszTitle = L"选择录制保存目录";
+            browse.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE | BIF_USENEWUI;
+            PIDLIST_ABSOLUTE idList = SHBrowseForFolderW(&browse);
+            if (idList != nullptr) {
+                wchar_t path[MAX_PATH] = {};
+                if (SHGetPathFromIDListW(idList, path)) {
+                    chosen = path;
+                }
+                CoTaskMemFree(idList);
             }
         }
-        dialog->Release();
-    }
 
-    if (chosen.empty()) {
-        BROWSEINFOW browse{};
-        browse.hwndOwner = window_;
-        browse.lpszTitle = L"选择录制保存目录";
-        browse.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE | BIF_USENEWUI;
-        PIDLIST_ABSOLUTE idList = SHBrowseForFolderW(&browse);
-        if (idList != nullptr) {
-            wchar_t path[MAX_PATH] = {};
-            if (SHGetPathFromIDListW(idList, path)) {
-                chosen = path;
-            }
-            CoTaskMemFree(idList);
+        if (SUCCEEDED(com)) {
+            CoUninitialize();
         }
-    }
 
-    if (!chosen.empty()) {
-        // 根目录保留反斜杠，其余去掉末尾分隔符，录制路径再自己拼 "\\"。
-        while (chosen.size() > 3 && (chosen.back() == L'\\' || chosen.back() == L'/')) {
-            chosen.pop_back();
+        auto* result = new std::wstring(std::move(chosen));
+        if (PostMessageW(window, kMsgDirectoryPicked, 0, reinterpret_cast<LPARAM>(result)) == 0) {
+            delete result;
         }
-        settings_.recordingDirectory = Utf8FromWide(chosen);
-        Render();
-    }
+    }).detach();
 }
 void SettingsWindow::AddHotspot(const RECT& rect, int id) {
     hotspots_.push_back(Hotspot{ rect, id });
@@ -1651,6 +1667,24 @@ LRESULT SettingsWindow::Handle(HWND window, UINT message, WPARAM wParam, LPARAM 
         const int maxScroll = std::max(0, contentHeight_ - viewHeightDip_);
         scroll_ = std::clamp(scroll_ - delta / WHEEL_DELTA * 40, 0, maxScroll);
         Render();
+        return 0;
+    }
+    case kMsgDirectoryPicked: {
+        pickerOpen_ = false;
+        auto* result = reinterpret_cast<std::wstring*>(lParam);
+        if (result == nullptr) {
+            return 0;
+        }
+        std::wstring chosen = *result;
+        delete result;
+        if (!chosen.empty()) {
+            // 根目录保留反斜杠，其余去掉末尾分隔符，录制路径再自己拼 "\\"。
+            while (chosen.size() > 3 && (chosen.back() == L'\\' || chosen.back() == L'/')) {
+                chosen.pop_back();
+            }
+            settings_.recordingDirectory = Utf8FromWide(chosen);
+            Render();
+        }
         return 0;
     }
     case WM_KEYDOWN:

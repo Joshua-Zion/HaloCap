@@ -769,12 +769,14 @@ void SettingsWindow::ChooseDirectory() {
     pickerOpen_ = true;
     SetForegroundWindow(window_);
     const HWND window = window_;
+    // 默认打开当前保存目录（已经是真正的路径；不存在时 SetFolder 会失败，退回系统默认位置）。
+    const std::wstring initial = Utf8ToWide(settings_.recordingDirectory);
 
     // 文件夹选择放到独立 STA 线程。模态 Shell 对话框与主线程已有的 COM/MF/低级键盘钩子
     // 搅在一起时，会把主线程卡在 Show 的模态循环里（用户看到的「点目录卡死」）。独立
     // 线程有自己的干净 STA，主循环照常跑；结果用 PostMessage 把堆上的字符串交回来。
-    // 线程只捕获 HWND 的值，不碰 SettingsWindow 对象，窗口先关掉也不会悬空。
-    std::thread([window]() {
+    // 线程只捕获 HWND 与初始路径的副本，不碰 SettingsWindow 对象，窗口先关掉也不会悬空。
+    std::thread([window, initial]() {
         const HRESULT com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
 
         std::wstring chosen;
@@ -787,6 +789,14 @@ void SettingsWindow::ChooseDirectory() {
             dialog->GetOptions(&options);
             dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM);
             dialog->SetTitle(L"选择录制保存目录");
+            if (!initial.empty()) {
+                IShellItem* folder = nullptr;
+                if (SUCCEEDED(SHCreateItemFromParsingName(initial.c_str(), nullptr,
+                                                          IID_PPV_ARGS(&folder)))) {
+                    dialog->SetFolder(folder);
+                    folder->Release();
+                }
+            }
             // 无 owner：对话框在本线程是顶层窗口，主线程的设置窗不被禁用、也不会被卡住。
             if (SUCCEEDED(dialog->Show(nullptr))) {
                 IShellItem* item = nullptr;
@@ -804,8 +814,13 @@ void SettingsWindow::ChooseDirectory() {
 
         if (!dialogAvailable) {
             // 现代对话框建不出来才退回旧式浏览框（同样在这个线程的 STA 里）。
+            PIDLIST_ABSOLUTE root = nullptr;
+            if (!initial.empty()) {
+                SHParseDisplayName(initial.c_str(), nullptr, &root, 0, nullptr);
+            }
             BROWSEINFOW browse{};
             browse.hwndOwner = nullptr;
+            browse.pidlRoot = root;   // 默认打开当前保存目录
             browse.lpszTitle = L"选择录制保存目录";
             browse.ulFlags = BIF_RETURNONLYFSDIRS | BIF_NEWDIALOGSTYLE | BIF_USENEWUI;
             PIDLIST_ABSOLUTE idList = SHBrowseForFolderW(&browse);
@@ -815,6 +830,9 @@ void SettingsWindow::ChooseDirectory() {
                     chosen = path;
                 }
                 CoTaskMemFree(idList);
+            }
+            if (root != nullptr) {
+                CoTaskMemFree(root);
             }
         }
 

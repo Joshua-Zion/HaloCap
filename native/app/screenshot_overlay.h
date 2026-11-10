@@ -44,10 +44,6 @@ struct ScreenshotOverlayOptions {
 
     // 区域录制：拖完选区交回屏幕坐标，由 app 起录制。
     std::function<void(core::IntRect rect)> onRegion;
-
-    // 覆盖层关闭时回调一次（取消选区、完成截图、OCR 交出选区都会走这里）。
-    // app 用它把截图期间临时隐藏的 OCR 结果窗口恢复显示。
-    std::function<void()> onClosed;
 };
 
 // S3 的交互层：全屏覆盖层 + 选区 + 工具栏 + 标注编辑 + 文字输入 + 导出/贴图。

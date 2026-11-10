@@ -1115,21 +1115,6 @@ int Run(const Options& options) {
                            }),
             ocrWindows.end());
     };
-    // 截图期间把结果窗口临时藏起来：既不会被截进下一张图，也不会为了「新截图」被关掉。
-    const auto hideOcrWindows = [&ocrWindows]() {
-        for (auto& window : ocrWindows) {
-            if (window->Valid()) {
-                ShowWindow(window->Handle(), SW_HIDE);
-            }
-        }
-    };
-    const auto showOcrWindows = [&ocrWindows]() {
-        for (auto& window : ocrWindows) {
-            if (window->Valid()) {
-                ShowWindow(window->Handle(), SW_SHOWNOACTIVATE);
-            }
-        }
-    };
 
     const auto openOcrResult = [&](const std::uint8_t* bgra, int width, int height, int x,
                                    int y, bool fromPin) {
@@ -1173,14 +1158,12 @@ int Run(const Options& options) {
         if (screenshotOverlay != nullptr && screenshotOverlay->Active()) {
             return;
         }
-        // 上一次的结果窗口不关掉，只在截图期间藏起来（关掉会让用户丢掉手上的结果）。
+        // 上一次的结果窗口保持常显（不关也不隐藏），用户可以对照着继续截下一张。
         pruneOcrWindows();
-        hideOcrWindows();
         screenshotOverlay = std::make_unique<halocap::app::ScreenshotOverlay>();
         halocap::app::ScreenshotOverlayOptions overlayOptions;
         overlayOptions.jpeg = settings.screenshotFormat == core::ScreenshotFormat::Jpeg;
         overlayOptions.pinHotkey = liveSettings.pinHotkey;
-        overlayOptions.onClosed = [showOcrWindows] { showOcrWindows(); };
         overlayOptions.onPin = [&](const std::uint8_t* bgra, int width, int height, int x, int y) {
             auto pin = std::make_unique<halocap::app::PinWindow>();
             if (pin->Create(bgra, width, height, x, y, pinOptions())) {
@@ -1210,11 +1193,9 @@ int Run(const Options& options) {
             return;
         }
         pruneOcrWindows();
-        hideOcrWindows();
         screenshotOverlay = std::make_unique<halocap::app::ScreenshotOverlay>();
         halocap::app::ScreenshotOverlayOptions overlayOptions;
         overlayOptions.mode = halocap::app::OverlayMode::Ocr;
-        overlayOptions.onClosed = [showOcrWindows] { showOcrWindows(); };
         overlayOptions.onOcr = [&openOcrResult](const std::uint8_t* image, int imageWidth,
                                                int imageHeight, int x, int y) {
             openOcrResult(image, imageWidth, imageHeight, x, y, false);
@@ -1956,11 +1937,11 @@ int Run(const Options& options) {
             AddFlag(report, "APP_OCR_AFTER_OVERLAY_CLOSE_UNDER_80",
                     afterOverlayMb > 0.0 && afterOverlayMb <= 80.0);
 
-            // 结果窗口不随下一次截图关闭：开一个真实的新 OCR 会话（会先隐藏已有结果窗口），
-            // 取消会话后窗口必须恢复显示、对象仍然有效。放在内存闸门之后建第二台覆盖层，
+            // 结果窗口常显：开一个真实的新 OCR 会话、再取消，旧窗口必须始终可见且对象有效
+            // （不会因为下一次截图被关掉或隐藏）。放在内存闸门之后再建第二台覆盖层，
             // 避免驱动延迟回收污染上面的空闲内存数字。
-            bool hiddenDuringCapture = false;
-            bool restoredAfterCapture = false;
+            bool visibleBeforeCapture = false;
+            bool visibleDuringCapture = false;
             bool persistsOk = false;
             {
                 std::vector<std::uint8_t> probeImage(64 * 32 * 4, 255);
@@ -1969,17 +1950,16 @@ int Run(const Options& options) {
                     ocrWindows.empty() ? nullptr : ocrWindows.back().get();
                 if (probeWindow != nullptr && probeWindow->Valid()) {
                     const HWND probeHandle = probeWindow->Handle();
-                    const bool wasVisible = IsWindowVisible(probeHandle) != FALSE;
+                    visibleBeforeCapture = IsWindowVisible(probeHandle) != FALSE;
                     openOcr();
-                    hiddenDuringCapture = IsWindowVisible(probeHandle) == FALSE;
+                    visibleDuringCapture = IsWindowVisible(probeHandle) != FALSE;
                     if (screenshotOverlay != nullptr) {
                         screenshotOverlay->Close();
                         screenshotOverlay.reset();
                     }
                     Sleep(150);
-                    restoredAfterCapture = IsWindowVisible(probeHandle) != FALSE;
-                    persistsOk = wasVisible && hiddenDuringCapture && restoredAfterCapture &&
-                                 probeWindow->Valid();
+                    persistsOk = visibleBeforeCapture && visibleDuringCapture &&
+                                 IsWindowVisible(probeHandle) != FALSE && probeWindow->Valid();
                 }
                 for (auto& window : ocrWindows) {
                     window->Close();
@@ -1989,8 +1969,8 @@ int Run(const Options& options) {
                 Sleep(150);
             }
             AddFlag(report, "APP_OCR_PERSISTS_CAPTURE", persistsOk);
-            AddFlag(report, "APP_OCR_HIDDEN_DURING_CAPTURE", hiddenDuringCapture);
-            AddFlag(report, "APP_OCR_RESTORED_AFTER_CAPTURE", restoredAfterCapture);
+            AddFlag(report, "APP_OCR_VISIBLE_BEFORE_CAPTURE", visibleBeforeCapture);
+            AddFlag(report, "APP_OCR_VISIBLE_DURING_CAPTURE", visibleDuringCapture);
 
             // 功能判据：窗口起来、证明图写出、识别真的跑过；内存判据也进闸门——
             // 关掉覆盖层与结果窗口之后必须回到预算内（S4 的退出条件）。

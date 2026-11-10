@@ -377,7 +377,6 @@ bool ScreenshotOverlay::Open(const ScreenshotOverlayOptions& options) {
 }
 
 void ScreenshotOverlay::Close() {
-    const bool wasActive = active_;
     if (g_overlay == this) {
         g_overlay = nullptr;
     }
@@ -410,15 +409,6 @@ void ScreenshotOverlay::Close() {
     selecting_ = false;
     resizing_ = false;
     drawing_ = false;
-
-    // 只通知一次：Close 可能被析构、Pump、调用方各调一次。
-    if (wasActive) {
-        auto callback = std::move(options_.onClosed);
-        options_.onClosed = nullptr;
-        if (callback) {
-            callback();
-        }
-    }
 }
 
 void ScreenshotOverlay::Pump() {

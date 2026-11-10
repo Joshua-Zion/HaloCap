@@ -2817,9 +2817,9 @@ int Run(const Options& options) {
                 Sleep(10);
             }
         }
-        // 已呼出时再按快捷键：旧窗口必须销毁，并在新的光标位置重开。
-        const HWND firstRadial =
-            radialMenu != nullptr ? static_cast<HWND>(radialMenu->HandleForTest()) : nullptr;
+        // 已呼出时再按快捷键：旧光圈必须被替换，并在新的光标位置重开。
+        // 不检查旧 HWND 是否销毁——Windows 会复用句柄，旧窗口销毁后新窗口可能拿到同一个值。
+        // 新窗口中心跟着新光标走，本身就说明它是重新呼出的。
         SetCursorPos(1400, 700);
         openRadial();
         const ULONGLONG reopenStart = GetTickCount64();
@@ -2832,8 +2832,7 @@ int Run(const Options& options) {
             Sleep(10);
         }
         bool reopenOk = false;
-        if (firstRadial != nullptr && !IsWindow(firstRadial) && radialMenu != nullptr &&
-            radialMenu->Active()) {
+        if (radialMenu != nullptr && radialMenu->Active()) {
             RECT reopened{};
             GetWindowRect(static_cast<HWND>(radialMenu->HandleForTest()), &reopened);
             const int centerX = (reopened.left + reopened.right) / 2;

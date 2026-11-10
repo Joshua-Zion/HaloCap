@@ -400,6 +400,23 @@ void RadialMenu::DrawDesign(Gdiplus::Graphics& graphics, int hoverIndex) {    //
         delete sector;
     }
 
+    // 四个扇区之间的接缝：扇区间隔只有 3.6°，白底上几乎看不出来。
+    // 在分隔角度上画一条很淡的径向细线（约 9% 透明度的冷灰 + 3 px 更淡的底衬），
+    // 只让「有四块」这件事可读，不做硬切边。
+    for (int i = 0; i < 4; ++i) {
+        const float seamAngle = 45.0f + i * 90.0f;
+        const PointF from = DesignPoint(seamAngle, kSectorInner + 1.0f);
+        const PointF to = DesignPoint(seamAngle, kSectorOuter - 1.0f);
+        Pen halo(Color(0x08, 0x2A, 0x2E, 0x38), 3.0f);
+        halo.SetStartCap(LineCapRound);
+        halo.SetEndCap(LineCapRound);
+        graphics.DrawLine(&halo, from, to);
+        Pen seam(Color(0x18, 0x2A, 0x2E, 0x38), 1.2f);
+        seam.SetStartCap(LineCapRound);
+        seam.SetEndCap(LineCapRound);
+        graphics.DrawLine(&seam, from, to);
+    }
+
     // 四个动作：节点半径 110，悬停外移 4、图标 1.06。
     for (int i = 0; i < 4; ++i) {
         const float angle = i * 90.0f;

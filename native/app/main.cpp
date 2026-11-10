@@ -1407,8 +1407,10 @@ int Run(const Options& options) {
     };
 
     const auto openRadial = [&]() {
-        if (radialMenu != nullptr && radialMenu->Active()) {
-            return;
+        // 光圈已经开着时再按快捷键：先关掉旧的，再按当前光标位置重新呼出。
+        if (radialMenu != nullptr) {
+            radialMenu->Close();
+            radialMenu.reset();
         }
         radialMenu = std::make_unique<halocap::app::RadialMenu>();
         const bool opened = radialMenu->Open([&](core::AppAction action) {
@@ -2815,6 +2817,31 @@ int Run(const Options& options) {
                 Sleep(10);
             }
         }
+        // 已呼出时再按快捷键：旧窗口必须销毁，并在新的光标位置重开。
+        const HWND firstRadial =
+            radialMenu != nullptr ? static_cast<HWND>(radialMenu->HandleForTest()) : nullptr;
+        SetCursorPos(1400, 700);
+        openRadial();
+        const ULONGLONG reopenStart = GetTickCount64();
+        while (GetTickCount64() - reopenStart < 300) {
+            MSG reopenMessage{};
+            while (PeekMessageW(&reopenMessage, nullptr, 0, 0, PM_REMOVE)) {
+                TranslateMessage(&reopenMessage);
+                DispatchMessageW(&reopenMessage);
+            }
+            Sleep(10);
+        }
+        bool reopenOk = false;
+        if (firstRadial != nullptr && !IsWindow(firstRadial) && radialMenu != nullptr &&
+            radialMenu->Active()) {
+            RECT reopened{};
+            GetWindowRect(static_cast<HWND>(radialMenu->HandleForTest()), &reopened);
+            const int centerX = (reopened.left + reopened.right) / 2;
+            const int centerY = (reopened.top + reopened.bottom) / 2;
+            reopenOk = std::abs(centerX - 1400) <= 3 && std::abs(centerY - 700) <= 3;
+        }
+        AddFlag(report, "APP_RADIAL_REOPEN_AT_CURSOR", reopenOk);
+
         halocap::platform::win32::DesktopImage desktop;
         const bool proof =
             halocap::platform::win32::GrabPrimaryDesktop(desktop) &&
@@ -2834,7 +2861,7 @@ int Run(const Options& options) {
         AddFlag(report, "APP_RADIAL_CURSOR_NORMAL", cursorNormal);
         AddFlag(report, "APP_RADIAL_WINDOW", opened);
         AddFlag(report, "APP_RADIAL_PROOF", proof);
-        radialSelftestOk = opened && proof && cursorNormal;
+        radialSelftestOk = opened && proof && cursorNormal && reopenOk;
         log.Info(radialSelftestOk ? "radial selftest: ok" : "radial selftest: failed");
         running = false;
     }

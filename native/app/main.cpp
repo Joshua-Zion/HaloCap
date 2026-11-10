@@ -57,6 +57,7 @@
 
 #include <psapi.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -1030,7 +1031,8 @@ int Run(const Options& options) {
 
 
     // OCR：推理放在一次性的 worker 子进程里，主进程不加载 ORT。
-    std::unique_ptr<halocap::app::OcrResultWindow> ocrWindow;
+    // 结果窗口和 1.x 一样可以同时开多个，不因为下一次识别或截图自动关掉。
+    std::vector<std::unique_ptr<halocap::app::OcrResultWindow>> ocrWindows;
     std::unique_ptr<halocap::app::SettingsWindow> settingsWindow;
     int settingsPageOverride = options.settingsSelftestPage;
     std::unique_ptr<halocap::app::RadialMenu> radialMenu;
@@ -1105,21 +1107,44 @@ int Run(const Options& options) {
         }).detach();
     };
 
+    const auto pruneOcrWindows = [&ocrWindows]() {
+        ocrWindows.erase(
+            std::remove_if(ocrWindows.begin(), ocrWindows.end(),
+                           [](const std::unique_ptr<halocap::app::OcrResultWindow>& window) {
+                               return !window->Valid();
+                           }),
+            ocrWindows.end());
+    };
+    // 截图期间把结果窗口临时藏起来：既不会被截进下一张图，也不会为了「新截图」被关掉。
+    const auto hideOcrWindows = [&ocrWindows]() {
+        for (auto& window : ocrWindows) {
+            if (window->Valid()) {
+                ShowWindow(window->Handle(), SW_HIDE);
+            }
+        }
+    };
+    const auto showOcrWindows = [&ocrWindows]() {
+        for (auto& window : ocrWindows) {
+            if (window->Valid()) {
+                ShowWindow(window->Handle(), SW_SHOWNOACTIVATE);
+            }
+        }
+    };
+
     const auto openOcrResult = [&](const std::uint8_t* bgra, int width, int height, int x,
                                    int y, bool fromPin) {
-        if (ocrWindow != nullptr) {
-            ocrWindow->Close();
-        }
-        ocrWindow = std::make_unique<halocap::app::OcrResultWindow>();
+        pruneOcrWindows();
+        auto window = std::make_unique<halocap::app::OcrResultWindow>();
         halocap::app::OcrResultOptions resultOptions;
         resultOptions.engine = liveSettings.ocr.engine;
         resultOptions.autoCopy = liveSettings.ocr.autoCopy;
         resultOptions.fromPin = fromPin;
         resultOptions.anchor = core::IntRect{ x, y, x + width, y + height };
-        if (!ocrWindow->Create(nullptr, bgra, width, height, resultOptions, startOcr)) {
-            ocrWindow.reset();
+        if (!window->Create(nullptr, bgra, width, height, resultOptions, startOcr)) {
             log.Error("ocr: result window failed");
+            return;
         }
+        ocrWindows.push_back(std::move(window));
     };
 
     const auto wirePin = [&](halocap::app::PinWindow& pin) {
@@ -1148,16 +1173,14 @@ int Run(const Options& options) {
         if (screenshotOverlay != nullptr && screenshotOverlay->Active()) {
             return;
         }
-        // 上一次的识别结果窗口就挡在屏幕上，下一次截图会把它截进去（结果里出现
-        // 上一次的文本）；开始新的选区前先收掉。
-        if (ocrWindow != nullptr) {
-            ocrWindow->Close();
-            ocrWindow.reset();
-        }
+        // 上一次的结果窗口不关掉，只在截图期间藏起来（关掉会让用户丢掉手上的结果）。
+        pruneOcrWindows();
+        hideOcrWindows();
         screenshotOverlay = std::make_unique<halocap::app::ScreenshotOverlay>();
         halocap::app::ScreenshotOverlayOptions overlayOptions;
         overlayOptions.jpeg = settings.screenshotFormat == core::ScreenshotFormat::Jpeg;
         overlayOptions.pinHotkey = liveSettings.pinHotkey;
+        overlayOptions.onClosed = [showOcrWindows] { showOcrWindows(); };
         overlayOptions.onPin = [&](const std::uint8_t* bgra, int width, int height, int x, int y) {
             auto pin = std::make_unique<halocap::app::PinWindow>();
             if (pin->Create(bgra, width, height, x, y, pinOptions())) {
@@ -1186,13 +1209,12 @@ int Run(const Options& options) {
         if (screenshotOverlay != nullptr && screenshotOverlay->Active()) {
             return;
         }
-        if (ocrWindow != nullptr) {
-            ocrWindow->Close();
-            ocrWindow.reset();
-        }
+        pruneOcrWindows();
+        hideOcrWindows();
         screenshotOverlay = std::make_unique<halocap::app::ScreenshotOverlay>();
         halocap::app::ScreenshotOverlayOptions overlayOptions;
         overlayOptions.mode = halocap::app::OverlayMode::Ocr;
+        overlayOptions.onClosed = [showOcrWindows] { showOcrWindows(); };
         overlayOptions.onOcr = [&openOcrResult](const std::uint8_t* image, int imageWidth,
                                                int imageHeight, int x, int y) {
             openOcrResult(image, imageWidth, imageHeight, x, y, false);
@@ -1695,12 +1717,12 @@ int Run(const Options& options) {
                 const int ocrY = ocrButtonRect.top + (ocrButtonRect.bottom - ocrButtonRect.top) / 2;
                 sendMouse(WM_LBUTTONDOWN, ocrX, ocrY);
                 sendMouse(WM_LBUTTONUP, ocrX, ocrY);
-                ocrButtonOk = ocrWindow != nullptr && ocrWindow->Valid();
+                ocrButtonOk = !ocrWindows.empty() && ocrWindows.back()->Valid();
             }
-            if (ocrWindow != nullptr) {
-                ocrWindow->Close();
-                ocrWindow.reset();
+            for (auto& window : ocrWindows) {
+                window->Close();
             }
+            ocrWindows.clear();
             screenshotOverlay->Close();
             // 贴图证明图：覆盖层关掉之后再抓，窗口与光晕才是可见的。
             Sleep(150);
@@ -1810,9 +1832,11 @@ int Run(const Options& options) {
             SendMessageW(overlayWindow, WM_LBUTTONUP, 0, MAKELPARAM(dragX1, dragY1));
 
             // 识别在后台线程跑 worker：结果窗口先以 loading 打开，等它进结果态再断言。
-            const bool windowOpen = ocrWindow != nullptr && ocrWindow->Valid();
+            halocap::app::OcrResultWindow* ocr =
+                ocrWindows.empty() ? nullptr : ocrWindows.back().get();
+            const bool windowOpen = ocr != nullptr && ocr->Valid();
             const std::uint64_t waitStart = GetTickCount64();
-            while (ocrWindow != nullptr && ocrWindow->Valid() && !ocrWindow->ReadyForTest() &&
+            while (ocr != nullptr && ocr->Valid() && !ocr->ReadyForTest() &&
                    GetTickCount64() - waitStart < 8000) {
                 MSG message;
                 while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
@@ -1821,27 +1845,26 @@ int Run(const Options& options) {
                 }
                 Sleep(20);
             }
-            const bool recognized = ocrWindow != nullptr && ocrWindow->ReadyForTest();
-            ocrSelftestLines = ocrWindow != nullptr ? ocrWindow->LineCountForTest() : 0;
-            const double ocrRecognizeMs = ocrWindow != nullptr ? ocrWindow->ElapsedMsForTest() : 0.0;
+            const bool recognized = ocr != nullptr && ocr->ReadyForTest();
+            ocrSelftestLines = ocr != nullptr ? ocr->LineCountForTest() : 0;
+            const double ocrRecognizeMs = ocr != nullptr ? ocr->ElapsedMsForTest() : 0.0;
             Sleep(400);
             RECT ocrWindowRect{};
             bool ocrWindowVisible = false;
             bool ocrWindowOnTop = false;
-            if (ocrWindow != nullptr && ocrWindow->Valid()) {
-                GetWindowRect(ocrWindow->Handle(), &ocrWindowRect);
-                ocrWindowVisible = IsWindowVisible(ocrWindow->Handle()) != FALSE;
+            if (ocr != nullptr && ocr->Valid()) {
+                GetWindowRect(ocr->Handle(), &ocrWindowRect);
+                ocrWindowVisible = IsWindowVisible(ocr->Handle()) != FALSE;
                 POINT center{ (ocrWindowRect.left + ocrWindowRect.right) / 2,
                               (ocrWindowRect.top + ocrWindowRect.bottom) / 2 };
-                ocrWindowOnTop = WindowFromPoint(center) == ocrWindow->Handle() ||
-                                 GetAncestor(WindowFromPoint(center), GA_ROOT) ==
-                                     ocrWindow->Handle();
+                ocrWindowOnTop = WindowFromPoint(center) == ocr->Handle() ||
+                                 GetAncestor(WindowFromPoint(center), GA_ROOT) == ocr->Handle();
             }
             AddFlag(report, "APP_OCR_WINDOW_VISIBLE", ocrWindowVisible);
             AddInt(report, "APP_OCR_TEXT_LINES_CTRL",
-                   ocrWindow != nullptr ? ocrWindow->TextLineCountForTest() : -1);
+                   ocr != nullptr ? ocr->TextLineCountForTest() : -1);
             AddFlag(report, "APP_OCR_TEXT_SCROLLBAR",
-                    ocrWindow != nullptr && ocrWindow->TextScrollVisibleForTest());
+                    ocr != nullptr && ocr->TextScrollVisibleForTest());
             AddFlag(report, "APP_OCR_WINDOW_ON_TOP", ocrWindowOnTop);
             AddText(report, "APP_OCR_WINDOW_RECT",
                     (std::to_string(ocrWindowRect.left) + "," + std::to_string(ocrWindowRect.top) +
@@ -1849,12 +1872,12 @@ int Run(const Options& options) {
                      std::to_string(ocrWindowRect.bottom - ocrWindowRect.top)).c_str());
             const bool proof = screenshotOverlay->GrabDesktopToPng(options.ocrSelftestPath);
             // 结果窗口自身再印一张：桌面抓图看不到它时，用这张判断是「没画」还是「被遮」。
-            if (ocrWindow != nullptr && ocrWindow->Valid()) {
+            if (ocr != nullptr && ocr->Valid()) {
                 RECT wr{};
-                GetWindowRect(ocrWindow->Handle(), &wr);
+                GetWindowRect(ocr->Handle(), &wr);
                 const int ww = wr.right - wr.left;
                 const int wh = wr.bottom - wr.top;
-                HDC windowDc = GetWindowDC(ocrWindow->Handle());
+                HDC windowDc = GetWindowDC(ocr->Handle());
                 HDC memory = CreateCompatibleDC(windowDc);
                 BITMAPINFO wbmi{};
                 wbmi.bmiHeader.biSize = sizeof(wbmi.bmiHeader);
@@ -1868,7 +1891,7 @@ int Run(const Options& options) {
                     CreateDIBSection(windowDc, &wbmi, DIB_RGB_COLORS, &wbits, nullptr, 0);
                 if (wbitmap != nullptr && wbits != nullptr) {
                     HGDIOBJ oldW = SelectObject(memory, wbitmap);
-                    PrintWindow(ocrWindow->Handle(), memory, 0);
+                    PrintWindow(ocr->Handle(), memory, 0);
                     halocap::platform::win32::SaveBgraPng(
                         options.ocrSelftestPath + L".window.png",
                         static_cast<const std::uint8_t*>(wbits), ww, wh, ww * 4);
@@ -1876,7 +1899,7 @@ int Run(const Options& options) {
                     DeleteObject(wbitmap);
                 }
                 DeleteDC(memory);
-                ReleaseDC(ocrWindow->Handle(), windowDc);
+                ReleaseDC(ocr->Handle(), windowDc);
             }
             const double ocrMb = PrivateMb();
             AddFlag(report, "APP_OCR_OVERLAY", true);
@@ -1893,16 +1916,20 @@ int Run(const Options& options) {
             AddMb(report, "APP_OCR_PRIVATE_MB", ocrMb);
 
             // 关掉结果窗口、释放 ORT 会话之后必须回到空闲预算内（S4 的退出条件）。
-            ocrWindow.reset();
+            for (auto& window : ocrWindows) {
+                window->Close();
+            }
+            ocrWindows.clear();
             TrimProcessMemory();
             Sleep(200);
             const double idleMb = PrivateMb();
             AddMb(report, "APP_OCR_AFTER_RELEASE_MB", idleMb);
 
-            // 再关覆盖层：ScreenshotOverlay 自己建了一台 D3D/D2D 设备，与预热的那台
-            // （OverlayStack，只服务录制）是两台。不分开量就分不清「模型残留」与「设备保留」。
-            screenshotOverlay->Close();
-            screenshotOverlay.reset();
+            // 覆盖层在 OCR 松手时就同步关了；这里只再压一轮内存确认设备回收。
+            if (screenshotOverlay != nullptr) {
+                screenshotOverlay->Close();
+                screenshotOverlay.reset();
+            }
             TrimProcessMemory();
             Sleep(400);
             // 多屏之后这一块是整块虚拟桌面的 D3D 纹理，驱动侧回收是异步的：再等一轮再压一次。
@@ -1929,11 +1956,48 @@ int Run(const Options& options) {
             AddFlag(report, "APP_OCR_AFTER_OVERLAY_CLOSE_UNDER_80",
                     afterOverlayMb > 0.0 && afterOverlayMb <= 80.0);
 
+            // 结果窗口不随下一次截图关闭：开一个真实的新 OCR 会话（会先隐藏已有结果窗口），
+            // 取消会话后窗口必须恢复显示、对象仍然有效。放在内存闸门之后建第二台覆盖层，
+            // 避免驱动延迟回收污染上面的空闲内存数字。
+            bool hiddenDuringCapture = false;
+            bool restoredAfterCapture = false;
+            bool persistsOk = false;
+            {
+                std::vector<std::uint8_t> probeImage(64 * 32 * 4, 255);
+                openOcrResult(probeImage.data(), 64, 32, 100, 100, false);
+                halocap::app::OcrResultWindow* probeWindow =
+                    ocrWindows.empty() ? nullptr : ocrWindows.back().get();
+                if (probeWindow != nullptr && probeWindow->Valid()) {
+                    const HWND probeHandle = probeWindow->Handle();
+                    const bool wasVisible = IsWindowVisible(probeHandle) != FALSE;
+                    openOcr();
+                    hiddenDuringCapture = IsWindowVisible(probeHandle) == FALSE;
+                    if (screenshotOverlay != nullptr) {
+                        screenshotOverlay->Close();
+                        screenshotOverlay.reset();
+                    }
+                    Sleep(150);
+                    restoredAfterCapture = IsWindowVisible(probeHandle) != FALSE;
+                    persistsOk = wasVisible && hiddenDuringCapture && restoredAfterCapture &&
+                                 probeWindow->Valid();
+                }
+                for (auto& window : ocrWindows) {
+                    window->Close();
+                }
+                ocrWindows.clear();
+                TrimProcessMemory();
+                Sleep(150);
+            }
+            AddFlag(report, "APP_OCR_PERSISTS_CAPTURE", persistsOk);
+            AddFlag(report, "APP_OCR_HIDDEN_DURING_CAPTURE", hiddenDuringCapture);
+            AddFlag(report, "APP_OCR_RESTORED_AFTER_CAPTURE", restoredAfterCapture);
+
             // 功能判据：窗口起来、证明图写出、识别真的跑过；内存判据也进闸门——
             // 关掉覆盖层与结果窗口之后必须回到预算内（S4 的退出条件）。
             // 这条能拦住「又把某台设备/某个图集常驻起来」这类回归。
             ocrSelftestOk =
-                windowOpen && recognized && proof && ocrRecognizeMs > 0.0 && overlayMemoryOk;
+                windowOpen && recognized && proof && persistsOk && ocrRecognizeMs > 0.0 &&
+                overlayMemoryOk;
             log.Info(ocrSelftestOk ? "ocr selftest: ok" : "ocr selftest: failed");
         } else {
             log.Error("ocr selftest: overlay did not open");
@@ -2418,6 +2482,7 @@ int Run(const Options& options) {
         bool clearOk = false;
         bool repaintOk = false;
         bool lineViewOk = false;
+        bool viewStableOk = false;
         HighlightCounts highlighted;
         HighlightCounts cleared;
         if (opened) {
@@ -2469,6 +2534,8 @@ int Run(const Options& options) {
                       status() == L"输入关键词";
 
             // 逐行视图：长行要换行显示（原来用 DT_END_ELLIPSIS 会被截掉）。
+            RECT viewBefore{};
+            GetWindowRect(searchWindow->Handle(), &viewBefore);
             searchWindow->SetLineViewForTest(true);
             UpdateWindow(searchWindow->Handle());
             Sleep(300);
@@ -2479,6 +2546,15 @@ int Run(const Options& options) {
                     options.ocrSearchSelftestPath + L".lines.png", linesDesktop.bgra.data(),
                     linesDesktop.width, linesDesktop.height, linesDesktop.width * 4);
             }
+            // 切回文本视图：窗口左上角必须回到切换前的位置（搜索栏开合只改高度）。
+            searchWindow->SetLineViewForTest(false);
+            Sleep(200);
+            RECT viewAfter{};
+            GetWindowRect(searchWindow->Handle(), &viewAfter);
+            const bool viewStable = viewBefore.left == viewAfter.left &&
+                                    viewBefore.top == viewAfter.top;
+            viewStableOk = viewStable;
+            AddFlag(report, "APP_OCR_SEARCH_VIEW_STABLE", viewStable);
             searchWindow.reset();
         }
 
@@ -2495,7 +2571,7 @@ int Run(const Options& options) {
         AddInt(report, "APP_OCR_SEARCH_GREEN_OFF", cleared.green);
         AddInt(report, "APP_OCR_SEARCH_BLUE_OFF", cleared.blue);
         ocrSearchSelftestOk = opened && counterOk && wrapOk && caseOk && noneOk && clearOk &&
-                              repaintOk && lineViewOk;
+                              repaintOk && lineViewOk && viewStableOk;
         log.Info(ocrSearchSelftestOk ? "ocr search selftest: ok" : "ocr search selftest: failed");
         running = false;
     }
@@ -2511,7 +2587,11 @@ int Run(const Options& options) {
 
         const bool opened = settingsWindow != nullptr && settingsWindow->Valid();
         bool proof = false;
+        bool taskbarOk = false;
         if (opened) {
+            // 设置是独立应用窗口：必须带 WS_EX_APPWINDOW（TOOLWINDOW 会让它从任务栏消失）。
+            const LONG_PTR exStyle = GetWindowLongPtrW(settingsWindow->Handle(), GWL_EXSTYLE);
+            taskbarOk = (exStyle & WS_EX_APPWINDOW) != 0 && (exStyle & WS_EX_TOOLWINDOW) == 0;
             halocap::platform::win32::DesktopImage desktop;
             proof = halocap::platform::win32::GrabPrimaryDesktop(desktop) &&
                     halocap::platform::win32::SaveBgraPng(
@@ -2522,7 +2602,8 @@ int Run(const Options& options) {
 
         AddFlag(report, "APP_SETTINGS_WINDOW", opened);
         AddFlag(report, "APP_SETTINGS_PROOF", proof);
-        settingsSelftestOk = opened && proof;
+        AddFlag(report, "APP_SETTINGS_TASKBAR", taskbarOk);
+        settingsSelftestOk = opened && proof && taskbarOk;
         running = false;
     }
 
@@ -2807,8 +2888,11 @@ int Run(const Options& options) {
         }
 
         // OCR 结果窗口关闭后释放；引擎空闲 60 秒后卸载，回到空闲内存预算内。
-        if (ocrWindow != nullptr && !ocrWindow->Valid()) {
-            ocrWindow.reset();
+        if (std::any_of(ocrWindows.begin(), ocrWindows.end(),
+                        [](const std::unique_ptr<halocap::app::OcrResultWindow>& window) {
+                            return !window->Valid();
+                        })) {
+            pruneOcrWindows();
         }
         if (settingsWindow != nullptr && settingsPageOverride >= 0) {
             settingsWindow->ShowPageForTest(settingsPageOverride);

@@ -250,6 +250,11 @@ private:
     std::vector<std::uint8_t> image_;
     int imageWidth_ = 0;
     int imageHeight_ = 0;
+
+    // 首次按选区定位；之后切换文本/逐行、开合搜索栏只改高度，左上角钉住不动。
+    bool placed_ = false;
+    int placedLeft_ = 0;
+    int placedTop_ = 0;
 };
 
 }

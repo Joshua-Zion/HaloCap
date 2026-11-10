@@ -234,6 +234,12 @@ void OcrResultWindow::Close() {
         DestroyWindow(window_);
         window_ = nullptr;
     }
+    // 关闭后结果窗口对象可能还会留在 app 的列表里（用户点 X 而不是 app 清列表），
+    // 原图副本要及时还掉，否则每次识别都要多占一张截图的常驻内存。
+    image_.clear();
+    image_.shrink_to_fit();
+    imageWidth_ = 0;
+    imageHeight_ = 0;
     DeleteResources();
 }
 
@@ -735,29 +741,45 @@ void OcrResultWindow::Layout() {
         }
     }
 
-    // 定位：优先贴选区下方，放不下就翻到上方。
-    RECT anchor{ options_.anchor.left, options_.anchor.top, options_.anchor.right,
-                 options_.anchor.bottom };
-    if (anchor.right <= anchor.left || anchor.bottom <= anchor.top) {
-        POINT cursor{};
-        GetCursorPos(&cursor);
-        anchor = RECT{ cursor.x, cursor.y, cursor.x + 1, cursor.y + 1 };
+    // 定位：第一次贴选区下方/上方；之后切换文本/逐行、开合搜索栏只改高度，
+    // 左上角保持在首次算出的位置（放不下时只往上/往左收），这样切回文本视图
+    // 窗口会回到原位，而不是停在半路。
+    if (!placed_) {
+        RECT anchor{ options_.anchor.left, options_.anchor.top, options_.anchor.right,
+                     options_.anchor.bottom };
+        if (anchor.right <= anchor.left || anchor.bottom <= anchor.top) {
+            POINT cursor{};
+            GetCursorPos(&cursor);
+            anchor = RECT{ cursor.x, cursor.y, cursor.x + 1, cursor.y + 1 };
+        }
+        MONITORINFO anchorInfo{};
+        anchorInfo.cbSize = sizeof(anchorInfo);
+        GetMonitorInfoW(MonitorFromRect(&anchor, MONITOR_DEFAULTTONEAREST), &anchorInfo);
+        const int anchorMargin = ScaleInt(12.0f);
+        placedLeft_ = std::clamp(
+            static_cast<int>(anchor.left),
+            static_cast<int>(anchorInfo.rcWork.left) + anchorMargin,
+            std::max(static_cast<int>(anchorInfo.rcWork.left) + anchorMargin,
+                     static_cast<int>(anchorInfo.rcWork.right) - width_ - anchorMargin));
+        int anchorTop = static_cast<int>(anchor.bottom) + anchorMargin;
+        if (anchorTop + height_ > static_cast<int>(anchorInfo.rcWork.bottom) - anchorMargin) {
+            anchorTop = static_cast<int>(anchor.top) - anchorMargin - height_;
+        }
+        placedTop_ = anchorTop;
+        placed_ = true;
     }
+
     MONITORINFO info{};
     info.cbSize = sizeof(info);
-    GetMonitorInfoW(MonitorFromRect(&anchor, MONITOR_DEFAULTTONEAREST), &info);
+    RECT probe{ placedLeft_, placedTop_, placedLeft_ + width_, placedTop_ + height_ };
+    GetMonitorInfoW(MonitorFromRect(&probe, MONITOR_DEFAULTTONEAREST), &info);
     const int margin = ScaleInt(12.0f);
-    const int x = std::clamp(static_cast<int>(anchor.left),
-                             static_cast<int>(info.rcWork.left) + margin,
+    const int x = std::clamp(placedLeft_, static_cast<int>(info.rcWork.left) + margin,
                              std::max(static_cast<int>(info.rcWork.left) + margin,
                                       static_cast<int>(info.rcWork.right) - width_ - margin));
-    int top = static_cast<int>(anchor.bottom) + margin;
-    if (top + height_ > static_cast<int>(info.rcWork.bottom) - margin) {
-        top = static_cast<int>(anchor.top) - margin - height_;
-    }
-    top = std::clamp(top, static_cast<int>(info.rcWork.top) + margin,
-                     std::max(static_cast<int>(info.rcWork.top) + margin,
-                              static_cast<int>(info.rcWork.bottom) - height_ - margin));
+    const int top = std::clamp(placedTop_, static_cast<int>(info.rcWork.top) + margin,
+                               std::max(static_cast<int>(info.rcWork.top) + margin,
+                                        static_cast<int>(info.rcWork.bottom) - height_ - margin));
     SetWindowPos(window_, nullptr, x, top, width_, height_, SWP_NOZORDER | SWP_NOACTIVATE);
 }
 

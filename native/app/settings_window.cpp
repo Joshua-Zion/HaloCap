@@ -471,7 +471,8 @@ bool SettingsWindow::Create(void* owner, const core::AppSettings& settings,
     const int left = work.left + ((work.right - work.left) - widthPx_) / 2;
     const int top = work.top + ((work.bottom - work.top) - heightPx_) / 2;
 
-    window_ = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW, kClassName,
+    // 设置是一个独立的应用窗口：进任务栏、Alt+Tab 也能切回来（TOOLWINDOW 会把它藏起来）。
+    window_ = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_APPWINDOW, kClassName,
                               L"HaloCap 设置", WS_POPUP, left, top, widthPx_, heightPx_, nullptr,
                               nullptr, GetModuleHandleW(nullptr), this);
     if (window_ == nullptr) {

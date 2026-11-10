@@ -285,6 +285,27 @@ void TestMergeRowBoxes() {
     CheckEqual(static_cast<long long>(kept.size()), 2, "uneven heights stay separate");
 }
 
+// worker 协议回归：`ReadOcrWorkerOutput` 以前用 `stream >> separator` 收尾，
+// `>>` 会跳过制表符并把文本的第一个字读进 separator，于是每一行都少一个字
+// （用户截图里「3、…」变成「、…」、「命中)。」变成「中)。」）。
+void TestParseOcrLineRecord() {
+    ocr::OcrLine line;
+    const bool parsed = ocr::ParseOcrLineRecord(
+        "19.5\t23.8\t169.46\t23.46\t0.998\t3、原图里有奇怪标注", &line);
+    CheckTrue(parsed, "worker record parses");
+    CheckTrue(line.text == "3、原图里有奇怪标注", "first character of the line survives parsing");
+    CheckNear(line.box.left, 19.5f, 0.01f, "record x");
+    CheckNear(line.box.top, 23.8f, 0.01f, "record y");
+    CheckNear(line.box.right, 188.96f, 0.01f, "record right = x + w");
+    CheckNear(line.box.bottom, 47.26f, 0.01f, "record bottom = y + h");
+    CheckNear(line.confidence, 0.998f, 0.001f, "record confidence");
+
+    // 字段不足 / 空文本 / 数值非法都跳过，不崩也不产生空行。
+    CheckTrue(!ocr::ParseOcrLineRecord("broken", &line), "short record rejected");
+    CheckTrue(!ocr::ParseOcrLineRecord("1\t2\t3\t4\t5\t", &line), "empty text rejected");
+    CheckTrue(!ocr::ParseOcrLineRecord("a\t2\t3\t4\t5\ttext", &line), "bad number rejected");
+}
+
 }
 
 int main() {
@@ -300,6 +321,7 @@ int main() {
     TestBuildResultKeepsTightRowOrder();
     TestGroupTextBoxesIntoLines();
     TestMergeRowBoxes();
+    TestParseOcrLineRecord();
 
     if (failures != 0) {
         std::printf("OCR_TESTS=FAILED %d/%d\n", failures, checks);

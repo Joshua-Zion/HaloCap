@@ -100,4 +100,10 @@ std::vector<std::size_t> FindMatchingLines(const OcrResult& result, std::string_
 // 结果窗口的「复制全部」与调试输出的共用格式。
 std::string ToPlainText(const OcrResult& result);
 
+// 解析一条 worker 结果记录 "x\ty\tw\th\tconf\ttext"（worker 协议的一行）。
+// 文本从第 6 个制表符之后原样取整段：如果用 `stream >> separator` 收尾，
+// `>>` 会先跳过制表符、再读走文本的第一个字，每行都会少一个字。
+// 返回 false 表示字段不足或数值非法。
+bool ParseOcrLineRecord(std::string_view record, OcrLine* line);
+
 }

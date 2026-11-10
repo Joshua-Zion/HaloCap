@@ -12,7 +12,6 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
-#include <sstream>
 #include <string>
 
 namespace halocap::app {
@@ -168,24 +167,11 @@ bool ReadOcrWorkerOutput(const std::string& path, OcrWorkerResult* result) {
         if (line.empty()) {
             continue;
         }
-        std::istringstream row(line);
-        float x = 0.0f;
-        float y = 0.0f;
-        float w = 0.0f;
-        float h = 0.0f;
-        float confidence = 0.0f;
-        char separator = 0;
-        if (!(row >> x >> separator >> y >> separator >> w >> separator >> h >> separator >>
-              confidence >> separator)) {
+        core::ocr::OcrLine parsed;
+        if (!core::ocr::ParseOcrLineRecord(line, &parsed)) {
             continue;
         }
-        std::string text;
-        std::getline(row, text);
-        if (text.empty()) {
-            continue;
-        }
-        result->lines.push_back(core::ocr::OcrLine{ text, core::Rect{ x, y, x + w, y + h },
-                                                    confidence });
+        result->lines.push_back(std::move(parsed));
     }
 
     result->ok = true;

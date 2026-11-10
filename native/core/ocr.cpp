@@ -1,6 +1,7 @@
 #include "ocr.h"
 
 #include <algorithm>
+#include <charconv>
 #include <cmath>
 #include <cstddef>
 #include <cstring>
@@ -556,6 +557,39 @@ std::string ToPlainText(const OcrResult& result) {
         }
     }
     return text;
+}
+
+bool ParseOcrLineRecord(std::string_view record, OcrLine* line) {
+    if (line == nullptr) {
+        return false;
+    }
+    float values[5] = {};
+    std::size_t cursor = 0;
+    for (int field = 0; field < 5; ++field) {
+        const std::size_t tab = record.find('\t', cursor);
+        if (tab == std::string_view::npos) {
+            return false;
+        }
+        const std::string_view value = record.substr(cursor, tab - cursor);
+        const auto parsed =
+            std::from_chars(value.data(), value.data() + value.size(), values[field]);
+        if (parsed.ec != std::errc{} || parsed.ptr != value.data() + value.size()) {
+            return false;
+        }
+        cursor = tab + 1;
+    }
+
+    std::string_view text = record.substr(cursor);
+    if (!text.empty() && text.back() == '\r') {
+        text.remove_suffix(1);
+    }
+    if (text.empty()) {
+        return false;
+    }
+    line->text.assign(text);
+    line->box = Rect{ values[0], values[1], values[0] + values[2], values[1] + values[3] };
+    line->confidence = values[4];
+    return true;
 }
 
 std::vector<std::size_t> FindMatchingLines(const OcrResult& result, std::string_view query) {

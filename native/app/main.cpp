@@ -3797,6 +3797,13 @@ int Run(const Options& options) {
 }  // namespace
 
 int main(int argc, char** argv) {
+    // GUI 子系统：双击启动不弹控制台窗口。带参数（命令行/自检）时挂到父控制台，
+    // 让 --version、报告等输出仍然可见；不带参数时什么都不挂，纯后台驻留。
+    if (argc > 1 && AttachConsole(ATTACH_PARENT_PROCESS) != 0) {
+        FILE* console = nullptr;
+        freopen_s(&console, "CONOUT$", "w", stdout);
+        freopen_s(&console, "CONOUT$", "w", stderr);
+    }
     SetConsoleOutputCP(CP_UTF8);
     std::setvbuf(stdout, nullptr, _IONBF, 0);
 

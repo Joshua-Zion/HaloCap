@@ -2463,6 +2463,7 @@ int Run(const Options& options) {
         bool repaintOk = false;
         bool lineViewOk = false;
         bool viewStableOk = false;
+        bool editOk = false;
         HighlightCounts highlighted;
         HighlightCounts cleared;
         if (opened) {
@@ -2535,6 +2536,14 @@ int Run(const Options& options) {
                                     viewBefore.top == viewAfter.top;
             viewStableOk = viewStable;
             AddFlag(report, "APP_OCR_SEARCH_VIEW_STABLE", viewStable);
+
+            // 文本视图可直接编辑：改完文本同步回去，纯文本与行数都要跟着变。
+            searchWindow->SetEditedTextForTest(L"Halo 编辑\r\n第二行");
+            searchWindow->SyncEditedTextForTest();
+            editOk = searchWindow->TextEditableForTest() &&
+                     searchWindow->PlainTextForTest() == L"Halo 编辑\r\n第二行" &&
+                     searchWindow->LineCountForTest() == 2;
+            AddFlag(report, "APP_OCR_SEARCH_EDITABLE", editOk);
             searchWindow.reset();
         }
 
@@ -2551,7 +2560,7 @@ int Run(const Options& options) {
         AddInt(report, "APP_OCR_SEARCH_GREEN_OFF", cleared.green);
         AddInt(report, "APP_OCR_SEARCH_BLUE_OFF", cleared.blue);
         ocrSearchSelftestOk = opened && counterOk && wrapOk && caseOk && noneOk && clearOk &&
-                              repaintOk && lineViewOk && viewStableOk;
+                              repaintOk && lineViewOk && viewStableOk && editOk;
         log.Info(ocrSearchSelftestOk ? "ocr search selftest: ok" : "ocr search selftest: failed");
         running = false;
     }

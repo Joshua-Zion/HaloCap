@@ -55,6 +55,18 @@ std::wstring Utf8ToWide(std::string_view text) {
     return wide;
 }
 
+std::string WideToUtf8(std::wstring_view text) {
+    if (text.empty()) {
+        return {};
+    }
+    const int length = WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()),
+                                           nullptr, 0, nullptr, nullptr);
+    std::string utf8(static_cast<std::size_t>(length), '\0');
+    WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), utf8.data(),
+                        length, nullptr, nullptr);
+    return utf8;
+}
+
 void FillRounded(HDC dc, const RECT& rect, int radius, COLORREF fill, COLORREF border,
                  int borderWidth) {
     if (rect.right <= rect.left || rect.bottom <= rect.top) {
@@ -156,8 +168,9 @@ bool OcrResultWindow::Create(void* owner, const std::uint8_t* bgra, int width, i
     BuildFonts();
 
     // 不带 WS_VSCROLL：右侧滚动条由窗口自绘成 1.x 的细条，不再压住文字。
+    // 文本视图可直接编辑（去掉 ES_READONLY），编辑结果在复制/切逐行/搜索前同步回 result_。
     text_ = CreateWindowExW(0, L"EDIT", L"",
-                            WS_CHILD | ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL,
+                            WS_CHILD | ES_MULTILINE | ES_AUTOVSCROLL | ES_NOHIDESEL,
                             0, 0, 10, 10, window_, reinterpret_cast<HMENU>(1),
                             GetModuleHandleW(nullptr), nullptr);
     search_ = CreateWindowExW(0, L"EDIT", L"", WS_CHILD | ES_LEFT | ES_AUTOHSCROLL, 0, 0, 10,
@@ -343,7 +356,7 @@ void OcrResultWindow::ShowStatus(const std::wstring& message, bool error) {
 }
 
 void OcrResultWindow::ResetStatus() {
-    status_ = stage_ == Stage::Success ? L"Esc 关闭 · 可选择文本 · Ctrl+F 搜索" : L"Esc 关闭";
+    status_ = stage_ == Stage::Success ? L"Esc 关闭 · 可直接编辑 · Ctrl+F 搜索" : L"Esc 关闭";
     statusError_ = false;
     if (window_ != nullptr) {
         KillTimer(window_, 2);
@@ -385,6 +398,7 @@ void OcrResultWindow::CopyText(const std::wstring& text, const std::wstring& mes
 }
 
 void OcrResultWindow::CopyAll() {
+    SyncEditedText();
     if (stage_ != Stage::Success || plainText_.empty()) {
         return;
     }
@@ -400,14 +414,85 @@ void OcrResultWindow::CopyLine(std::size_t index) {
 
 // ---- 视图 ----
 
+void OcrResultWindow::SyncEditedText() {
+    if (stage_ != Stage::Success || text_ == nullptr || lineView_) {
+        return;
+    }
+    const int length = GetWindowTextLengthW(text_);
+    std::vector<wchar_t> buffer(static_cast<std::size_t>(length) + 1, L'\0');
+    if (length > 0) {
+        GetWindowTextW(text_, buffer.data(), length + 1);
+    }
+    const std::wstring edited(buffer.data(), static_cast<std::size_t>(length));
+    if (edited == Utf8ToWide(result_.plainText)) {
+        plainText_ = edited;
+        return;
+    }
+
+    const std::string utf8 = WideToUtf8(edited);
+    if (utf8.empty()) {
+        plainText_.clear();
+        result_.lines.clear();
+        result_.plainText.clear();
+        if (searchOpen_) {
+            UpdateSearch(false);
+        }
+        return;
+    }
+
+    // EDIT 内是 CRLF；粘贴进来的纯 LF 也按换行拆。
+    std::vector<std::string> texts;
+    std::size_t start = 0;
+    while (start <= utf8.size()) {
+        const std::size_t newline = utf8.find('\n', start);
+        std::string line = utf8.substr(
+            start, newline == std::string::npos ? std::string::npos : newline - start);
+        if (!line.empty() && line.back() == '\r') {
+            line.pop_back();
+        }
+        texts.push_back(std::move(line));
+        if (newline == std::string::npos) {
+            break;
+        }
+        start = newline + 1;
+    }
+
+    std::vector<core::ocr::OcrLine> lines;
+    lines.reserve(texts.size());
+    for (std::size_t i = 0; i < texts.size(); ++i) {
+        core::ocr::OcrLine line;
+        line.text = std::move(texts[i]);
+        // 行框用于预览里的搜索高亮：用户新增的行没有检测框，沿用最后一行的框，
+        // 高亮至少还落在原图范围内。
+        if (i < result_.lines.size()) {
+            line.box = result_.lines[i].box;
+            line.confidence = result_.lines[i].confidence;
+        } else if (!result_.lines.empty()) {
+            line.box = result_.lines.back().box;
+            line.confidence = result_.lines.back().confidence;
+        }
+        lines.push_back(std::move(line));
+    }
+    result_.lines = std::move(lines);
+    result_.plainText = core::ocr::ToPlainText(result_);
+    plainText_ = edited;
+    if (searchOpen_ && !lastQuery_.empty()) {
+        UpdateSearch(false);
+    }
+}
+
 void OcrResultWindow::SetLineView(bool lineView) {
     if (lineView_ == lineView) {
         return;
     }
-    lineView_ = lineView;
-    if (lineView_ && searchOpen_) {
-        CloseSearch(false);
+    // 切到逐行前先把文本视图里的编辑带过来（lineView_ 还是 false，SyncEditedText 才生效）。
+    if (lineView) {
+        SyncEditedText();
+        if (searchOpen_) {
+            CloseSearch(false);
+        }
     }
+    lineView_ = lineView;
     Layout();
     InvalidateRect(window_, nullptr, FALSE);
 }
@@ -434,6 +519,8 @@ void OcrResultWindow::OpenSearch() {
     if (stage_ != Stage::Success || searchOpen_) {
         return;
     }
+    // 搜索按行数据跑，先把文本视图里的编辑同步进来。
+    SyncEditedText();
     searchOpen_ = true;
     SetLineView(false);
     lastQuery_.clear();

@@ -76,6 +76,18 @@ public:
     }
     bool TextScrollVisibleForTest() const { return textScrollVisible_; }
 
+    // 文本视图直接编辑相关（自检用）。
+    bool TextEditableForTest() const {
+        return text_ != nullptr && (GetWindowLongPtrW(text_, GWL_STYLE) & ES_READONLY) == 0;
+    }
+    void SetEditedTextForTest(const std::wstring& text) {
+        if (text_ != nullptr) {
+            SetWindowTextW(text_, text.c_str());
+        }
+    }
+    void SyncEditedTextForTest() { SyncEditedText(); }
+    const std::wstring& PlainTextForTest() const { return plainText_; }
+
     // 搜索自检（原有签名保持不变）。
     void SetQueryForTest(const std::wstring& query);
     const std::vector<std::size_t>& MatchesForTest() const { return matches_; }
@@ -132,6 +144,9 @@ private:
     void SetImageVisible(bool visible);
     void OpenSearch();
     void CloseSearch(bool focusWindow);
+    // 文本视图里的编辑结果（换行/行数/字数都可能变）同步回 result_/plainText_，
+    // 复制、逐行视图、搜索都读同步后的数据。
+    void SyncEditedText();
     void UpdateSearch(bool selectFirst);
     void StepMatch(int direction);
     void SelectMatch(std::size_t index);

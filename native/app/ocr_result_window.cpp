@@ -828,9 +828,10 @@ void OcrResultWindow::Layout() {
         }
     }
 
-    // 定位：第一次贴选区下方/上方；之后切换文本/逐行、开合搜索栏只改高度，
-    // 左上角保持在首次算出的位置（放不下时只往上/往左收），这样切回文本视图
-    // 窗口会回到原位，而不是停在半路。
+    // 定位：第一次贴选区下方/上方；之后重排（切文本/逐行、开合搜索栏、点按钮）
+    // 都沿用窗口当前的位置——用户把标题栏拖到哪里就停在哪里，不许自动复位。
+    int left = 0;
+    int top = 0;
     if (!placed_) {
         RECT anchor{ options_.anchor.left, options_.anchor.top, options_.anchor.right,
                      options_.anchor.bottom };
@@ -843,31 +844,38 @@ void OcrResultWindow::Layout() {
         anchorInfo.cbSize = sizeof(anchorInfo);
         GetMonitorInfoW(MonitorFromRect(&anchor, MONITOR_DEFAULTTONEAREST), &anchorInfo);
         const int anchorMargin = ScaleInt(12.0f);
-        placedLeft_ = std::clamp(
+        left = std::clamp(
             static_cast<int>(anchor.left),
             static_cast<int>(anchorInfo.rcWork.left) + anchorMargin,
             std::max(static_cast<int>(anchorInfo.rcWork.left) + anchorMargin,
                      static_cast<int>(anchorInfo.rcWork.right) - width_ - anchorMargin));
-        int anchorTop = static_cast<int>(anchor.bottom) + anchorMargin;
-        if (anchorTop + height_ > static_cast<int>(anchorInfo.rcWork.bottom) - anchorMargin) {
-            anchorTop = static_cast<int>(anchor.top) - anchorMargin - height_;
+        top = static_cast<int>(anchor.bottom) + anchorMargin;
+        if (top + height_ > static_cast<int>(anchorInfo.rcWork.bottom) - anchorMargin) {
+            top = static_cast<int>(anchor.top) - anchorMargin - height_;
         }
-        placedTop_ = anchorTop;
         placed_ = true;
+    } else {
+        RECT current{};
+        GetWindowRect(window_, &current);
+        left = current.left;
+        top = current.top;
     }
 
     MONITORINFO info{};
     info.cbSize = sizeof(info);
-    RECT probe{ placedLeft_, placedTop_, placedLeft_ + width_, placedTop_ + height_ };
+    RECT probe{ left, top, left + width_, top + height_ };
     GetMonitorInfoW(MonitorFromRect(&probe, MONITOR_DEFAULTTONEAREST), &info);
     const int margin = ScaleInt(12.0f);
-    const int x = std::clamp(placedLeft_, static_cast<int>(info.rcWork.left) + margin,
-                             std::max(static_cast<int>(info.rcWork.left) + margin,
-                                      static_cast<int>(info.rcWork.right) - width_ - margin));
-    const int top = std::clamp(placedTop_, static_cast<int>(info.rcWork.top) + margin,
-                               std::max(static_cast<int>(info.rcWork.top) + margin,
-                                        static_cast<int>(info.rcWork.bottom) - height_ - margin));
-    SetWindowPos(window_, nullptr, x, top, width_, height_, SWP_NOZORDER | SWP_NOACTIVATE);
+    const int windowLeft = std::clamp(
+        left, static_cast<int>(info.rcWork.left) + margin,
+        std::max(static_cast<int>(info.rcWork.left) + margin,
+                 static_cast<int>(info.rcWork.right) - width_ - margin));
+    const int windowTop = std::clamp(
+        top, static_cast<int>(info.rcWork.top) + margin,
+        std::max(static_cast<int>(info.rcWork.top) + margin,
+                 static_cast<int>(info.rcWork.bottom) - height_ - margin));
+    SetWindowPos(window_, nullptr, windowLeft, windowTop, width_, height_,
+                 SWP_NOZORDER | SWP_NOACTIVATE);
 }
 
 // ---- 命中与交互 ----

@@ -2463,6 +2463,7 @@ int Run(const Options& options) {
         bool repaintOk = false;
         bool lineViewOk = false;
         bool viewStableOk = false;
+        bool dragStableOk = false;
         bool editOk = false;
         HighlightCounts highlighted;
         HighlightCounts cleared;
@@ -2537,6 +2538,22 @@ int Run(const Options& options) {
             viewStableOk = viewStable;
             AddFlag(report, "APP_OCR_SEARCH_VIEW_STABLE", viewStable);
 
+            // 拖动之后点按钮不许复位：把窗口挪开，再切逐行/文本，位置必须保持挪后的。
+            RECT dragged{};
+            GetWindowRect(searchWindow->Handle(), &dragged);
+            SetWindowPos(searchWindow->Handle(), nullptr, dragged.left + 60, dragged.top + 40, 0,
+                         0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+            RECT moved{};
+            GetWindowRect(searchWindow->Handle(), &moved);
+            searchWindow->SetLineViewForTest(true);
+            searchWindow->SetLineViewForTest(false);
+            Sleep(100);
+            RECT afterMove{};
+            GetWindowRect(searchWindow->Handle(), &afterMove);
+            dragStableOk = moved.left == dragged.left + 60 && moved.top == dragged.top + 40 &&
+                           afterMove.left == moved.left && afterMove.top == moved.top;
+            AddFlag(report, "APP_OCR_SEARCH_DRAG_STABLE", dragStableOk);
+
             // 文本视图可直接编辑：改完文本同步回去，纯文本与行数都要跟着变。
             searchWindow->SetEditedTextForTest(L"Halo 编辑\r\n第二行");
             searchWindow->SyncEditedTextForTest();
@@ -2560,7 +2577,7 @@ int Run(const Options& options) {
         AddInt(report, "APP_OCR_SEARCH_GREEN_OFF", cleared.green);
         AddInt(report, "APP_OCR_SEARCH_BLUE_OFF", cleared.blue);
         ocrSearchSelftestOk = opened && counterOk && wrapOk && caseOk && noneOk && clearOk &&
-                              repaintOk && lineViewOk && viewStableOk && editOk;
+                              repaintOk && lineViewOk && viewStableOk && dragStableOk && editOk;
         log.Info(ocrSearchSelftestOk ? "ocr search selftest: ok" : "ocr search selftest: failed");
         running = false;
     }

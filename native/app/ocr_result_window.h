@@ -266,10 +266,8 @@ private:
     int imageWidth_ = 0;
     int imageHeight_ = 0;
 
-    // 首次按选区定位；之后切换文本/逐行、开合搜索栏只改高度，左上角钉住不动。
+    // 首次按选区定位；之后重排沿用窗口当前位置（用户拖动后不会被拉回去）。
     bool placed_ = false;
-    int placedLeft_ = 0;
-    int placedTop_ = 0;
 };
 
 }

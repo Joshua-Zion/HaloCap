@@ -406,42 +406,6 @@ void* Win32Tray::BuildMenuHandle(const core::TrayMenuState& state) {
     return menu;
 }
 
-core::TrayCommand Win32Tray::PopupMenu(const core::TrayMenuState& state) {
-    if (window_ == nullptr) {
-        SetError("window", 0);
-        return core::TrayCommand::None;
-    }
-
-    HMENU menu = static_cast<HMENU>(BuildMenuHandle(state));
-    if (menu == nullptr) {
-        return core::TrayCommand::None;
-    }
-
-    POINT cursor{};
-    GetCursorPos(&cursor);
-
-    // 经典坑：不把托盘窗口设成前台，点别处菜单不会收起。
-    HWND previous = GetForegroundWindow();
-    SetForegroundWindow(static_cast<HWND>(window_));
-
-    const UINT command = TrackPopupMenu(menu,
-                                        TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NONOTIFY,
-                                        cursor.x, cursor.y, 0, static_cast<HWND>(window_), nullptr);
-
-    // 文档要求：菜单关掉之后补一条 WM_NULL，否则下一轮消息处理可能卡住。
-    PostMessageW(static_cast<HWND>(window_), WM_NULL, 0, 0);
-    DestroyMenu(menu);
-
-    if (previous != nullptr && previous != static_cast<HWND>(window_)) {
-        SetForegroundWindow(previous);
-    }
-
-    if (core::IsTrayCommand(static_cast<std::int32_t>(command))) {
-        return static_cast<core::TrayCommand>(command);
-    }
-    return core::TrayCommand::None;
-}
-
 Win32Tray::Click Win32Tray::PollClick() {
     const Click click = pendingClick_;
     pendingClick_ = Click::None;

@@ -9,6 +9,7 @@ namespace {
 using halocap::core::ConvertFloatToPcm16;
 using halocap::core::FramesToUs;
 using halocap::core::MixInto;
+using halocap::core::PeakAbs;
 using halocap::core::RemixToStereo;
 using halocap::core::ResampleLinear;
 using halocap::core::ResampledFrameCount;
@@ -230,6 +231,28 @@ void TestResample() {
     CheckClose(down[0], 0.0f, 1e-6f, "degenerate resample calls leave the buffer alone");
 }
 
+void TestPeakAbs() {
+    // 峰值表最关心的是「取绝对值后的最大值」，左右声道都要扫到。
+    const float quiet[] = { 0.1f, -0.3f, 0.2f, -0.15f };
+    CheckClose(PeakAbs(quiet, 2), 0.3f, 1e-6f, "peak: right channel negative wins");
+
+    const float loudRight[] = { 0.05f, -0.8f, 0.4f, 0.2f };
+    CheckClose(PeakAbs(loudRight, 2), 0.8f, 1e-6f, "peak: loudest sample on the right");
+
+    // 超过满幅的样本要夹到 1.0：电平条宽度是 sqrt(level)，>1 会画出格子外面。
+    const float hot[] = { 1.5f, -2.0f, 0.3f, 0.0f };
+    CheckClose(PeakAbs(hot, 2), 1.0f, 0.0f, "peak: over full scale clamps to 1");
+
+    // 空指针/非正帧数返回 0，调用方在音频泵里直接传裸参数。
+    CheckClose(PeakAbs(nullptr, 4), 0.0f, 0.0f, "peak: null is silent");
+    CheckClose(PeakAbs(quiet, 0), 0.0f, 0.0f, "peak: no frames is silent");
+    CheckClose(PeakAbs(quiet, -3), 0.0f, 0.0f, "peak: negative frames is silent");
+
+    // 全零就是零，不该被任何偏置抬起来。
+    const float silence[] = { 0.0f, 0.0f, 0.0f, 0.0f };
+    CheckClose(PeakAbs(silence, 2), 0.0f, 0.0f, "peak: silence is zero");
+}
+
 void TestBlockPadding() {
     CheckEqual(SilenceFramesToNextBlock(0), 0, "block aligned needs no padding");
     CheckEqual(SilenceFramesToNextBlock(1024), 0, "exactly one block");
@@ -301,6 +324,7 @@ int main() {
     TestMix();
     TestRemix();
     TestResample();
+    TestPeakAbs();
     TestBlockPadding();
     TestTimeConversion();
     TestPcmConversion();

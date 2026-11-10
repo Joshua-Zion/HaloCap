@@ -142,6 +142,8 @@ bool RecordingSession::Start(const RecordingOptions& options, std::int64_t wallU
     config.bitrateBitsPerSec = options.bitrateBitsPerSec;
     config.requestHardware = options.requestHardware;
     config.cropRegion = localCrop;
+    outputWidth_ = widthPx;
+    outputHeight_ = heightPx;
 
     if (!encoder_.OpenVideo(config, path_)) {
         capture_.Close();
@@ -306,7 +308,8 @@ void RecordingSession::DiscardAudioPackets(IAudioSource* source) {
     }
 }
 
-void RecordingSession::DrainAudioSource(IAudioSource* source, const AudioFormat& format, float gain) {
+void RecordingSession::DrainAudioSource(IAudioSource* source, const AudioFormat& format, float gain,
+                                        float* level) {
     if (source == nullptr) {
         return;
     }
@@ -329,6 +332,9 @@ void RecordingSession::DrainAudioSource(IAudioSource* source, const AudioFormat&
 
         audioScratch_.resize(static_cast<std::size_t>(chunk.frameCount) * 2);
         RemixToStereo(audioScratch_.data(), chunk.samples, chunk.frameCount, format.channelCount);
+        if (level != nullptr) {
+            *level = std::max(*level, PeakAbs(audioScratch_.data(), chunk.frameCount));
+        }
 
         const float* stereo = audioScratch_.data();
         std::int32_t frames = chunk.frameCount;
@@ -424,8 +430,10 @@ void RecordingSession::PumpAudio(std::int64_t wallUs) {
     }
 
     audioGotPacket_ = false;
-    DrainAudioSource(systemAudio_, systemFormat_, options_.systemAudioGain);
-    DrainAudioSource(microphone_, microphoneFormat_, options_.microphoneGain);
+    systemLevel_ = 0.0f;
+    microphoneLevel_ = 0.0f;
+    DrainAudioSource(systemAudio_, systemFormat_, options_.systemAudioGain, &systemLevel_);
+    DrainAudioSource(microphone_, microphoneFormat_, options_.microphoneGain, &microphoneLevel_);
 
     // 回环保活：桌面静音时回环一个包都不出（§5.1 实测），只能按墙钟补静音。
     // 有包时不补——包的设备时间戳比墙钟更准，用它对齐。

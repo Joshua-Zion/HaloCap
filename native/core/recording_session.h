@@ -127,6 +127,16 @@ public:
     std::int32_t LastErrorCode() const { return lastErrorCode_; }
     const char* OutputPath() const { return path_.c_str(); }
 
+    // 录制浮层的信息行与电平表（1.x 的 RecordingHudState 同源）：
+    // 尺寸是编码器真正开的尺寸，电平是最近一次泵里两路各自的峰值。
+    int OutputWidth() const { return outputWidth_; }
+    int OutputHeight() const { return outputHeight_; }
+    int TargetFps() const { return options_.targetFps; }
+    bool SystemAudioActive() const { return audioConfigured_ && systemFormat_.sampleRateHz > 0; }
+    bool MicrophoneActive() const { return audioConfigured_ && microphoneFormat_.sampleRateHz > 0; }
+    float SystemAudioLevel() const { return systemLevel_; }
+    float MicrophoneLevel() const { return microphoneLevel_; }
+
 private:
     void SetError(const char* kind, std::int32_t code = 0);
     void MergeEncoderStats(const EncoderStats& encoderStats);
@@ -140,7 +150,8 @@ private:
     void PumpAudio(std::int64_t wallUs);
 
     // 从一路设备把包取空（非阻塞），折立体声、重采样、按时间戳混进待提交队列。
-    void DrainAudioSource(IAudioSource* source, const AudioFormat& format, float gain);
+    // level 非空时把这一路的峰值电平写进去（浮层电平表用）。
+    void DrainAudioSource(IAudioSource* source, const AudioFormat& format, float gain, float* level);
     void DiscardAudioPackets(IAudioSource* source);
 
     void EnsurePendingFrames(std::int64_t frames);
@@ -173,6 +184,11 @@ private:
     std::int64_t audioFramesSubmitted_ = 0;
     std::int64_t audioReadFrames_ = 0;     // audioPending_ 里已经提交掉的帧数
     bool audioGotPacket_ = false;
+    float systemLevel_ = 0.0f;
+    float microphoneLevel_ = 0.0f;
+
+    int outputWidth_ = 0;
+    int outputHeight_ = 0;
 
     std::int64_t startWallUs_ = 0;
     std::string path_;

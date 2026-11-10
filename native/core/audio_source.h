@@ -104,6 +104,10 @@ private:
 // 不饱和就会写出超过浮点范围的样本，AAC 那边表现为爆音而且没有规律。
 void MixInto(float* destination, const float* source, std::int32_t frameCount, float gain);
 
+// 一段交织样本的峰值电平（0..1，夹掉 NaN/超幅）。录制浮层的电平表用它：
+// 1.x 的 MeterWidth 按 sqrt(电平) 画宽度，这里只负责把「这一段有多响」量出来。
+float PeakAbs(const float* interleaved, std::int32_t frameCount);
+
 // 任意声道数折成立体声：1 声道两路都用它，>=2 取前两路（5.1 的中置与环绕在这里丢掉，
 // 与 1.x 的行为一致），0 声道什么都不做。
 void RemixToStereo(float* destination, const float* source, std::int32_t frameCount,

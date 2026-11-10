@@ -83,6 +83,21 @@ void MixInto(float* destination, const float* source, std::int32_t frameCount, f
     }
 }
 
+float PeakAbs(const float* interleaved, std::int32_t frameCount) {
+    if (interleaved == nullptr || frameCount <= 0) {
+        return 0.0f;
+    }
+    float peak = 0.0f;
+    const std::size_t samples = static_cast<std::size_t>(frameCount) * 2;
+    for (std::size_t i = 0; i < samples; ++i) {
+        const float value = std::fabs(interleaved[i]);
+        if (value > peak) {
+            peak = value;
+        }
+    }
+    return std::min(peak, 1.0f);
+}
+
 void RemixToStereo(float* destination, const float* source, std::int32_t frameCount,
                    std::int32_t sourceChannels) {
     if (destination == nullptr || source == nullptr || frameCount <= 0) {

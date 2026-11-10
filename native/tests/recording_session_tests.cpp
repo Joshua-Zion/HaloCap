@@ -619,6 +619,43 @@ void TestAudioUnavailableFallsBackToVideo() {
     CheckTrue(session.Stop(0, stats), "stop");
 }
 
+void TestAccessorsAndAudioLevels() {
+    FakeCapture capture;
+    FakeEncoder encoder;
+    encoder.audioSupported = true;
+    FakeAudioSource system;
+    core::RecordingSession session(capture, encoder, &system, nullptr);
+
+    core::RecordingOptions options = DefaultOptions();
+    options.audioEnabled = true;
+    options.keepAliveUs = 0;
+    CheckTrue(session.Start(options, 0), "start with system audio");
+
+    // 尺寸/帧率直接转给浮层信息行（1.x BuildHudInfo 的那几个数）。
+    CheckEqual(session.OutputWidth(), 1920, "output width from the capture bounds");
+    CheckEqual(session.OutputHeight(), 1080, "output height from the capture bounds");
+    CheckEqual(session.TargetFps(), 30, "target fps from the options");
+
+    // 系统声音开着、麦克风没开：两个活跃标志要分开，浮层据此决定画几路电平表。
+    CheckTrue(session.SystemAudioActive(), "system audio is active");
+    CheckTrue(!session.MicrophoneActive(), "microphone is not active");
+
+    // 一包满幅 0.7 的样本：Pump 之后系统电平就是这一包的峰值。
+    system.Push(0, 480, 0.7f);
+    CheckTrue(session.Pump(10'000), "pump with a loud packet");
+    CheckNear(session.SystemAudioLevel(), 0.7, 1e-4, "system level follows the packet peak");
+    CheckNear(session.MicrophoneLevel(), 0.0, 1e-6, "an inactive microphone stays at zero");
+
+    // 下一拍没有包：电平重算后回零，不残留上一拍的峰值（否则淡出就是假的）。
+    system.packets.clear();
+    system.timestamps.clear();
+    CheckTrue(session.Pump(100'000), "pump with no packet");
+    CheckNear(session.SystemAudioLevel(), 0.0, 1e-6, "level drops when no packet arrives");
+
+    core::RecordingStats stats;
+    CheckTrue(session.Stop(100'000, stats), "stop");
+}
+
 }
 
 int main() {
@@ -640,6 +677,7 @@ int main() {
     TestAudioBlocksAndTimeline();
     TestAudioSilenceFill();
     TestAudioUnavailableFallsBackToVideo();
+    TestAccessorsAndAudioLevels();
 
     if (failures != 0) {
         std::printf("RECORDING_SESSION_TESTS=FAILED %d/%d\n", failures, checks);

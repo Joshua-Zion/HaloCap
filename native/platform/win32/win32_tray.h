@@ -10,12 +10,11 @@
 
 namespace halocap::platform::win32 {
 
-// 托盘图标与托盘菜单的 Win32 实现。
+// 托盘图标的 Win32 实现。
 //
-// 与 1.x 的差别写在明面上：1.x 的托盘菜单是一个自绘的 WPF `ContextMenu`（圆角、图标、
-// 彩色动作），这里先用标准的 `HMENU`：菜单项、顺序、可用性、勾选与快捷键列与 1.x 一致
-// （那些规则在 `core::BuildTrayMenu` 里，有单测），视觉上要等 UI 那一轮再补。
-// 用标准菜单换来的东西不是零：点击别处收起、Esc 收起、键盘导航、高 DPI 缩放都是系统给的。
+// 菜单的「内容」在 core::BuildTrayMenu（顺序、可用性、勾选、快捷键列，有单测）；
+// 菜单的「样子」在 app 层的 TrayMenuWindow——与 1.x 的自绘 WPF ContextMenu 同款。
+// 这里保留 DescribeMenu/BuildMenuHandle 只给探针读回模型，证明平台侧没有漏项。
 //
 // 图标仍然是「光圈」：32×32、四段彩色弧、录制时中心变红点，与 1.x 的
 // CreateTrayIcon 同一套参数（颜色取了同一个色板）。
@@ -54,14 +53,10 @@ public:
     // 气泡通知。Windows 的通知开关关着时 Shell 仍然接受请求，所以返回值只代表调用成功。
     bool Notify(std::string_view title, std::string_view message);
 
-    // 在鼠标位置弹出菜单，返回选中的命令（None = 取消）。必须在消息循环所在线程调用。
-    core::TrayCommand PopupMenu(const core::TrayMenuState& state);
-
     // 托盘图标被点击；由消息循环取走。
     Click PollClick();
 
-    // 菜单命令经由 WM_COMMAND 回来的那一半（`TrackPopupMenu` 用 TPM_RETURNCMD 时不走这条路，
-    // 但测试与将来的键盘路径走）。
+    // 菜单命令经由 WM_COMMAND 回来的那一半（自绘菜单不走这里，测试与将来的键盘路径走）。
     core::TrayCommand PollCommand();
 
     // 只给探针与消息循环：抽干本线程的消息。

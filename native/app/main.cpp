@@ -38,6 +38,7 @@
 #include "recording_hud.h"
 #include "screenshot_overlay.h"
 #include "settings_window.h"
+#include "tray_menu_window.h"
 #include "update.h"
 #include "version.h"
 #include "wasapi_audio_source.h"
@@ -48,6 +49,7 @@
 #include "win32_store.h"
 #include "win32_surface_window.h"
 #include "win32_wgc_capture.h"
+#include "window_at_point.h"
 #include "window_picker.h"
 
 #include <shobjidl.h>
@@ -85,6 +87,11 @@ using halocap::platform::win32::Win32WgcCapture;
 using halocap::platform::win32::Win32Tray;
 
 namespace {
+
+// Win10 2004 起才有；老 SDK 头文件里没有这个常量（与 recording_hud.cpp 同一守卫）。
+#ifndef WDA_EXCLUDEFROMCAPTURE
+#define WDA_EXCLUDEFROMCAPTURE 0x00000011
+#endif
 
 constexpr int kDefaultSelftestSeconds = 3;
 
@@ -154,6 +161,12 @@ struct Options {
     std::wstring windowPickerSelftestPath;
     std::wstring radialClickSelftestPath;
     int settingsSelftestPage = -1;
+
+    // 非空 = 无人值守的录屏 UI 自检：边框/倒计时/浮层的位置、排除采集、按钮与抓图。
+    std::wstring recordingUiSelftestPath;
+
+    // 非空 = 无人值守的托盘菜单自检：自绘菜单的条目、点击、键盘与收起。
+    std::wstring trayMenuSelftestPath;
 
     // 交付：--version 打印版本；--check-update 读一份清单并比较版本。
     bool version = false;
@@ -384,6 +397,10 @@ Options ParseOptions(int argc, char** argv) {
             options.radialClickSelftestPath = Utf8ToWide(argv[++i]);
         } else if (argument == "--window-picker-selftest" && i + 1 < argc) {
             options.windowPickerSelftestPath = Utf8ToWide(argv[++i]);
+        } else if (argument == "--recording-ui-selftest" && i + 1 < argc) {
+            options.recordingUiSelftestPath = Utf8ToWide(argv[++i]);
+        } else if (argument == "--tray-menu-selftest" && i + 1 < argc) {
+            options.trayMenuSelftestPath = Utf8ToWide(argv[++i]);
         } else if (argument == "--version") {
             options.version = true;
         } else if (argument == "--check-update" && i + 1 < argc) {
@@ -415,6 +432,8 @@ void PrintUsage() {
         "  --pin-selftest PATH         pin the clipboard content, capture, exit\n"
         "  --radial-selftest PATH      open the radial menu, capture, exit\n"
         "  --window-picker-selftest PATH  open the window picker, capture, exit\n"
+        "  --recording-ui-selftest PATH   drive frame/countdown/HUD, capture, exit\n"
+        "  --tray-menu-selftest PATH      open the drawn tray menu, click, capture, exit\n"
         "  --version                   print the delivery version and exit\n"
         "  --check-update PATH         compare this build with an update manifest\n"
         "  --settings-selftest PATH    open the settings pages, capture, exit\n"
@@ -643,6 +662,23 @@ public:
 
     const std::string& OutputPath() const { return path_; }
 
+    // 浮层信息行与电平表要的那几个数，原样转给会话（1.x 的 RecordingHudState 同源）。
+    int OutputWidth() const { return session_ != nullptr ? session_->OutputWidth() : 0; }
+    int OutputHeight() const { return session_ != nullptr ? session_->OutputHeight() : 0; }
+    int TargetFps() const { return session_ != nullptr ? session_->TargetFps() : 0; }
+    bool SystemAudioActive() const {
+        return session_ != nullptr && session_->SystemAudioActive();
+    }
+    bool MicrophoneActive() const {
+        return session_ != nullptr && session_->MicrophoneActive();
+    }
+    float SystemAudioLevel() const {
+        return session_ != nullptr ? session_->SystemAudioLevel() : 0.0f;
+    }
+    float MicrophoneLevel() const {
+        return session_ != nullptr ? session_->MicrophoneLevel() : 0.0f;
+    }
+
 private:
     void Reset() {
         session_.reset();
@@ -659,6 +695,24 @@ private:
     std::unique_ptr<core::RecordingSession> session_;
     std::string path_;
 };
+
+// 1.x 的 FormatSize："0.##" —— 最多两位小数，末尾的零去掉（12.50 → "12.5"，12.00 → "12"）。
+std::string FormatRecordingSize(std::int64_t bytes) {
+    const bool gigabytes = bytes >= 1024LL * 1024 * 1024;
+    const double value = gigabytes ? bytes / 1073741824.0 : bytes / 1048576.0;
+    char buffer[32] = {};
+    std::snprintf(buffer, sizeof(buffer), "%.2f", value);
+    std::string text = buffer;
+    if (text.find('.') != std::string::npos) {
+        while (!text.empty() && text.back() == '0') {
+            text.pop_back();
+        }
+        if (!text.empty() && text.back() == '.') {
+            text.pop_back();
+        }
+    }
+    return text + (gigabytes ? " GB" : " MB");
+}
 
 // 释放 ORT 会话之后把空出来的堆页还给系统：PrivateUsage 是「已提交」，光 free 不减。
 void TrimProcessMemory() {
@@ -888,6 +942,13 @@ int Run(const Options& options) {
     RecordingRunner recording;
     bool recordingActive = false;
     std::unique_ptr<halocap::app::RecordingHud> recordingHud;
+    std::unique_ptr<halocap::app::RecordingFrame> recordingFrame;
+    // 窗口录制：目标窗口与它当前的可见矩形。与 1.x 一样每 250ms 跟随一次，
+    // 关闭/最小化就收尾保存，挪动/改尺寸就更新边框与浮层。
+    HWND recordTargetWindow = nullptr;
+    core::IntRect recordAnchor{};
+    std::int64_t lastHudInfoMs = 0;
+    std::wstring hudInfoText;
     std::unique_ptr<halocap::app::WindowPicker> windowPicker;
     std::unique_ptr<halocap::app::ScreenshotOverlay> screenshotOverlay;
     std::vector<std::unique_ptr<halocap::app::PinWindow>> pins;
@@ -903,15 +964,115 @@ int Run(const Options& options) {
         }
     };
 
+    // 1.x WindowGeometry.TryGet 的同款判据：活着、没最小化、可见、表面 ≥16×16、可见矩形非空。
+    const auto recordWindowUsable = [](HWND window, RECT* visible) {
+        if (window == nullptr || !IsWindow(window) || IsIconic(window) ||
+            !IsWindowVisible(window)) {
+            return false;
+        }
+        RECT surface{};
+        if (!GetWindowRect(window, &surface) || surface.right - surface.left < 16 ||
+            surface.bottom - surface.top < 16) {
+            return false;
+        }
+        if (!halocap::app::WindowVisibleRect(window, visible)) {
+            return false;
+        }
+        return visible->right > visible->left && visible->bottom > visible->top;
+    };
+
+    // 每一条停止路（按钮、热键、采集丢失、窗口关闭、限时）都从这里收掉边框与浮层。
+    const auto closeRecordingUi = [&]() {
+        if (recordingHud != nullptr) {
+            recordingHud->Close();
+            recordingHud.reset();
+        }
+        if (recordingFrame != nullptr) {
+            recordingFrame->Close();
+            recordingFrame.reset();
+        }
+        recordTargetWindow = nullptr;
+        recordAnchor = {};
+        lastHudInfoMs = 0;
+        hudInfoText.clear();
+    };
+
+    // 信息行与 1.x BuildHudInfo 同源：尺寸·帧率·文件大小（文件还没建就不显示）·音轨标签。
+    const auto buildHudInfo = [&]() {
+        std::wstring info = std::to_wstring(recording.OutputWidth()) + L"×" +
+                            std::to_wstring(recording.OutputHeight()) + L" · " +
+                            std::to_wstring(recording.TargetFps()) + L"fps";
+        const std::int64_t bytes = FileBytesUtf8(recording.OutputPath());
+        if (bytes >= 0) {
+            info += L" · " + Utf8ToWide(FormatRecordingSize(bytes));
+        }
+        if (settings.recording.systemAudio || settings.recording.microphone) {
+            const bool system = recording.SystemAudioActive();
+            const bool microphone = recording.MicrophoneActive();
+            if (!system && !microphone) {
+                info += L" · 无音轨";
+            } else if (system && microphone) {
+                info += L" · 系统+麦";
+            } else if (system) {
+                info += L" · 系统声音";
+            } else {
+                info += L" · 麦克风";
+            }
+        }
+        return info;
+    };
+
     const auto beginRecording = [&](core::NativeHandle captureWindow, core::IntRect cropRegion) {
+        HWND target = static_cast<HWND>(captureWindow);
+        core::IntRect anchor{};
+        if (target != nullptr) {
+            RECT visible{};
+            if (!recordWindowUsable(target, &visible)) {
+                tray.Notify("HaloCap", "目标窗口已关闭或尺寸太小，请重新选择窗口。");
+                return;
+            }
+            anchor = core::IntRect{ visible.left, visible.top, visible.right, visible.bottom };
+        } else if (!cropRegion.IsEmpty()) {
+            anchor = cropRegion;
+        } else {
+            MONITORINFO monitorInfo{};
+            monitorInfo.cbSize = sizeof(monitorInfo);
+            GetMonitorInfoW(MonitorFromPoint(POINT{ 0, 0 }, MONITOR_DEFAULTTOPRIMARY),
+                            &monitorInfo);
+            anchor = core::IntRect{ monitorInfo.rcMonitor.left, monitorInfo.rcMonitor.top,
+                                    monitorInfo.rcMonitor.right, monitorInfo.rcMonitor.bottom };
+        }
+
+        // 1.x 的顺序：边框先挂出来再倒计时，倒计时里用户能确认录的就是这一块。
+        recordingFrame = std::make_unique<halocap::app::RecordingFrame>();
+        if (!recordingFrame->Show(anchor)) {
+            recordingFrame.reset();
+        }
+
         if (settings.recording.countdown != core::RecordingCountdown::Off) {
             halocap::app::RecordingCountdown countdown;
-            if (!countdown.Show(settings.recording.CountdownSeconds())) {
+            if (!countdown.Show(settings.recording.CountdownSeconds(), anchor)) {
                 log.Info("recording: cancelled during countdown");
+                closeRecordingUi();
                 tray.Notify("HaloCap", "已取消录制");
                 return;
             }
+            // 倒计时期间目标窗口可能已经关闭或挪走。
+            if (target != nullptr) {
+                RECT visible{};
+                if (!recordWindowUsable(target, &visible)) {
+                    closeRecordingUi();
+                    tray.Notify("HaloCap", "倒计时期间目标窗口已关闭。");
+                    return;
+                }
+                anchor = core::IntRect{ visible.left, visible.top, visible.right,
+                                        visible.bottom };
+                if (recordingFrame != nullptr) {
+                    recordingFrame->UpdateRect(anchor);
+                }
+            }
         }
+
         if (!overlayReady) {
             // 录制要复用覆盖层那台 D3D 设备（采集/编码必须同一个设备）。
             overlayReady = overlay.Initialize(log, overlayWidth, overlayHeight);
@@ -923,14 +1084,18 @@ int Run(const Options& options) {
                                              settings.recording.recordCursor);
         if (started) {
             recordingActive = true;
+            recordTargetWindow = target;
+            recordAnchor = anchor;
+            lastHudInfoMs = 0;
             refreshTray();
             recordingHud = std::make_unique<halocap::app::RecordingHud>();
-            if (!recordingHud->Create()) {
+            if (!recordingHud->Create(anchor)) {
                 recordingHud.reset();
             }
             log.Info("recording: started -> " + recording.OutputPath());
             tray.Notify("HaloCap", "开始录制");
         } else {
+            closeRecordingUi();
             log.Error("recording: start failed (" +
                       (overlayReady ? kind : std::string("overlay")) + ")");
             tray.Notify("HaloCap", "无法开始录制");
@@ -975,7 +1140,7 @@ int Run(const Options& options) {
         core::RecordingStats stats;
         const bool stopped = recording.Stop(stats);
         recordingActive = false;
-        recordingHud.reset();
+        closeRecordingUi();
         refreshTray();
         log.Info(stopped ? "recording: stopped" : "recording: stop failed");
         if (stopped) {
@@ -1002,27 +1167,56 @@ int Run(const Options& options) {
     const bool recordRequested = options.recordSeconds > 0;
     std::int64_t recordDeadlineMs = 0;
     if (recordRequested) {
+        HWND target = options.recordWindow ? GetForegroundWindow() : nullptr;
+        core::IntRect anchor{};
+        if (target != nullptr) {
+            RECT visible{};
+            if (!recordWindowUsable(target, &visible)) {
+                target = nullptr;
+            } else {
+                anchor = core::IntRect{ visible.left, visible.top, visible.right,
+                                        visible.bottom };
+            }
+        }
+        if (target == nullptr && options.hasRecordRegion) {
+            anchor = options.recordRegion;
+        }
+        if (anchor.IsEmpty()) {
+            MONITORINFO monitorInfo{};
+            monitorInfo.cbSize = sizeof(monitorInfo);
+            GetMonitorInfoW(MonitorFromPoint(POINT{ 0, 0 }, MONITOR_DEFAULTTOPRIMARY),
+                            &monitorInfo);
+            anchor = core::IntRect{ monitorInfo.rcMonitor.left, monitorInfo.rcMonitor.top,
+                                    monitorInfo.rcMonitor.right, monitorInfo.rcMonitor.bottom };
+        }
+        recordingFrame = std::make_unique<halocap::app::RecordingFrame>();
+        if (!recordingFrame->Show(anchor)) {
+            recordingFrame.reset();
+        }
         if (!overlayReady) {
             overlayReady = overlay.Initialize(log, overlayWidth, overlayHeight);
         }
         std::string kind;
         recordStarted = overlayReady &&
-                        recording.Start(overlay.Backend(), settings, log, kind,
-                                        options.recordWindow ? GetForegroundWindow() : nullptr,
+                        recording.Start(overlay.Backend(), settings, log, kind, target,
                                         options.hasRecordRegion ? options.recordRegion
                                                                 : core::IntRect{},
-                                        !options.recordWindow, settings.recording.recordCursor);
+                                        target == nullptr, settings.recording.recordCursor);
         if (recordStarted) {
             recordingActive = true;
+            recordTargetWindow = target;
+            recordAnchor = anchor;
+            lastHudInfoMs = 0;
             refreshTray();
             recordingHud = std::make_unique<halocap::app::RecordingHud>();
-            if (!recordingHud->Create()) {
+            if (!recordingHud->Create(anchor)) {
                 recordingHud.reset();
             }
             recordDeadlineMs =
                 static_cast<std::int64_t>(GetTickCount64()) + options.recordSeconds * 1000;
             log.Info("recording: started (--record-seconds) -> " + recording.OutputPath());
         } else {
+            closeRecordingUi();
             log.Error("recording: start failed (" +
                       (overlayReady ? kind : std::string("overlay")) + ")");
             running = false;
@@ -1036,6 +1230,7 @@ int Run(const Options& options) {
     std::unique_ptr<halocap::app::SettingsWindow> settingsWindow;
     int settingsPageOverride = options.settingsSelftestPage;
     std::unique_ptr<halocap::app::RadialMenu> radialMenu;
+    std::unique_ptr<halocap::app::TrayMenuWindow> trayMenu;
     // 贴图窗口的公共接线：右键菜单里的 OCR / 全部关闭 / 外描边都要落到 app 这一层。
     const auto pinOptions = [&]() {
         halocap::app::PinWindowOptions options;
@@ -2865,6 +3060,328 @@ int Run(const Options& options) {
         running = false;
     }
 
+    // 录屏 UI 自检：边框/倒计时/浮层三件套，不碰采集与编码，只验几何、采集排除与按钮回路。
+    bool recordingUiSelftestOk = true;
+    if (!options.recordingUiSelftestPath.empty()) {
+        recordingUiSelftestOk = false;
+        const auto grabProof = [&](const std::wstring& path) {
+            halocap::platform::win32::DesktopImage desktop;
+            return halocap::platform::win32::GrabPrimaryDesktop(desktop) &&
+                   halocap::platform::win32::SaveBgraPng(path, desktop.bgra.data(), desktop.width,
+                                                         desktop.height, desktop.width * 4);
+        };
+        const auto pumpFor = [](int ms) {
+            const ULONGLONG start = GetTickCount64();
+            while (GetTickCount64() - start < static_cast<ULONGLONG>(ms)) {
+                MSG message{};
+                while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+                    TranslateMessage(&message);
+                    DispatchMessageW(&message);
+                }
+                Sleep(10);
+            }
+        };
+
+        const core::IntRect anchor{ 400, 300, 1040, 660 };
+
+        // 1) 边框：精确贴在锚点上、点击穿透、不进采集；UpdateRect 跟着新矩形走。
+        halocap::app::RecordingFrame frame;
+        const bool frameShown = frame.Show(anchor);
+        bool frameGeometryOk = false;
+        bool frameExcluded = false;
+        bool frameClickThrough = false;
+        bool frameUpdateOk = false;
+        if (frameShown) {
+            const HWND handle = static_cast<HWND>(frame.HandleForTest());
+            RECT rect{};
+            GetWindowRect(handle, &rect);
+            frameGeometryOk = rect.left == anchor.left && rect.top == anchor.top &&
+                              rect.right == anchor.right && rect.bottom == anchor.bottom;
+            DWORD affinity = 0;
+            GetWindowDisplayAffinity(handle, &affinity);
+            frameExcluded = (affinity & WDA_EXCLUDEFROMCAPTURE) != 0;
+            frameClickThrough = (GetWindowLongW(handle, GWL_EXSTYLE) & WS_EX_TRANSPARENT) != 0;
+            const core::IntRect moved{ 420, 320, 900, 600 };
+            frame.UpdateRect(moved);
+            GetWindowRect(handle, &rect);
+            frameUpdateOk = rect.left == moved.left && rect.top == moved.top &&
+                            rect.right == moved.right && rect.bottom == moved.bottom;
+            frame.UpdateRect(anchor);
+        }
+        const bool frameProof = grabProof(options.recordingUiSelftestPath + L".frame.png");
+        frame.Close();
+
+        // 2) 倒计时：卡片居中于锚点、不进采集；probe 首帧画好后回调一次。
+        halocap::app::RecordingCountdown countdown;
+        bool countdownCentered = false;
+        bool countdownExcluded = false;
+        bool countdownProof = false;
+        bool probeCalled = false;
+        const bool countdownRan = countdown.Show(3, anchor, [&](HWND handle) {
+            probeCalled = true;
+            RECT rect{};
+            GetWindowRect(handle, &rect);
+            const int centerX = (rect.left + rect.right) / 2;
+            const int centerY = (rect.top + rect.bottom) / 2;
+            countdownCentered = std::abs(centerX - (anchor.left + anchor.right) / 2) <= 2 &&
+                                std::abs(centerY - (anchor.top + anchor.bottom) / 2) <= 2;
+            DWORD affinity = 0;
+            GetWindowDisplayAffinity(handle, &affinity);
+            countdownExcluded = (affinity & WDA_EXCLUDEFROMCAPTURE) != 0;
+            countdownProof = grabProof(options.recordingUiSelftestPath + L".countdown.png");
+        });
+
+        // Esc 取消：probe 里注入 Esc 按下，倒计时回路看到后必须返回 false（取消）。
+        halocap::app::RecordingCountdown cancelCountdown;
+        const bool cancelled = !cancelCountdown.Show(3, anchor, [&](HWND) {
+            INPUT event{};
+            event.type = INPUT_KEYBOARD;
+            event.ki.wVk = VK_ESCAPE;
+            event.ki.dwFlags = 0;
+            SendInput(1, &event, sizeof(event));
+        });
+        {
+            INPUT event{};
+            event.type = INPUT_KEYBOARD;
+            event.ki.wVk = VK_ESCAPE;
+            event.ki.dwFlags = KEYEVENTF_KEYUP;
+            SendInput(1, &event, sizeof(event));
+        }
+
+        // 3) 浮层：卡片底边 = 锚点顶 - 10（1.x 上方优先），水平居中。
+        halocap::app::RecordingHud hud;
+        const bool hudCreated = hud.Create(anchor);
+        bool hudPlacementOk = false;
+        bool hudCentered = false;
+        if (hudCreated) {
+            const int pad = hud.PadForTest();
+            RECT rect{};
+            GetWindowRect(static_cast<HWND>(hud.HandleForTest()), &rect);
+            hudPlacementOk = std::abs((rect.bottom - pad) - (anchor.top - 10)) <= 2;
+            hudCentered = std::abs((rect.left + rect.right) / 2 -
+                                   (anchor.left + anchor.right) / 2) <= 2;
+        }
+
+        // 上方放不下时翻到下方：锚点贴着工作区顶，卡片顶边 = 锚点底 + 10。
+        MONITORINFO monitorInfo{};
+        monitorInfo.cbSize = sizeof(monitorInfo);
+        GetMonitorInfoW(MonitorFromPoint(POINT{ 0, 0 }, MONITOR_DEFAULTTOPRIMARY), &monitorInfo);
+        const core::IntRect topAnchor{ monitorInfo.rcWork.left + 100, monitorInfo.rcWork.top + 10,
+                                       monitorInfo.rcWork.left + 740, monitorInfo.rcWork.top + 200 };
+        halocap::app::RecordingHud belowHud;
+        bool hudBelowOk = false;
+        if (belowHud.Create(topAnchor)) {
+            RECT rect{};
+            GetWindowRect(static_cast<HWND>(belowHud.HandleForTest()), &rect);
+            hudBelowOk = std::abs((rect.top + belowHud.PadForTest()) - (topAnchor.bottom + 10)) <= 2;
+        }
+        belowHud.Close();
+
+        // 信息行 + 电平表画一帧留证据；再验暂停/停止按钮与停止后两键一起禁用。
+        bool hudPauseOk = false;
+        bool hudStopOk = false;
+        bool hudStopDisables = false;
+        bool hudProof = false;
+        if (hudCreated) {
+            halocap::app::RecordingHudState state;
+            state.elapsedMs = 65000;
+            state.info = L"640×360 · 30fps · 1.2 MB · 系统+麦";
+            state.showSystemLevel = true;
+            state.systemLevel = 0.6f;
+            state.showMicLevel = true;
+            state.micLevel = 0.3f;
+            hud.Update(state);
+            pumpFor(120);
+            hudProof = grabProof(options.recordingUiSelftestPath + L".hud.png");
+
+            const HWND handle = static_cast<HWND>(hud.HandleForTest());
+            const auto click = [&](const RECT& rect) {
+                const LPARAM point = MAKELPARAM((rect.left + rect.right) / 2,
+                                                (rect.top + rect.bottom) / 2);
+                SendMessageW(handle, WM_LBUTTONDOWN, MK_LBUTTON, point);
+                SendMessageW(handle, WM_LBUTTONUP, 0, point);
+            };
+            click(hud.PauseRectForTest());
+            hudPauseOk = hud.PollAction() == halocap::app::RecordingHud::Action::Pause;
+            click(hud.StopRectForTest());
+            hudStopOk = hud.PollAction() == halocap::app::RecordingHud::Action::Stop;
+            click(hud.StopRectForTest());
+            hudStopDisables = hud.PollAction() == halocap::app::RecordingHud::Action::None;
+        }
+        hud.Close();
+
+        AddFlag(report, "APP_RECORDING_UI_FRAME", frameShown);
+        AddFlag(report, "APP_RECORDING_UI_FRAME_GEOMETRY", frameGeometryOk);
+        AddFlag(report, "APP_RECORDING_UI_FRAME_EXCLUDED", frameExcluded);
+        AddFlag(report, "APP_RECORDING_UI_FRAME_CLICK_THROUGH", frameClickThrough);
+        AddFlag(report, "APP_RECORDING_UI_FRAME_UPDATE", frameUpdateOk);
+        AddFlag(report, "APP_RECORDING_UI_FRAME_PROOF", frameProof);
+        AddFlag(report, "APP_RECORDING_UI_COUNTDOWN", countdownRan);
+        AddFlag(report, "APP_RECORDING_UI_COUNTDOWN_PROBE", probeCalled);
+        AddFlag(report, "APP_RECORDING_UI_COUNTDOWN_CENTERED", countdownCentered);
+        AddFlag(report, "APP_RECORDING_UI_COUNTDOWN_EXCLUDED", countdownExcluded);
+        AddFlag(report, "APP_RECORDING_UI_COUNTDOWN_PROOF", countdownProof);
+        AddFlag(report, "APP_RECORDING_UI_COUNTDOWN_CANCEL", cancelled);
+        AddFlag(report, "APP_RECORDING_UI_HUD", hudCreated);
+        AddFlag(report, "APP_RECORDING_UI_HUD_PLACEMENT", hudPlacementOk);
+        AddFlag(report, "APP_RECORDING_UI_HUD_CENTERED", hudCentered);
+        AddFlag(report, "APP_RECORDING_UI_HUD_BELOW", hudBelowOk);
+        AddFlag(report, "APP_RECORDING_UI_HUD_PAUSE", hudPauseOk);
+        AddFlag(report, "APP_RECORDING_UI_HUD_STOP", hudStopOk);
+        AddFlag(report, "APP_RECORDING_UI_HUD_STOP_DISABLES", hudStopDisables);
+        AddFlag(report, "APP_RECORDING_UI_HUD_PROOF", hudProof);
+        recordingUiSelftestOk = frameShown && frameGeometryOk && frameExcluded && frameClickThrough &&
+                                frameUpdateOk && frameProof && countdownRan && probeCalled &&
+                                countdownCentered && countdownExcluded && countdownProof &&
+                                cancelled && hudCreated && hudPlacementOk && hudCentered &&
+                                hudBelowOk && hudPauseOk && hudStopOk && hudStopDisables && hudProof;
+        log.Info(recordingUiSelftestOk ? "recording ui selftest: ok"
+                                       : "recording ui selftest: failed");
+        running = false;
+    }
+
+    // 托盘菜单自检：自绘面板条目模型与 core 一致、点击/键盘/Esc/点外收起、留证据。
+    bool trayMenuSelftestOk = true;
+    if (!options.trayMenuSelftestPath.empty()) {
+        trayMenuSelftestOk = false;
+        const auto grabProof = [&](const std::wstring& path) {
+            halocap::platform::win32::DesktopImage desktop;
+            return halocap::platform::win32::GrabPrimaryDesktop(desktop) &&
+                   halocap::platform::win32::SaveBgraPng(path, desktop.bgra.data(), desktop.width,
+                                                         desktop.height, desktop.width * 4);
+        };
+        const auto pumpFor = [](int ms) {
+            const ULONGLONG start = GetTickCount64();
+            while (GetTickCount64() - start < static_cast<ULONGLONG>(ms)) {
+                MSG message{};
+                while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+                    TranslateMessage(&message);
+                    DispatchMessageW(&message);
+                }
+                Sleep(10);
+            }
+        };
+
+        core::TrayMenuState state;
+        state.radialHotkey = "Ctrl+Alt+D";
+        state.screenshotHotkey = "Ctrl+Alt+A";
+        state.ocrHotkey = "Ctrl+Alt+S";
+        state.recordHotkey = "Ctrl+Alt+R";
+        state.pinHotkey = "Ctrl+Alt+Q";
+        state.pinAvailable = true;
+        state.autoStart = true;
+        const std::vector<core::TrayMenuItem> expected = core::BuildTrayMenu(state);
+        const std::wstring versionLabel =
+            std::wstring(L"v") + Utf8ToWide(halocap::app::kHaloCapVersion);
+        const POINT openPoint{ 500, 300 };
+
+        SetCursorPos(openPoint.x, openPoint.y);
+        halocap::app::TrayMenuWindow menu;
+        const bool opened = menu.Open(state, versionLabel, openPoint);
+        pumpFor(150);
+
+        bool modelOk = false;
+        bool geometryOk = false;
+        if (opened) {
+            modelOk = menu.ItemCountForTest() == static_cast<int>(expected.size());
+            int lastBottom = 0;
+            geometryOk = true;
+            for (int i = 0; i < menu.ItemCountForTest() && i < static_cast<int>(expected.size());
+                 ++i) {
+                const RECT rect = menu.ItemRectForTest(i);
+                if (expected[i].separator) {
+                    geometryOk = geometryOk && rect.right == rect.left;
+                } else {
+                    geometryOk = geometryOk && rect.right > rect.left && rect.bottom > rect.top &&
+                                 rect.top >= lastBottom;
+                    lastBottom = rect.bottom;
+                }
+            }
+        }
+        const bool proof = grabProof(options.trayMenuSelftestPath);
+
+        // 鼠标点击「文字识别」项 → 命令回到 Ocr，菜单收起。
+        bool clickOk = false;
+        bool clickClosed = false;
+        if (opened) {
+            int ocrIndex = -1;
+            for (int i = 0; i < static_cast<int>(expected.size()); ++i) {
+                if (expected[i].command == core::TrayCommand::Ocr) {
+                    ocrIndex = i;
+                    break;
+                }
+            }
+            if (ocrIndex >= 0) {
+                const RECT rect = menu.ItemRectForTest(ocrIndex);
+                const HWND handle = static_cast<HWND>(menu.HandleForTest());
+                const LPARAM point = MAKELPARAM((rect.left + rect.right) / 2,
+                                                (rect.top + rect.bottom) / 2);
+                SendMessageW(handle, WM_MOUSEMOVE, 0, point);
+                SendMessageW(handle, WM_LBUTTONDOWN, MK_LBUTTON, point);
+                SendMessageW(handle, WM_LBUTTONUP, 0, point);
+                clickOk = menu.PollCommand() == core::TrayCommand::Ocr;
+                clickClosed = !menu.Active();
+            }
+        }
+        menu.Close();
+
+        // 键盘：Down 选中第一项、Enter 触发；另一份菜单 Esc 收起且不产生成命令。
+        bool keyboardOk = false;
+        bool escOk = false;
+        {
+            halocap::app::TrayMenuWindow keyMenu;
+            SetCursorPos(openPoint.x, openPoint.y);
+            if (keyMenu.Open(state, versionLabel, openPoint)) {
+                pumpFor(150);
+                const HWND handle = static_cast<HWND>(keyMenu.HandleForTest());
+                SendMessageW(handle, WM_KEYDOWN, VK_DOWN, 0);
+                const int highlight = keyMenu.HighlightForTest();
+                SendMessageW(handle, WM_KEYDOWN, VK_RETURN, 0);
+                keyboardOk = highlight == 0 &&
+                             keyMenu.PollCommand() == expected[0].command && !keyMenu.Active();
+            }
+            keyMenu.Close();
+
+            halocap::app::TrayMenuWindow escMenu;
+            SetCursorPos(openPoint.x, openPoint.y);
+            if (escMenu.Open(state, versionLabel, openPoint)) {
+                pumpFor(150);
+                SendMessageW(static_cast<HWND>(escMenu.HandleForTest()), WM_KEYDOWN, VK_ESCAPE, 0);
+                escOk = !escMenu.Active() && escMenu.PollCommand() == core::TrayCommand::None;
+            }
+            escMenu.Close();
+        }
+
+        // 点面板外（阴影留白里的 (2,2)）收起，不产生成命令。
+        bool outsideOk = false;
+        {
+            halocap::app::TrayMenuWindow outsideMenu;
+            SetCursorPos(openPoint.x, openPoint.y);
+            if (outsideMenu.Open(state, versionLabel, openPoint)) {
+                pumpFor(150);
+                SendMessageW(static_cast<HWND>(outsideMenu.HandleForTest()), WM_LBUTTONDOWN,
+                             MK_LBUTTON, MAKELPARAM(2, 2));
+                outsideOk =
+                    !outsideMenu.Active() && outsideMenu.PollCommand() == core::TrayCommand::None;
+            }
+            outsideMenu.Close();
+        }
+
+        AddFlag(report, "APP_TRAY_MENU_WINDOW", opened);
+        AddFlag(report, "APP_TRAY_MENU_MODEL", modelOk);
+        AddFlag(report, "APP_TRAY_MENU_GEOMETRY", geometryOk);
+        AddFlag(report, "APP_TRAY_MENU_PROOF", proof);
+        AddFlag(report, "APP_TRAY_MENU_CLICK", clickOk);
+        AddFlag(report, "APP_TRAY_MENU_CLICK_CLOSED", clickClosed);
+        AddFlag(report, "APP_TRAY_MENU_KEYBOARD", keyboardOk);
+        AddFlag(report, "APP_TRAY_MENU_ESC", escOk);
+        AddFlag(report, "APP_TRAY_MENU_OUTSIDE", outsideOk);
+        trayMenuSelftestOk = opened && modelOk && geometryOk && proof && clickOk && clickClosed &&
+                             keyboardOk && escOk && outsideOk;
+        log.Info(trayMenuSelftestOk ? "tray menu selftest: ok" : "tray menu selftest: failed");
+        running = false;
+    }
+
     while (running) {
         MSG message{};
         while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
@@ -2900,9 +3417,19 @@ int Run(const Options& options) {
 
         switch (tray.PollClick()) {
         case Win32Tray::Click::Right: {
-            const core::TrayCommand command = tray.PopupMenu(trayState);
-            if (command != core::TrayCommand::None) {
-                onAction(command);
+            // 1.x：右键先收掉旧菜单，再在光标处开一份新的自绘菜单。
+            if (trayMenu != nullptr) {
+                trayMenu->Close();
+                trayMenu.reset();
+            }
+            trayMenu = std::make_unique<halocap::app::TrayMenuWindow>();
+            POINT cursor{};
+            GetCursorPos(&cursor);
+            const std::wstring versionLabel =
+                std::wstring(L"v") + Utf8ToWide(halocap::app::kHaloCapVersion);
+            if (!trayMenu->Open(trayState, versionLabel, cursor)) {
+                trayMenu.reset();
+                log.Error("tray menu: open failed");
             }
             break;
         }
@@ -2912,6 +3439,16 @@ int Run(const Options& options) {
             break;
         case Win32Tray::Click::None:
             break;
+        }
+
+        if (trayMenu != nullptr) {
+            if (const core::TrayCommand command = trayMenu->PollCommand();
+                command != core::TrayCommand::None) {
+                onAction(command);
+            }
+            if (!trayMenu->Active()) {
+                trayMenu.reset();
+            }
         }
 
         if (const core::TrayCommand command = tray.PollCommand();
@@ -2955,10 +3492,63 @@ int Run(const Options& options) {
             }
         }
 
+        // 窗口录制跟随：与 1.x 的 HudRefreshInterval 同一个 250ms 节奏——关闭/最小化就
+        // 收尾保存，挪动/改尺寸就更新边框与浮层锚点；信息行也在这一拍重建。
+        if (recordingActive) {
+            const std::int64_t nowMs = static_cast<std::int64_t>(GetTickCount64());
+            if (nowMs - lastHudInfoMs >= 250) {
+                lastHudInfoMs = nowMs;
+                if (recordTargetWindow != nullptr) {
+                    RECT visible{};
+                    if (!recordWindowUsable(recordTargetWindow, &visible)) {
+                        log.Info("recording: target window closed or minimized, stop and save");
+                        core::RecordingStats windowStats;
+                        const bool saved = recording.Stop(windowStats);
+                        recordingActive = false;
+                        const std::string savedPath = recording.OutputPath();
+                        closeRecordingUi();
+                        refreshTray();
+                        tray.Notify("HaloCap", saved ? "已保存：" + savedPath
+                                                     : "录制失败，详见日志");
+                        if (recordRequested) {
+                            recordStopped = saved;
+                            recordStats = windowStats;
+                            running = false;
+                        }
+                    } else {
+                        const core::IntRect live{ visible.left, visible.top, visible.right,
+                                                  visible.bottom };
+                        if (live.left != recordAnchor.left || live.top != recordAnchor.top ||
+                            live.right != recordAnchor.right ||
+                            live.bottom != recordAnchor.bottom) {
+                            recordAnchor = live;
+                            if (recordingFrame != nullptr) {
+                                recordingFrame->UpdateRect(live);
+                            }
+                            if (recordingHud != nullptr) {
+                                recordingHud->UpdateAnchor(live);
+                            }
+                        }
+                    }
+                }
+                if (recordingActive) {
+                    hudInfoText = buildHudInfo();
+                }
+            }
+        }
+
         // 录制泵：与消息循环同一个线程、同一个 30 ms 节奏。采集侧丢设备时这里会返回
         // false，录制作废并给出提示，而不是让 app 卡住。
         if (recordingHud != nullptr) {
-            recordingHud->Update(recording.MediaTimeMs(), recording.Paused());
+            halocap::app::RecordingHudState hudState;
+            hudState.elapsedMs = recording.MediaTimeMs();
+            hudState.paused = recording.Paused();
+            hudState.info = hudInfoText;
+            hudState.showSystemLevel = recording.SystemAudioActive();
+            hudState.systemLevel = recording.SystemAudioLevel();
+            hudState.showMicLevel = recording.MicrophoneActive();
+            hudState.micLevel = recording.MicrophoneLevel();
+            recordingHud->Update(hudState);
             switch (recordingHud->PollAction()) {
             case halocap::app::RecordingHud::Action::Pause:
                 togglePause();
@@ -2978,6 +3568,7 @@ int Run(const Options& options) {
                 core::RecordingStats ignored;
                 recording.Stop(ignored);
                 recordingActive = false;
+                closeRecordingUi();
                 refreshTray();
                 tray.Notify("HaloCap", "录制中断：采集源丢失");
                 if (recordRequested) {
@@ -2990,6 +3581,7 @@ int Run(const Options& options) {
             static_cast<std::int64_t>(GetTickCount64()) >= recordDeadlineMs) {
             recordStopped = recording.Stop(recordStats);
             recordingActive = false;
+            closeRecordingUi();
             refreshTray();
             log.Info(recordStopped ? "recording: stopped" : "recording: stop failed");
             running = false;
@@ -3091,9 +3683,11 @@ int Run(const Options& options) {
     AddFlag(report, "APP_RADIAL_SELFTEST", radialSelftestOk);
     AddFlag(report, "APP_WINDOW_PICKER_SELFTEST", windowPickerSelftestOk);
     AddFlag(report, "APP_RADIAL_CLICK_SELFTEST", radialClickOk);
+    AddFlag(report, "APP_RECORDING_UI_SELFTEST", recordingUiSelftestOk);
+    AddFlag(report, "APP_TRAY_MENU_SELFTEST", trayMenuSelftestOk);
     ok = ok && screenshotSelftestOk && ocrSelftestOk && settingsSelftestOk && pinSelftestOk &&
          radialSelftestOk && windowPickerSelftestOk && hotkeySelftestOk && ocrSearchSelftestOk &&
-         hotkeyLiveOk;
+         hotkeyLiveOk && recordingUiSelftestOk && trayMenuSelftestOk;
 
     std::printf("%s", report.c_str());
     if (!options.reportPath.empty()) {

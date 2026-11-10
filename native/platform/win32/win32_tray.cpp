@@ -47,10 +47,12 @@ std::string WideToUtf8(std::wstring_view text) {
     return utf8;
 }
 
-// ---- 图标：32×32 的「光圈」，参数取自 1.x 的 TrayIconService.CreateTrayIcon ----
+// ---- 应用 logo：与设置页标题栏同一个图形 ----
 //
-// 1.x 是 GDI+ 画的（抗锯齿椭圆 + 四段圆头弧 + 中心点）。这里用逐像素数学 + 4×4 超采样
-// 复现同一张图：没有 GDI+ 的依赖，也不需要图标资源文件。
+// 设置页的 logo 是 18 DIP：外环直径 18、描边 1（黑 alpha 34）；内环直径 12、描边 1.3
+// （#007AFF）；中心圆点直径 3（#F5B963）。这里按同一组比例渲染任意尺寸（托盘 32、
+// 窗口 16/32），逐像素数学 + 4×4 超采样，不依赖 GDI+ 或图标资源。
+// 录制时只把中心圆点换成红色（#E5484D），两个环不变——还是同一个 logo。
 
 struct Layer {
     float r = 0;
@@ -70,29 +72,25 @@ void Over(const Layer& source, Layer& dest) {
     dest.a = outAlpha;
 }
 
-float AngularDistance(float angle, float center) {
-    float delta = std::fmod(angle - center + 540.0f, 360.0f) - 180.0f;
-    return std::fabs(delta);
-}
+std::vector<std::uint8_t> RenderLogoPixels(int size, bool recording) {
+    const float scale = static_cast<float>(size) / 18.0f;
+    const float center = static_cast<float>(size) * 0.5f;
+    const float outerRadius = 9.0f * scale;
+    const float outerStroke = 1.0f * scale;
+    const float innerRadius = 6.0f * scale;
+    const float innerStroke = 1.3f * scale;
+    const float dotRadius = 1.5f * scale;
 
-std::vector<std::uint8_t> RenderIconPixels(bool recording) {
-    // 1.x 的色板：四段弧、录制红点、深色圆盘。
-    const Layer arcs[4] = {
-        { 108.0f / 255.0f, 168.0f / 255.0f, 255.0f / 255.0f, recording ? 0.57f : 1.0f },
-        { 176.0f / 255.0f, 140.0f / 255.0f, 255.0f / 255.0f, recording ? 0.57f : 1.0f },
-        { 255.0f / 255.0f, 115.0f / 255.0f, 115.0f / 255.0f, recording ? 0.57f : 1.0f },
-        { 245.0f / 255.0f, 185.0f / 255.0f, 99.0f / 255.0f, recording ? 0.57f : 1.0f },
-    };
+    const Layer outer{ 0.0f, 0.0f, 0.0f, 34.0f / 255.0f };
+    const Layer blue{ 0.0f, 122.0f / 255.0f, 1.0f, 1.0f };      // #007AFF
+    const Layer dot = recording
+        ? Layer{ 229.0f / 255.0f, 72.0f / 255.0f, 77.0f / 255.0f, 1.0f }    // #E5484D
+        : Layer{ 245.0f / 255.0f, 185.0f / 255.0f, 99.0f / 255.0f, 1.0f };  // #F5B963
 
-    const float center = kIconSize / 2.0f;
-    const float diskRadius = center - 1.5f;
-    const float ringInner = 6.2f + 1.6f;
-    const float ringOuter = kIconSize - 6.2f - 1.6f;
+    std::vector<std::uint8_t> pixels(static_cast<std::size_t>(size) * size * 4, 0);
 
-    std::vector<std::uint8_t> pixels(kIconSize * kIconSize * 4, 0);
-
-    for (int y = 0; y < kIconSize; ++y) {
-        for (int x = 0; x < kIconSize; ++x) {
+    for (int y = 0; y < size; ++y) {
+        for (int x = 0; x < size; ++x) {
             Layer accumulated;
             constexpr int kSamples = 4;
             for (int sy = 0; sy < kSamples; ++sy) {
@@ -102,37 +100,16 @@ std::vector<std::uint8_t> RenderIconPixels(bool recording) {
                     const float dx = px - center;
                     const float dy = py - center;
                     const float distance = std::sqrt(dx * dx + dy * dy);
-                    const float angle = std::atan2(dy, dx) * 180.0f / 3.14159265f;
-
-                    if (distance > diskRadius) {
-                        continue;   // 圆盘之外是透明
-                    }
 
                     Layer sample;
-                    // 圆盘填色。
-                    Over({ 20.0f / 255.0f, 25.0f / 255.0f, 34.0f / 255.0f, 1.0f }, sample);
-                    // 1px 白边（alpha 64）。
-                    if (distance > diskRadius - 1.0f) {
-                        Over({ 1.0f, 1.0f, 1.0f, 64.0f / 255.0f }, sample);
+                    if (std::fabs(distance - outerRadius) <= outerStroke * 0.5f) {
+                        Over(outer, sample);
                     }
-                    // 四段弧，每段以 0°/90°/180°/270° 为中心（1.x 的 -90 + i*90），±28°。
-                    if (distance >= ringInner && distance <= ringOuter) {
-                        for (int i = 0; i < 4; ++i) {
-                            if (AngularDistance(angle, -90.0f + static_cast<float>(i) * 90.0f) <= 28.0f) {
-                                Over(arcs[i], sample);
-                                break;
-                            }
-                        }
+                    if (std::fabs(distance - innerRadius) <= innerStroke * 0.5f) {
+                        Over(blue, sample);
                     }
-                    if (recording) {
-                        if (distance <= 8.0f) {
-                            Over({ 1.0f, 90.0f / 255.0f, 90.0f / 255.0f, 70.0f / 255.0f }, sample);
-                        }
-                        if (distance <= 4.5f) {
-                            Over({ 1.0f, 92.0f / 255.0f, 92.0f / 255.0f, 1.0f }, sample);
-                        }
-                    } else if (distance <= 1.8f) {
-                        Over({ 1.0f, 1.0f, 1.0f, 245.0f / 255.0f }, sample);
+                    if (distance <= dotRadius) {
+                        Over(dot, sample);
                     }
 
                     accumulated.r += sample.r * sample.a;
@@ -154,7 +131,7 @@ std::vector<std::uint8_t> RenderIconPixels(bool recording) {
             const float g = accumulated.g / weight;
             const float b = accumulated.b / weight;
 
-            const std::size_t offset = (static_cast<std::size_t>(y) * kIconSize + x) * 4;
+            const std::size_t offset = (static_cast<std::size_t>(y) * size + x) * 4;
             pixels[offset + 0] = static_cast<std::uint8_t>(std::lround(std::min(1.0f, b) * 255.0f));
             pixels[offset + 1] = static_cast<std::uint8_t>(std::lround(std::min(1.0f, g) * 255.0f));
             pixels[offset + 2] = static_cast<std::uint8_t>(std::lround(std::min(1.0f, r) * 255.0f));
@@ -165,27 +142,26 @@ std::vector<std::uint8_t> RenderIconPixels(bool recording) {
     return pixels;
 }
 
-void* CreateTrayIcon(bool recording) {
-    const std::vector<std::uint8_t> pixels = RenderIconPixels(recording);
-
-    HBITMAP color = CreateBitmap(kIconSize, kIconSize, 1, 32, pixels.data());
+void* MakeIcon(std::vector<std::uint8_t>& pixels, int size) {
+    HBITMAP color = CreateBitmap(size, size, 1, 32, pixels.data());
     if (color == nullptr) {
         return nullptr;
     }
 
     // 单色掩码：透明像素置 1，让老系统与高对比度主题也拿得到正确的轮廓。
-    std::vector<std::uint8_t> mask(static_cast<std::size_t>(kIconSize) * kIconSize / 8, 0);
-    for (int y = 0; y < kIconSize; ++y) {
-        for (int x = 0; x < kIconSize; ++x) {
-            const std::uint8_t alpha = pixels[(static_cast<std::size_t>(y) * kIconSize + x) * 4 + 3];
+    const std::size_t maskStride = (static_cast<std::size_t>(size) + 7) / 8;
+    std::vector<std::uint8_t> mask(maskStride * static_cast<std::size_t>(size), 0);
+    for (int y = 0; y < size; ++y) {
+        for (int x = 0; x < size; ++x) {
+            const std::uint8_t alpha = pixels[(static_cast<std::size_t>(y) * size + x) * 4 + 3];
             if (alpha < 128) {
-                mask[static_cast<std::size_t>(y) * 4 + x / 8] |=
+                mask[static_cast<std::size_t>(y) * maskStride + static_cast<std::size_t>(x) / 8] |=
                     static_cast<std::uint8_t>(1u << (7 - (x % 8)));
             }
         }
     }
 
-    HBITMAP monochrome = CreateBitmap(kIconSize, kIconSize, 1, 1, mask.data());
+    HBITMAP monochrome = CreateBitmap(size, size, 1, 1, mask.data());
     if (monochrome == nullptr) {
         DeleteObject(color);
         return nullptr;
@@ -202,7 +178,27 @@ void* CreateTrayIcon(bool recording) {
     return icon;
 }
 
+void* CreateTrayIcon(bool recording) {
+    std::vector<std::uint8_t> pixels = RenderLogoPixels(kIconSize, recording);
+    return MakeIcon(pixels, kIconSize);
+}
+
 }  // namespace
+
+void* CreateHalocapLogoIcon(int sizePx, bool recording) {
+    if (sizePx <= 0) {
+        return nullptr;
+    }
+    std::vector<std::uint8_t> pixels = RenderLogoPixels(sizePx, recording);
+    return MakeIcon(pixels, sizePx);
+}
+
+std::vector<std::uint8_t> RenderHalocapLogoBgra(int sizePx, bool recording) {
+    if (sizePx <= 0) {
+        return {};
+    }
+    return RenderLogoPixels(sizePx, recording);
+}
 
 Win32Tray::Win32Tray() = default;
 

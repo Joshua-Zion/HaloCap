@@ -2868,6 +2868,18 @@ int Run(const Options& options) {
                     halocap::platform::win32::SaveBgraPng(
                         options.settingsSelftestPath, desktop.bgra.data(), desktop.width,
                         desktop.height, desktop.width * 4);
+            // logo 证明图：与设置页标题栏/托盘/窗口图标同一套渲染（空闲 + 录制）。
+            {
+                const std::vector<std::uint8_t> logo =
+                    halocap::platform::win32::RenderHalocapLogoBgra(96, false);
+                const std::vector<std::uint8_t> logoRecording =
+                    halocap::platform::win32::RenderHalocapLogoBgra(96, true);
+                halocap::platform::win32::SaveBgraPng(options.settingsSelftestPath + L".logo.png",
+                                                      logo.data(), 96, 96, 96 * 4);
+                halocap::platform::win32::SaveBgraPng(
+                    options.settingsSelftestPath + L".logo-rec.png", logoRecording.data(), 96, 96,
+                    96 * 4);
+            }
             settingsWindow->Close();
         }
 

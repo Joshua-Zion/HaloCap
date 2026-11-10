@@ -89,6 +89,9 @@ private:
     std::wstring SummaryText() const;
 
     HWND window_ = nullptr;
+    // 任务栏 / Alt+Tab 图标：与设置页标题栏、托盘同一个 logo，Close 时释放。
+    void* iconBig_ = nullptr;
+    void* iconSmall_ = nullptr;
     HBITMAP bitmap_ = nullptr;
     HDC memory_ = nullptr;
     void* bits_ = nullptr;

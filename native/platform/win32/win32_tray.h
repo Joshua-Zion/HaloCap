@@ -10,6 +10,13 @@
 
 namespace halocap::platform::win32 {
 
+// 应用 logo（与设置页标题栏同一个：淡黑外环 + 蓝色内环 + 金色圆点；recording 时圆点变红）。
+// 托盘图标与任务栏/Alt+Tab 窗口图标都用它。返回 HICON，调用方用 DestroyIcon 释放。
+void* CreateHalocapLogoIcon(int sizePx, bool recording);
+
+// 只给自检与证明图：按同一套渲染得到 BGRA（行距 = sizePx*4，直通 alpha）。
+std::vector<std::uint8_t> RenderHalocapLogoBgra(int sizePx, bool recording);
+
 // 托盘图标的 Win32 实现。
 //
 // 菜单的「内容」在 core::BuildTrayMenu（顺序、可用性、勾选、快捷键列，有单测）；

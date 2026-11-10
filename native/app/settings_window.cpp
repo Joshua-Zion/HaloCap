@@ -23,6 +23,7 @@
 #include "update.h"
 #include "version.h"
 #include "soft_shadow.h"
+#include "win32_tray.h"
 #include "win32_update_fetch.h"
 #include "win32_autostart.h"
 
@@ -486,6 +487,18 @@ bool SettingsWindow::Create(void* owner, const core::AppSettings& settings,
         return false;
     }
 
+    // 任务栏 / Alt+Tab 用同一个 logo（与标题栏、托盘一致）。
+    iconBig_ = halocap::platform::win32::CreateHalocapLogoIcon(32, false);
+    iconSmall_ = halocap::platform::win32::CreateHalocapLogoIcon(16, false);
+    if (iconBig_ != nullptr) {
+        SendMessageW(window_, WM_SETICON, ICON_BIG,
+                     reinterpret_cast<LPARAM>(static_cast<HICON>(iconBig_)));
+    }
+    if (iconSmall_ != nullptr) {
+        SendMessageW(window_, WM_SETICON, ICON_SMALL,
+                     reinterpret_cast<LPARAM>(static_cast<HICON>(iconSmall_)));
+    }
+
     ShowWindow(window_, SW_SHOW);
     // 普通窗口：打开时到前台一次（和正常应用一致），但不再置顶，随后可被其他窗口盖住。
     SetForegroundWindow(window_);
@@ -510,6 +523,14 @@ void SettingsWindow::Close() {
     if (window_ != nullptr) {
         DestroyWindow(window_);
         window_ = nullptr;
+    }
+    if (iconBig_ != nullptr) {
+        DestroyIcon(static_cast<HICON>(iconBig_));
+        iconBig_ = nullptr;
+    }
+    if (iconSmall_ != nullptr) {
+        DestroyIcon(static_cast<HICON>(iconSmall_));
+        iconSmall_ = nullptr;
     }
     if (bitmap_ != nullptr) {
         DeleteObject(bitmap_);

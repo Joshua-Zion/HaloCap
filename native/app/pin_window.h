@@ -136,13 +136,11 @@ private:
     void LayoutToolbar(int originX, int originY);
     void LayoutOptionBar(int originX, int originY);
     void DrawChrome(Gdiplus::Graphics& graphics) const;
-    void DrawHoverToolbar(Gdiplus::Graphics& graphics) const;
     void DrawHud(Gdiplus::Graphics& graphics) const;
 
     bool IsOverChrome(POINT client) const;
     int ToolbarButtonAt(POINT client) const;
     int OptionButtonAt(POINT client) const;
-    int HoverToolButtonAt(POINT client) const;
 
     void SetAnnotationMode(bool enabled);
     void SetTool(core::AnnotationTool tool);
@@ -225,12 +223,7 @@ private:
     bool chromeAbove_ = false;
     int chromeHeight_ = 0;
 
-    bool hover_ = false;
     bool trackingLeave_ = false;
-    RECT copyRect_{};
-    RECT saveRect_{};
-    RECT ocrRect_{};
-    RECT closeRect_{};
 
     bool annotating_ = false;
     bool drawing_ = false;

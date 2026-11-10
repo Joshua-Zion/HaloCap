@@ -490,20 +490,6 @@ void PinWindow::UpdateLayout() {
     const int sideInset = (windowWidth_ - imageOuterWidth) / 2;
     contentLeft_ = sideInset + glow_ + border_;
 
-    // 悬停工具条（复制/保存/识别/关闭）的按钮矩形：内容局部坐标。
-    const int button = ScaleInt(28.0f);
-    const int buttonGap = ScaleInt(4.0f);
-    const int margin = ScaleInt(8.0f);
-    const int top = ScaleInt(8.0f);
-    closeRect_ = RECT{ displayWidth_ - margin - button, top, displayWidth_ - margin,
-                       top + button };
-    ocrRect_ = RECT{ closeRect_.left - buttonGap - button, top,
-                     closeRect_.left - buttonGap, top + button };
-    saveRect_ = RECT{ ocrRect_.left - buttonGap - button, top, ocrRect_.left - buttonGap,
-                      top + button };
-    copyRect_ = RECT{ saveRect_.left - buttonGap - button, top, saveRect_.left - buttonGap,
-                      top + button };
-
     // 工具栏放下面还是翻到上面：看贴图所在显示器工作区的剩余空间（1.x 的 PreferToolbarAbove）。
     chromeAbove_ = false;
     if (annotating_) {
@@ -566,7 +552,6 @@ void PinWindow::SetAnnotationMode(bool enabled) {
         return;
     }
     annotating_ = enabled;
-    hover_ = false;
     hoveredToolbar_ = -1;
     hoveredOption_ = -1;
     if (!enabled) {
@@ -637,30 +622,6 @@ int PinWindow::OptionButtonAt(POINT client) const {
             client.y < rect.bottom) {
             return static_cast<int>(i);
         }
-    }
-    return -1;
-}
-
-int PinWindow::HoverToolButtonAt(POINT client) const {
-    if (annotating_) {
-        return -1;
-    }
-    const int x = client.x - contentLeft_;
-    const int y = client.y - contentTop_;
-    const auto inside = [&](const RECT& rect) {
-        return x >= rect.left && x < rect.right && y >= rect.top && y < rect.bottom;
-    };
-    if (inside(copyRect_)) {
-        return 0;
-    }
-    if (inside(saveRect_)) {
-        return 1;
-    }
-    if (options_.ocrEnabled && inside(ocrRect_)) {
-        return 2;
-    }
-    if (inside(closeRect_)) {
-        return 3;
     }
     return -1;
 }
@@ -944,38 +905,6 @@ void PinWindow::DrawChrome(Gdiplus::Graphics& graphics) const {
     drawButtons(optionButtons_, hoveredOption_);
 }
 
-void PinWindow::DrawHoverToolbar(Gdiplus::Graphics& graphics) const {
-    if (!hover_ || annotating_) {
-        return;
-    }
-    const int inset = ScaleInt(6.0f);
-    const int top = ScaleInt(4.0f);
-    const int left = std::min(copyRect_.left, ocrRect_.left) - inset;
-    const int right = closeRect_.right + inset;
-    Gdiplus::RectF bar(static_cast<float>(contentLeft_ + left),
-                       static_cast<float>(contentTop_ + copyRect_.top - top),
-                       static_cast<float>(right - left),
-                       static_cast<float>(copyRect_.bottom - copyRect_.top + top * 2));
-    Gdiplus::GraphicsPath barPath;
-    BuildRoundRect(barPath, bar, Scale(9.0f));
-    Gdiplus::SolidBrush barBrush(Gdiplus::Color(235, 0x16, 0x1A, 0x22));
-    graphics.FillPath(&barBrush, &barPath);
-    Gdiplus::Pen barPen(Gdiplus::Color(40, 255, 255, 255), 1.0f);
-    graphics.DrawPath(&barPen, &barPath);
-
-    const auto drawButton = [&](const RECT& local, const char* icon) {
-        RECT native{ contentLeft_ + local.left, contentTop_ + local.top,
-                     contentLeft_ + local.right, contentTop_ + local.bottom };
-        DrawIcon(graphics, native, icon, Gdiplus::Color(255, 0xE9, 0xED, 0xF4), Scale(20.0f));
-    };
-    drawButton(copyRect_, "Copy");
-    drawButton(saveRect_, "Save");
-    if (options_.ocrEnabled) {
-        drawButton(ocrRect_, "Ocr");
-    }
-    drawButton(closeRect_, "Close");
-}
-
 void PinWindow::DrawHud(Gdiplus::Graphics& graphics) const {
     if (!hudVisible_ || hud_.empty()) {
         return;
@@ -1200,14 +1129,13 @@ void PinWindow::Render() {
         }
     }
 
-    // 3. 悬停工具条、标注工具栏、HUD。
+    // 3. 标注工具栏、HUD。
     {
         Gdiplus::Bitmap canvas(windowWidth_, windowHeight_, windowWidth_ * 4,
                                PixelFormat32bppPARGB, layered.data());
         Gdiplus::Graphics graphics(&canvas);
         graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
         graphics.SetTextRenderingHint(Gdiplus::TextRenderingHintAntiAlias);
-        DrawHoverToolbar(graphics);
         DrawChrome(graphics);
         DrawHud(graphics);
     }
@@ -1536,15 +1464,6 @@ void PinWindow::OnMouseMove(HWND window, POINT client) {
         return;
     }
 
-    const core::IntRect content{ contentLeft_, contentTop_, contentLeft_ + displayWidth_,
-                                 contentTop_ + displayHeight_ };
-    const bool overContent = client.x >= content.left && client.x < content.right &&
-                             client.y >= content.top && client.y < content.bottom;
-    const bool hover = overContent || HoverToolButtonAt(client) >= 0;
-    if (hover != hover_) {
-        hover_ = hover;
-        Render();
-    }
     if (!trackingLeave_) {
         TRACKMOUSEEVENT track{};
         track.cbSize = sizeof(track);
@@ -1627,20 +1546,6 @@ void PinWindow::OnLeftButtonDown(HWND window, POINT client) {
         drawing_ = true;
         SetCapture(window);
         Render();
-        return;
-    }
-
-    const int button = HoverToolButtonAt(client);
-    if (button >= 0) {
-        if (button == 0) {
-            CopyImage();
-        } else if (button == 1) {
-            SaveImage();
-        } else if (button == 2) {
-            RequestOcr();
-        } else if (button == 3) {
-            Close();
-        }
         return;
     }
 
@@ -1884,8 +1789,6 @@ void PinWindow::OnSetCursor() {
     } else if (annotating_) {
         name = (ToolbarButtonAt(cursor) >= 0 || OptionButtonAt(cursor) >= 0) ? IDC_HAND
                                                                             : IDC_CROSS;
-    } else if (HoverToolButtonAt(cursor) >= 0) {
-        name = IDC_HAND;
     }
     SetCursor(LoadCursorW(nullptr, name));
 }
@@ -2481,10 +2384,6 @@ LRESULT PinWindow::Handle(HWND window, UINT message, WPARAM wParam, LPARAM lPara
         return 0;
     case WM_MOUSELEAVE:
         trackingLeave_ = false;
-        if (hover_) {
-            hover_ = false;
-            Render();
-        }
         return 0;
     case WM_LBUTTONDOWN:
         OnLeftButtonDown(window, POINT{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) });

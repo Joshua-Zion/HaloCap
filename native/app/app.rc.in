@@ -1,0 +1,3 @@
+// 由 CMake 生成：用绝对路径引用图标，避免 rc 的工作目录不同导致找不到 app.ico。
+// 图标由 tools/logo_icon 生成，与运行期托盘/窗口图标同一套渲染（白底圆角 + 蓝环金点）。
+1 ICON "@HALOCAP_APP_ICON@"

@@ -443,6 +443,8 @@ bool TrayMenuWindow::Open(const core::TrayMenuState& state, const std::wstring& 
         Sleep(10);
     }
     Present(255);
+    // 开场淡入期间线程在忙，系统可能把光标显示成「启动中」；结束时马上改回箭头。
+    SetCursor(LoadCursorW(nullptr, IDC_ARROW));
     return true;
 }
 
@@ -732,6 +734,10 @@ LRESULT CALLBACK TrayMenuWindow::WndProc(HWND window, UINT message, WPARAM wPara
 
 LRESULT TrayMenuWindow::Handle(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
     switch (message) {
+    case WM_SETCURSOR:
+        // 菜单里永远是箭头：类光标在某些时序下会被系统换成「启动中」的转圈光标。
+        SetCursor(LoadCursorW(nullptr, IDC_ARROW));
+        return TRUE;
     case WM_MOUSEMOVE: {
         const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
         const int hit = HitItem(point);

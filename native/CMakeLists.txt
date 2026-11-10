@@ -1,6 +1,6 @@
 ﻿cmake_minimum_required(VERSION 3.25)
 
-project(halocap_native LANGUAGES CXX)
+project(halocap_native LANGUAGES CXX RC)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -39,4 +39,5 @@ add_subdirectory(tools/wgc_probe)
 add_subdirectory(tools/screenshot_probe)
 add_subdirectory(tools/ocr_probe)
 add_subdirectory(tools/rect_copy_test)
+add_subdirectory(tools/logo_icon)
 add_subdirectory(tests)

@@ -3,6 +3,7 @@
 #include <windows.h>
 #include <shellapi.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -47,12 +48,12 @@ std::string WideToUtf8(std::wstring_view text) {
     return utf8;
 }
 
-// ---- 应用 logo：与设置页标题栏同一个图形 ----
+// ---- 应用 logo：白色圆角底板 + 设置页标题栏那套图形 ----
 //
-// 设置页的 logo 是 18 DIP：外环直径 18、描边 1（黑 alpha 34）；内环直径 12、描边 1.3
-// （#007AFF）；中心圆点直径 3（#F5B963）。这里按同一组比例渲染任意尺寸（托盘 32、
-// 窗口 16/32），逐像素数学 + 4×4 超采样，不依赖 GDI+ 或图标资源。
-// 录制时只把中心圆点换成红色（#E5484D），两个环不变——还是同一个 logo。
+// 图形本身与设置页一致：外环 1（黑 alpha 34）+ 内环 1.3（#007AFF）+ 圆点 3（#F5B963），
+// 比例按 18 DIP 设计稿。用作应用/托盘图标时垫一张白色圆角底板（圆角 22%），这样在深色
+// 任务栏上也清楚。录制时只把中心圆点换成红色（#E5484D），其它不变。
+// 逐像素数学 + 4×4 超采样，不依赖 GDI+ 或图标资源。
 
 struct Layer {
     float r = 0;
@@ -73,19 +74,33 @@ void Over(const Layer& source, Layer& dest) {
 }
 
 std::vector<std::uint8_t> RenderLogoPixels(int size, bool recording) {
-    const float scale = static_cast<float>(size) / 18.0f;
-    const float center = static_cast<float>(size) * 0.5f;
+    const float s = static_cast<float>(size);
+    const float tileRadius = 0.22f * s;              // 底板圆角
+    const float center = s * 0.5f;
+    const float scale = (0.70f * s) / 18.0f;         // logo 占底板 70%
     const float outerRadius = 9.0f * scale;
     const float outerStroke = 1.0f * scale;
     const float innerRadius = 6.0f * scale;
     const float innerStroke = 1.3f * scale;
     const float dotRadius = 1.5f * scale;
 
+    const Layer white{ 1.0f, 1.0f, 1.0f, 1.0f };
     const Layer outer{ 0.0f, 0.0f, 0.0f, 34.0f / 255.0f };
     const Layer blue{ 0.0f, 122.0f / 255.0f, 1.0f, 1.0f };      // #007AFF
     const Layer dot = recording
         ? Layer{ 229.0f / 255.0f, 72.0f / 255.0f, 77.0f / 255.0f, 1.0f }    // #E5484D
         : Layer{ 245.0f / 255.0f, 185.0f / 255.0f, 99.0f / 255.0f, 1.0f };  // #F5B963
+
+    const auto insideTile = [&](float x, float y) {
+        if (x < 0.0f || y < 0.0f || x > s || y > s) {
+            return false;
+        }
+        const float cx = std::clamp(x, tileRadius, s - tileRadius);
+        const float cy = std::clamp(y, tileRadius, s - tileRadius);
+        const float dx = x - cx;
+        const float dy = y - cy;
+        return dx * dx + dy * dy <= tileRadius * tileRadius;
+    };
 
     std::vector<std::uint8_t> pixels(static_cast<std::size_t>(size) * size * 4, 0);
 
@@ -97,19 +112,22 @@ std::vector<std::uint8_t> RenderLogoPixels(int size, bool recording) {
                 for (int sx = 0; sx < kSamples; ++sx) {
                     const float px = static_cast<float>(x) + (static_cast<float>(sx) + 0.5f) / kSamples;
                     const float py = static_cast<float>(y) + (static_cast<float>(sy) + 0.5f) / kSamples;
-                    const float dx = px - center;
-                    const float dy = py - center;
-                    const float distance = std::sqrt(dx * dx + dy * dy);
 
                     Layer sample;
-                    if (std::fabs(distance - outerRadius) <= outerStroke * 0.5f) {
-                        Over(outer, sample);
-                    }
-                    if (std::fabs(distance - innerRadius) <= innerStroke * 0.5f) {
-                        Over(blue, sample);
-                    }
-                    if (distance <= dotRadius) {
-                        Over(dot, sample);
+                    if (insideTile(px, py)) {
+                        Over(white, sample);
+                        const float dx = px - center;
+                        const float dy = py - center;
+                        const float distance = std::sqrt(dx * dx + dy * dy);
+                        if (std::fabs(distance - outerRadius) <= outerStroke * 0.5f) {
+                            Over(outer, sample);
+                        }
+                        if (std::fabs(distance - innerRadius) <= innerStroke * 0.5f) {
+                            Over(blue, sample);
+                        }
+                        if (distance <= dotRadius) {
+                            Over(dot, sample);
+                        }
                     }
 
                     accumulated.r += sample.r * sample.a;

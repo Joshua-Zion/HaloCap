@@ -1,0 +1,2 @@
+add_executable(logo_icon main.cpp)
+target_link_libraries(logo_icon PRIVATE halocap_platform_win32)

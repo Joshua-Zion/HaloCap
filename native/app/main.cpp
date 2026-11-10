@@ -52,6 +52,8 @@
 #include "window_at_point.h"
 #include "window_picker.h"
 
+#include <knownfolders.h>
+#include <shlobj.h>
 #include <shobjidl.h>
 #include "win32_tray.h"
 
@@ -526,6 +528,15 @@ std::wstring RecordingDirectory(const core::AppSettings& settings) {
         return configured;
     }
 
+    // 系统的「视频」已知文件夹（用户可能把它重定向到别的盘），下面挂 Captures。
+    PWSTR videos = nullptr;
+    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Videos, KF_FLAG_DEFAULT, nullptr, &videos)) &&
+        videos != nullptr) {
+        std::wstring directory = std::wstring(videos) + L"\\Captures";
+        CoTaskMemFree(videos);
+        return directory;
+    }
+
     wchar_t profile[MAX_PATH] = {};
     if (GetEnvironmentVariableW(L"USERPROFILE", profile, MAX_PATH) == 0) {
         return {};
@@ -793,6 +804,11 @@ int Run(const Options& options) {
     }
 
     core::AppSettings liveSettings = loaded.settings;
+    // 保存目录回显：没设过就用系统「视频\Captures」（自动获取），写进设置让设置页显示真实
+    // 路径、并在下次保存时落盘；用户仍可在设置页改到别处。
+    if (liveSettings.recordingDirectory.empty()) {
+        liveSettings.recordingDirectory = WideToUtf8(RecordingDirectory(liveSettings));
+    }
     const core::AppSettings& settings = liveSettings;
 
     AddFlag(report, "APP_SETTINGS_FILE_EXISTS", loaded.fileExists);
@@ -801,6 +817,7 @@ int Run(const Options& options) {
     AddInt(report, "APP_SETTINGS_IGNORED", static_cast<long long>(loaded.report.ignoredKeys.size()));
     AddInt(report, "APP_SETTINGS_REPAIRED", static_cast<long long>(loaded.report.repairedKeys.size()));
     AddInt(report, "APP_SETTINGS_DROPPED", static_cast<long long>(loaded.report.droppedKeys.size()));
+    AddText(report, "APP_RECORD_DIRECTORY", liveSettings.recordingDirectory);
 
     // ---- 2) 托盘与热键 ----
     core::TrayMenuState trayState;
@@ -1124,6 +1141,7 @@ int Run(const Options& options) {
                 screenshotOverlay = std::make_unique<halocap::app::ScreenshotOverlay>();
                 halocap::app::ScreenshotOverlayOptions overlayOptions;
                 overlayOptions.mode = halocap::app::OverlayMode::RecordRegion;
+                overlayOptions.autoStart = settings.recording.autoStart;
                 overlayOptions.onRegion = [&](core::IntRect rect) {
                     beginRecording(nullptr, rect);
                 };
@@ -1391,6 +1409,7 @@ int Run(const Options& options) {
         screenshotOverlay = std::make_unique<halocap::app::ScreenshotOverlay>();
         halocap::app::ScreenshotOverlayOptions overlayOptions;
         overlayOptions.mode = halocap::app::OverlayMode::Ocr;
+        overlayOptions.autoStart = settings.ocr.autoStart;
         overlayOptions.onOcr = [&openOcrResult](const std::uint8_t* image, int imageWidth,
                                                int imageHeight, int x, int y) {
             openOcrResult(image, imageWidth, imageHeight, x, y, false);
@@ -2791,10 +2810,17 @@ int Run(const Options& options) {
         const bool opened = settingsWindow != nullptr && settingsWindow->Valid();
         bool proof = false;
         bool taskbarOk = false;
+        bool notTopmost = false;
         if (opened) {
             // 设置是独立应用窗口：必须带 WS_EX_APPWINDOW（TOOLWINDOW 会让它从任务栏消失）。
             const LONG_PTR exStyle = GetWindowLongPtrW(settingsWindow->Handle(), GWL_EXSTYLE);
             taskbarOk = (exStyle & WS_EX_APPWINDOW) != 0 && (exStyle & WS_EX_TOOLWINDOW) == 0;
+            // 层级和普通窗口一致：创建时不能置顶（先读样式，再为了抓图临时升到最上层）。
+            notTopmost = (exStyle & WS_EX_TOPMOST) == 0;
+            // 自检进程不在前台，普通窗口会被其他窗口盖住；只为拍到界面临时置顶（生产不置顶）。
+            SetWindowPos(settingsWindow->Handle(), HWND_TOPMOST, 0, 0, 0, 0,
+                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            Sleep(160);
             halocap::platform::win32::DesktopImage desktop;
             proof = halocap::platform::win32::GrabPrimaryDesktop(desktop) &&
                     halocap::platform::win32::SaveBgraPng(
@@ -2806,7 +2832,8 @@ int Run(const Options& options) {
         AddFlag(report, "APP_SETTINGS_WINDOW", opened);
         AddFlag(report, "APP_SETTINGS_PROOF", proof);
         AddFlag(report, "APP_SETTINGS_TASKBAR", taskbarOk);
-        settingsSelftestOk = opened && proof && taskbarOk;
+        AddFlag(report, "APP_SETTINGS_NOT_TOPMOST", notTopmost);
+        settingsSelftestOk = opened && proof && taskbarOk && notTopmost;
         running = false;
     }
 

@@ -568,10 +568,10 @@ const char* const kKnownLeafPaths[] = {
     "schemaVersion",   "hotkey",            "screenshotHotkey", "ocrHotkey",     "recordHotkey",
     "pinHotkey",       "screenshotFormat",  "menuSize",         "recordingDirectory",
     "convertFilePathsToImages", "pinGlowEnabled", "autoStart",
-    "ocr.engine",      "ocr.autoCopy",      "ocr.pinOcrEnabled",
+    "ocr.engine",      "ocr.autoCopy",      "ocr.pinOcrEnabled", "ocr.autoStart",
     "recording.resolution", "recording.frameRate", "recording.quality", "recording.recordCursor",
     "recording.countdown",  "recording.range",     "recording.systemAudio", "recording.microphone",
-    "recording.audioBitrate",
+    "recording.audioBitrate", "recording.autoStart",
 };
 
 // 1.x 把只读的计算属性也写进了文件（framesPerSecond、countdownSeconds、audioBitrateValue、
@@ -1070,6 +1070,7 @@ void ParseSettings(std::string_view utf8, AppSettings& settings, SettingsReadRep
                   report);
     ReadBoolField(tree, "ocr.autoCopy", settings.ocr.autoCopy, report);
     ReadBoolField(tree, "ocr.pinOcrEnabled", settings.ocr.pinOcrEnabled, report);
+    ReadBoolField(tree, "ocr.autoStart", settings.ocr.autoStart, report);
 
     ReadEnumField(tree, "recording.resolution", kResolutionEntries, EntryCount(kResolutionEntries),
                   settings.recording.resolution, report);
@@ -1086,6 +1087,7 @@ void ParseSettings(std::string_view utf8, AppSettings& settings, SettingsReadRep
     ReadBoolField(tree, "recording.microphone", settings.recording.microphone, report);
     ReadEnumField(tree, "recording.audioBitrate", kAudioBitrateEntries, EntryCount(kAudioBitrateEntries),
                   settings.recording.audioBitrate, report);
+    ReadBoolField(tree, "recording.autoStart", settings.recording.autoStart, report);
 
     CollectUnrecognized(tree, ConfigTree::kRoot, "", report);
 }
@@ -1113,6 +1115,7 @@ std::string SerializeSettings(const AppSettings& settings) {
     AddText(tree, ocr, "engine", OcrEngineName(settings.ocr.engine));
     AddBoolean(tree, ocr, "autoCopy", settings.ocr.autoCopy);
     AddBoolean(tree, ocr, "pinOcrEnabled", settings.ocr.pinOcrEnabled);
+    AddBoolean(tree, ocr, "autoStart", settings.ocr.autoStart);
 
     const std::size_t recording = AddObject(tree, root, "recording");
     AddText(tree, recording, "resolution", ResolutionName(settings.recording.resolution));
@@ -1124,6 +1127,7 @@ std::string SerializeSettings(const AppSettings& settings) {
     AddBoolean(tree, recording, "systemAudio", settings.recording.systemAudio);
     AddBoolean(tree, recording, "microphone", settings.recording.microphone);
     AddText(tree, recording, "audioBitrate", AudioBitrateName(settings.recording.audioBitrate));
+    AddBoolean(tree, recording, "autoStart", settings.recording.autoStart);
 
     return tree.Serialize();
 }

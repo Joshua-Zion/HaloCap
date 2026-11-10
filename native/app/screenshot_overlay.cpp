@@ -625,9 +625,13 @@ LRESULT ScreenshotOverlay::HandleMessage(HWND window, UINT message, WPARAM wPara
         return 0;
 
     case kMsgCopy:
-        if (options_.mode == OverlayMode::Ocr) {
-            RunOcr();
-            Close();
+        if (options_.mode == OverlayMode::RecordRegion) {
+            // 自动开始关闭时，回车就是「开始录制」。
+            DeliverRecordRegionAndClose();
+        } else if (options_.mode == OverlayMode::Ocr) {
+            if (RunOcr()) {
+                Close();
+            }
         } else if (CopySelection()) {
             Close();
         }
@@ -1002,10 +1006,8 @@ void ScreenshotOverlay::OnLeftButtonDown(POINT point) {
     if (editorWindow_ != nullptr) {
         CommitTextEditor();
     }
-    if (options_.mode == OverlayMode::RecordRegion) {
-        if (phase_ == Phase::Selecting) {
-            StartNewSelection(point);
-        }
+    if (options_.mode == OverlayMode::RecordRegion && phase_ == Phase::Selecting) {
+        StartNewSelection(point);
         return;
     }
 
@@ -1183,26 +1185,24 @@ void ScreenshotOverlay::OnLeftButtonUp(POINT point) {
             annotating_ = false;
             ClearHoverCandidate();
             if (options_.mode == OverlayMode::RecordRegion) {
-                const core::Rect bounds = selection_.Bounds();
-                const core::IntRect rect{ static_cast<int>(bounds.left),
-                                          static_cast<int>(bounds.top),
-                                          static_cast<int>(bounds.left) +
-                                              (static_cast<int>(bounds.Width()) & ~1),
-                                          static_cast<int>(bounds.top) +
-                                              (static_cast<int>(bounds.Height()) & ~1) };
-                const auto handler = options_.onRegion;
-                Close();
-                if (handler) {
-                    handler(rect);
+                if (options_.autoStart) {
+                    DeliverRecordRegionAndClose();
+                    return;
                 }
+                // 自动开始关闭：停在选区，等 Enter 或工具栏「开始录制」确认。
+                dirty_ = true;
                 return;
             }
             if (options_.mode == OverlayMode::Ocr) {
                 // 1.x：OCR 模式松手即识别（CompleteNewSelection → CaptureCommand.Ocr），
-                // 不需要再点一次「识别」。
-                if (RunOcr()) {
-                    Close();
+                // 不需要再点一次「识别」。关掉自动开始后停在选区等确认。
+                if (options_.autoStart) {
+                    if (RunOcr()) {
+                        Close();
+                    }
+                    return;
                 }
+                dirty_ = true;
                 return;
             }
         }
@@ -1368,6 +1368,10 @@ void ScreenshotOverlay::HandleToolbar(const ToolbarButton& button) {
             pendingClose_ = true;
             dirty_ = true;
         }
+        break;
+
+    case Action::StartRecord:
+        DeliverRecordRegionAndClose();
         break;
 
     case Action::DoneAndCopy:
@@ -2103,12 +2107,16 @@ void ScreenshotOverlay::LayoutToolbar() {
 
     separator();
     if (recordMode) {
+        if (!options_.autoStart) {
+            // 自动开始关闭：给一个显式的「开始录制」按钮（Enter 同效）。
+            add(Action::StartRecord, ToolbarIcon::Done, "开始录制 (Enter)", hasSelection, false);
+        }
         add(Action::CancelOverlay, ToolbarIcon::Close, "取消 (Esc)", true, false);
     } else {
         add(Action::Save, ToolbarIcon::Save, "保存为图片 (Ctrl+S)", hasSelection, false);
         add(Action::Pin, ToolbarIcon::Pin, "贴图 (Ctrl+T)", hasSelection, false);
-        if (!ocrMode) {
-            add(Action::Ocr, ToolbarIcon::Ocr, "识别文字", hasSelection, false);
+        if (!ocrMode || !options_.autoStart) {
+            add(Action::Ocr, ToolbarIcon::Ocr, "识别文字 (Enter)", hasSelection, false);
         }
         separator();
         add(Action::CancelOverlay, ToolbarIcon::Close, "取消 (Esc)", true, false);
@@ -2420,7 +2428,8 @@ void ScreenshotOverlay::RenderHint(core::FramePlan& plan) {
     const char* hint = "拖动框选或单击窗口 · Enter 复制 · Esc 取消";
     switch (options_.mode) {
     case OverlayMode::RecordRegion:
-        hint = "拖动框选或单击窗口 · Esc 取消";
+        hint = options_.autoStart ? "拖动框选或单击窗口 · Esc 取消"
+                                  : "拖动框选或单击窗口 · Enter 开始录制 · Esc 取消";
         break;
     case OverlayMode::Ocr:
         hint = "拖动框选或单击窗口 · Enter 识别 · Esc 取消";
@@ -2530,6 +2539,21 @@ void ScreenshotOverlay::Render() {
 }
 
 // ---- 马赛克与文字 ----
+
+void ScreenshotOverlay::DeliverRecordRegionAndClose() {
+    if (selection_.Bounds().IsEmpty() || !options_.onRegion) {
+        return;
+    }
+    const core::Rect bounds = selection_.Bounds();
+    const core::IntRect rect{ static_cast<int>(bounds.left), static_cast<int>(bounds.top),
+                              static_cast<int>(bounds.left) +
+                                  (static_cast<int>(bounds.Width()) & ~1),
+                              static_cast<int>(bounds.top) +
+                                  (static_cast<int>(bounds.Height()) & ~1) };
+    const auto handler = options_.onRegion;
+    Close();
+    handler(rect);
+}
 
 bool ScreenshotOverlay::RunOcr() {
     std::vector<std::uint8_t> bgra;

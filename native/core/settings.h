@@ -103,6 +103,8 @@ struct OcrSettings {
     OcrEngine engine = OcrEngine::Native;
     bool autoCopy = false;
     bool pinOcrEnabled = true;
+    // 选好区域后自动开始识别；关掉则停在选区，等 Enter 或「识别」按钮确认。
+    bool autoStart = true;
 };
 
 struct RecordingSettings {
@@ -115,6 +117,8 @@ struct RecordingSettings {
     bool systemAudio = true;
     bool microphone = false;
     RecordingAudioBitrate audioBitrate = RecordingAudioBitrate::K192;
+    // 选好区域/窗口后自动开始录制；关掉则停在选区，等 Enter 或「开始录制」按钮确认。
+    bool autoStart = true;
 
     int FramesPerSecond() const;
     int CountdownSeconds() const;
@@ -126,7 +130,7 @@ struct RecordingSettings {
                quality == other.quality && recordCursor == other.recordCursor &&
                countdown == other.countdown && range == other.range &&
                systemAudio == other.systemAudio && microphone == other.microphone &&
-               audioBitrate == other.audioBitrate;
+               audioBitrate == other.audioBitrate && autoStart == other.autoStart;
     }
 };
 
@@ -159,7 +163,7 @@ struct AppSettings {
                convertFilePathsToImages == other.convertFilePathsToImages &&
                pinGlowEnabled == other.pinGlowEnabled && autoStart == other.autoStart && ocr.engine == other.ocr.engine &&
                ocr.autoCopy == other.ocr.autoCopy && ocr.pinOcrEnabled == other.ocr.pinOcrEnabled &&
-               recording == other.recording;
+               ocr.autoStart == other.ocr.autoStart && recording == other.recording;
     }
 };
 

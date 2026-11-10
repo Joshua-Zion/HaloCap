@@ -302,6 +302,7 @@ void TestDefaults() {
     CheckTrue(settings.ocr.engine == core::OcrEngine::Native, "ocr engine default");
     CheckTrue(!settings.ocr.autoCopy, "ocr autoCopy default");
     CheckTrue(settings.ocr.pinOcrEnabled, "ocr pinOcr default");
+    CheckTrue(settings.ocr.autoStart, "ocr autoStart default");
 
     const core::RecordingSettings& recording = settings.recording;
     CheckTrue(recording.resolution == core::RecordingResolution::Original, "resolution default");
@@ -313,6 +314,7 @@ void TestDefaults() {
     CheckTrue(recording.systemAudio, "system audio default");
     CheckTrue(!recording.microphone, "microphone default");
     CheckTrue(recording.audioBitrate == core::RecordingAudioBitrate::K192, "audio bitrate default");
+    CheckTrue(recording.autoStart, "record autoStart default");
 
     CheckEqual(recording.FramesPerSecond(), 30, "derived frames per second");
     CheckEqual(recording.CountdownSeconds(), 3, "derived countdown seconds");
@@ -390,6 +392,7 @@ void TestRoundTrip() {
     custom.ocr.engine = core::OcrEngine::Model;
     custom.ocr.autoCopy = true;
     custom.ocr.pinOcrEnabled = false;
+    custom.ocr.autoStart = false;
     custom.recording.resolution = core::RecordingResolution::P1440;
     custom.recording.frameRate = core::RecordingFrameRate::Sixty;
     custom.recording.quality = core::RecordingQuality::High;
@@ -399,6 +402,7 @@ void TestRoundTrip() {
     custom.recording.systemAudio = false;
     custom.recording.microphone = true;
     custom.recording.audioBitrate = core::RecordingAudioBitrate::K128;
+    custom.recording.autoStart = false;
 
     const std::string text = core::SerializeSettings(custom);
 

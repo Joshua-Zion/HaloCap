@@ -56,6 +56,8 @@ enum : int {
     kIdToggleSystemAudio = 35,
     kIdToggleMicrophone = 36,
     kIdToggleRecordCursor = 37,
+    kIdToggleOcrAutoStart = 38,
+    kIdToggleRecordAutoStart = 39,
     kIdSegmentBase = 100,
     kIdHotkeyBase = 200,
     kIdDirectory = 210,
@@ -472,7 +474,8 @@ bool SettingsWindow::Create(void* owner, const core::AppSettings& settings,
     const int top = work.top + ((work.bottom - work.top) - heightPx_) / 2;
 
     // 设置是一个独立的应用窗口：进任务栏、Alt+Tab 也能切回来（TOOLWINDOW 会把它藏起来）。
-    window_ = CreateWindowExW(WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_APPWINDOW, kClassName,
+    // 层级和普通窗口一致：不置顶，被其他窗口盖住是正常的（与 1.x 的普通设置窗一致）。
+    window_ = CreateWindowExW(WS_EX_LAYERED | WS_EX_APPWINDOW, kClassName,
                               L"HaloCap 设置", WS_POPUP, left, top, widthPx_, heightPx_, nullptr,
                               nullptr, GetModuleHandleW(nullptr), this);
     if (window_ == nullptr) {
@@ -481,6 +484,8 @@ bool SettingsWindow::Create(void* owner, const core::AppSettings& settings,
     }
 
     ShowWindow(window_, SW_SHOW);
+    // 普通窗口：打开时到前台一次（和正常应用一致），但不再置顶，随后可被其他窗口盖住。
+    SetForegroundWindow(window_);
     Render();
     return true;
 }
@@ -755,10 +760,6 @@ void SettingsWindow::CheckUpdate() {
 }
 
 void SettingsWindow::ChooseDirectory() {
-    // 顶层设置窗会把文件对话框压到下面；选择期间临时取消 topmost。
-    SetWindowPos(window_, HWND_NOTOPMOST, 0, 0, 0, 0,
-                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-
     std::wstring chosen;
     IFileOpenDialog* dialog = nullptr;
     if (SUCCEEDED(CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
@@ -795,8 +796,6 @@ void SettingsWindow::ChooseDirectory() {
             CoTaskMemFree(idList);
         }
     }
-
-    SetWindowPos(window_, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 
     if (!chosen.empty()) {
         // 根目录保留反斜杠，其余去掉末尾分隔符，录制路径再自己拼 "\\"。
@@ -912,6 +911,10 @@ void SettingsWindow::Click(int id) {
         break;
     case kIdToggleRecordCursor:
         settings_.recording.recordCursor = !settings_.recording.recordCursor;
+        break;
+    case kIdToggleOcrAutoStart: settings_.ocr.autoStart = !settings_.ocr.autoStart; break;
+    case kIdToggleRecordAutoStart:
+        settings_.recording.autoStart = !settings_.recording.autoStart;
         break;
     default:
         return;
@@ -1252,7 +1255,7 @@ void SettingsWindow::Render() {
     }
     case Page::Ocr: {
         groupLabel(L"识别");
-        cardStart(124.0f);
+        cardStart(186.0f);
         segmentAt(scrollX + scrollW - cardPad, y, 62.0f, { L"原生识别", L"模型识别" },
                   kGroupOcrEngine, settings_.ocr.engine == core::OcrEngine::Model ? 1 : 0,
                   100.0f);
@@ -1268,6 +1271,14 @@ void SettingsWindow::Render() {
                  textPrimary);
         DrawText(g, L"识别成功后自动把全部文字复制到剪贴板", &fonts->desc,
                  RectF(scrollX + 16.0f, y + 32.0f, 360, 16), textSecondary);
+        y += 62.0f;
+
+        divider(scrollX, scrollW);
+        switchAt(scrollX, scrollW, y, 62.0f, kIdToggleOcrAutoStart, settings_.ocr.autoStart);
+        DrawText(g, L"选好区域后自动识别", &fonts->setting,
+                 RectF(scrollX + 16.0f, y + 12.0f, 300, 18), textPrimary);
+        DrawText(g, L"关闭后，选好区域需按回车或点「识别」才开始", &fonts->desc,
+                 RectF(scrollX + 16.0f, y + 32.0f, 380, 16), textSecondary);
         y += 62.0f;
 
         y += 20.0f;
@@ -1334,13 +1345,22 @@ void SettingsWindow::Render() {
 
         y += 20.0f;
         groupLabel(L"控制");
-        cardStart(62.0f * 6 + 34.0f);
+        cardStart(62.0f * 7 + 34.0f);
         segmentAt(scrollX + scrollW - cardPad, y, 62.0f, { L"区域", L"窗口" }, kGroupRange,
                   static_cast<int>(settings_.recording.range), 64.0f);
         DrawText(g, L"录制范围", &fonts->setting,
                  RectF(scrollX + 16.0f, y + 12.0f, 240, 18), textPrimary);
         DrawText(g, L"区域：在覆盖层拖选；窗口：光标点选窗口", &fonts->desc,
                  RectF(scrollX + 16.0f, y + 32.0f, 360, 16), textSecondary);
+        y += 62.0f;
+
+        divider(scrollX, scrollW);
+        switchAt(scrollX, scrollW, y, 62.0f, kIdToggleRecordAutoStart,
+                 settings_.recording.autoStart);
+        DrawText(g, L"选好区域后自动开始", &fonts->setting,
+                 RectF(scrollX + 16.0f, y + 12.0f, 300, 18), textPrimary);
+        DrawText(g, L"关闭后，选好区域需按回车或点「开始录制」才开始", &fonts->desc,
+                 RectF(scrollX + 16.0f, y + 32.0f, 400, 16), textSecondary);
         y += 62.0f;
 
         divider(scrollX, scrollW);

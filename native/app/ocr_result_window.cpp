@@ -218,6 +218,7 @@ void OcrResultWindow::BuildFonts() {
     fontSearch_ = make(11.5f, FW_NORMAL);
     whiteBrush_ = CreateSolidBrush(RGB(255, 255, 255));
     resultBrush_ = CreateSolidBrush(kCardBg);
+    bodyBrush_ = CreateSolidBrush(RGB(0xF7, 0xF7, 0xF9));
     borderPen_ = CreatePen(PS_SOLID, 1, kButtonBorder);
 }
 
@@ -229,7 +230,7 @@ void OcrResultWindow::DeleteResources() {
             *font = nullptr;
         }
     }
-    for (HBRUSH* brush : { &whiteBrush_, &resultBrush_ }) {
+    for (HBRUSH* brush : { &whiteBrush_, &resultBrush_, &bodyBrush_ }) {
         if (*brush != nullptr) {
             DeleteObject(*brush);
             *brush = nullptr;
@@ -744,7 +745,7 @@ void OcrResultWindow::Layout() {
     // 顶部只保留识别统计与搜索按钮：显示模式在文本区顶部切换。
     const int rowHeight = ScaleInt(30.0f);
     chipRect_ = RECT{ pad, y, width_ - pad, y + rowHeight };
-    const int smallWidth = ScaleInt(62.0f);
+    const int smallWidth = ScaleInt(118.0f);
     const int smallHeight = ScaleInt(28.0f);
     const int smallTop = y + (rowHeight - smallHeight) / 2;
     searchButton_ = RECT{ width_ - pad - smallWidth, smallTop, width_ - pad,
@@ -809,8 +810,7 @@ void OcrResultWindow::Layout() {
     contentHeaderRect_ = RECT{ contentRect_.left, contentRect_.top, contentRect_.right,
                                contentRect_.top + headerHeight };
     contentBodyRect_ = RECT{ contentRect_.left, contentHeaderRect_.bottom, contentRect_.right,
-                             contentRect_.bottom };
-    {
+                             contentRect_.bottom };    {
         const int optionWidth = ScaleInt(72.0f);
         const int groupWidth = optionWidth * 3 + ScaleInt(4.0f);
         const int groupHeight = ScaleInt(26.0f);
@@ -824,7 +824,10 @@ void OcrResultWindow::Layout() {
                                     modeGroup_.bottom - ScaleInt(2.0f) };
         }
     }
-    y += contentHeight + ScaleInt(10.0f);
+    y += contentHeight + ScaleInt(8.0f);
+    // 卡片下方一行操作提示，和参考图一致：说明可选中、复制、修改、滚动。
+    contentHintRect_ = RECT{ pad + ScaleInt(4.0f), y, width_ - pad, y + ScaleInt(18.0f) };
+    y += ScaleInt(22.0f);
 
     // 逐行/版面视图：每行按可用宽度量一次换行后的高度（长行不再省略号截断）。
     lineHeights_.clear();
@@ -897,7 +900,7 @@ void OcrResultWindow::Layout() {
                         contentRect_.top + ScaleInt(96.0f) + ScaleInt(34.0f) };
 
     if (text_ != nullptr) {
-        RECT edit = Inset(contentBodyRect_, ScaleInt(6.0f), ScaleInt(6.0f));
+        RECT edit = Inset(contentBodyRect_, ScaleInt(8.0f), ScaleInt(8.0f));
         edit.right -= ScaleInt(16.0f);   // 右侧留给自绘滚动条
         MoveWindow(text_, edit.left, edit.top, edit.right - edit.left, edit.bottom - edit.top,
                    TRUE);
@@ -1370,8 +1373,8 @@ LRESULT OcrResultWindow::Handle(HWND window, UINT message, WPARAM wParam, LPARAM
         HWND edit = reinterpret_cast<HWND>(lParam);
         SetTextColor(dc, kTextPrimary);
         if (edit == text_) {
-            SetBkColor(dc, kCardBg);
-            return reinterpret_cast<LRESULT>(resultBrush_);
+            SetBkColor(dc, RGB(0xF7, 0xF7, 0xF9));
+            return reinterpret_cast<LRESULT>(bodyBrush_);
         }
         SetBkColor(dc, RGB(255, 255, 255));
         return reinterpret_cast<LRESULT>(whiteBrush_);
@@ -1824,9 +1827,16 @@ void OcrResultWindow::PaintContent(HDC dc) {
                 ++characters;
             }
         }
+        std::wstring timing;
+        if (elapsedMs_ >= 999.5) {
+            wchar_t buffer[32] = {};
+            std::swprintf(buffer, 32, L"%.2f 秒", elapsedMs_ / 1000.0);
+            timing = buffer;
+        } else {
+            timing = std::to_wstring(static_cast<int>(elapsedMs_ + 0.5)) + L" ms";
+        }
         count = std::to_wstring(result_.lines.size()) + L" 行 · " +
-                std::to_wstring(characters) + L" 字 · " +
-                std::to_wstring(static_cast<int>(elapsedMs_ + 0.5)) + L" ms";
+                std::to_wstring(characters) + L" 字 · " + timing;
     } else if (stage_ == Stage::Empty) {
         count = L"未识别到文字";
     } else {
@@ -1837,14 +1847,28 @@ void OcrResultWindow::PaintContent(HDC dc) {
                stage_ == Stage::Failed ? kWarningText : kTextTertiary, countRect,
                DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
-    // 搜索。
+    // 搜索入口：参考图里是一行「Ctrl + F 搜索」提示，点它和点按钮一样。
     const bool success = stage_ == Stage::Success;
-    DrawSmallButton(dc, searchButton_, searchOpen_ ? L"收起" : L"搜索",
-                    success && hoveredHit_ == Hit::SearchButton);
-    if (!success) {
-        FillRounded(dc, searchButton_, ScaleInt(8.0f), RGB(255, 255, 255), kButtonBorder, 1);
-        DrawTextIn(dc, searchOpen_ ? L"收起" : L"搜索", fontSmall_, kTextTertiary,
-                   searchButton_, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    {
+        const bool hover = success && hoveredHit_ == Hit::SearchButton;
+        const COLORREF tint = hover ? kTextSecondary : kTextTertiary;
+        const int iconSize = ScaleInt(11.0f);
+        const int iconX = searchButton_.left + ScaleInt(6.0f);
+        const int iconY = (searchButton_.top + searchButton_.bottom) / 2 - iconSize / 2;
+        HPEN pen = CreatePen(PS_SOLID, std::max(1, ScaleInt(1.2f)), tint);
+        HGDIOBJ old = SelectObject(dc, pen);
+        HGDIOBJ brush = SelectObject(dc, GetStockObject(HOLLOW_BRUSH));
+        Ellipse(dc, iconX, iconY, iconX + iconSize, iconY + iconSize);
+        MoveToEx(dc, iconX + iconSize - ScaleInt(1.0f), iconY + iconSize - ScaleInt(1.0f),
+                 nullptr);
+        LineTo(dc, iconX + iconSize + ScaleInt(3.0f), iconY + iconSize + ScaleInt(3.0f));
+        SelectObject(dc, brush);
+        SelectObject(dc, old);
+        DeleteObject(pen);
+        RECT searchText{ iconX + iconSize + ScaleInt(6.0f), searchButton_.top,
+                         searchButton_.right, searchButton_.bottom };
+        DrawTextIn(dc, searchOpen_ ? L"收起搜索" : L"Ctrl + F 搜索", fontSmall_, tint,
+                   searchText, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     }
 
     // 搜索栏。
@@ -1882,19 +1906,35 @@ void OcrResultWindow::PaintContent(HDC dc) {
     }
 
     // 内容区。
+    {
+        // 内容区上方的整宽分隔线（参考图把标题区与文本区明确分开）。
+        HPEN separator = CreatePen(PS_SOLID, 1, kHairline);
+        HGDIOBJ oldPen = SelectObject(dc, separator);
+        MoveToEx(dc, 0, contentRect_.top - ScaleInt(7.0f), nullptr);
+        LineTo(dc, width_, contentRect_.top - ScaleInt(7.0f));
+        SelectObject(dc, oldPen);
+        DeleteObject(separator);
+    }
     if (stage_ == Stage::Loading) {
         DrawLoading(dc);
     } else if (stage_ == Stage::Success) {
         FillRounded(dc, contentRect_, ScaleInt(10.0f), kCardBg, kCardBorder, 1);
+        // 文本底板：浅灰圆角块，EDIT 也用它做背景，视觉上是一块可编辑区域。
+        RECT bodyBg = Inset(contentBodyRect_, ScaleInt(2.0f), ScaleInt(2.0f));
+        FillRounded(dc, bodyBg, ScaleInt(10.0f), RGB(0xF7, 0xF7, 0xF9), kHairline, 1);
         // 卡片头：「识别文本」+ 显示模式分段控件。
         RECT headerText{ contentRect_.left + ScaleInt(14.0f), contentHeaderRect_.top,
                          modeGroup_.left - ScaleInt(10.0f), contentHeaderRect_.bottom };
-        DrawTextIn(dc, L"识别文本", fontButton_, kTextSecondary, headerText,
+        DrawTextIn(dc, L"识别文本", fontButton_, kTextPrimary, headerText,
                    DT_LEFT | DT_VCENTER | DT_SINGLELINE);
         DrawModeSegment(dc);
         if (ShowingLines()) {
             DrawLines(dc);
         }
+        RECT hint{ contentHintRect_.left + ScaleInt(2.0f), contentHintRect_.top,
+                   width_ - pad, contentHintRect_.bottom };
+        DrawTextIn(dc, L"支持文本选择、复制、修改和滚动", fontSmall_, kTextTertiary, hint,
+                   DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     } else {
         DrawEmpty(dc);
     }

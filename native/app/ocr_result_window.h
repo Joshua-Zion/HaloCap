@@ -266,6 +266,7 @@ private:
     RECT modeOptions_[3]{};
     RECT previewCard_{};
     RECT previewImage_{};
+    RECT contentHintRect_{};
     RECT footerRect_{};
     RECT retryButton_{};
     RECT imageButton_{};
@@ -285,6 +286,7 @@ private:
 
     HBRUSH whiteBrush_ = nullptr;
     HBRUSH resultBrush_ = nullptr;
+    HBRUSH bodyBrush_ = nullptr;
     HPEN borderPen_ = nullptr;
 
     float uiScale_ = 1.0f;

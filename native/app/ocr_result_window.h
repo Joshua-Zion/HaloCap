@@ -84,6 +84,7 @@ public:
                                 : 0;
     }
     bool TextScrollVisibleForTest() const { return textScrollVisible_; }
+    HWND TextHandleForTest() const { return text_; }
 
     // 文本视图直接编辑相关（自检用）。
     bool TextEditableForTest() const {
@@ -266,7 +267,6 @@ private:
     RECT modeOptions_[3]{};
     RECT previewCard_{};
     RECT previewImage_{};
-    RECT contentHintRect_{};
     RECT footerRect_{};
     RECT retryButton_{};
     RECT imageButton_{};

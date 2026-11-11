@@ -35,10 +35,10 @@ constexpr COLORREF kSegmentBg = RGB(0xF0, 0xF0, 0xF3);
 constexpr COLORREF kSegmentBorder = RGB(0xE2, 0xE2, 0xE7);
 constexpr COLORREF kSegmentActiveBorder = RGB(0xDC, 0xDC, 0xE1);
 
-constexpr int kWidthDip = 640;
+constexpr int kWidthDip = 700;
 constexpr int kPadDip = 20;
 constexpr int kTitleDip = 58;
-constexpr int kContentDip = 220;
+constexpr int kContentDip = 300;
 constexpr int kFooterDip = 58;
 constexpr int kRowDip = 30;
 constexpr int kMaxLines = 500;
@@ -360,15 +360,8 @@ void OcrResultWindow::ShowStatus(const std::wstring& message, bool error) {
 }
 
 void OcrResultWindow::ResetStatus() {
-    if (stage_ != Stage::Success) {
-        status_ = L"Esc 关闭";
-    } else if (viewMode_ == ViewMode::Text) {
-        status_ = L"连续显示 · 可直接编辑 · Ctrl+F 搜索";
-    } else if (viewMode_ == ViewMode::Lines) {
-        status_ = L"逐行显示 · 单击选中，双击或 Enter 复制 · ↑↓ 切换";
-    } else {
-        status_ = L"排版显示 · 单击选中，双击或 Enter 复制 · ↑↓ 切换";
-    }
+    // 平时不占一行说明；只有复制成功/失败这类即时反馈才写入状态行。
+    status_.clear();
     statusError_ = false;
     if (window_ != nullptr) {
         KillTimer(window_, 2);
@@ -591,10 +584,9 @@ void OcrResultWindow::OpenSearch() {
     if (stage_ != Stage::Success || searchOpen_) {
         return;
     }
-    // 搜索按行数据跑，先把文本视图里的编辑同步进来。
+    // 搜索按行数据跑，先把文本视图里的编辑同步进来；不清空当前显示模式。
     SyncEditedText();
     searchOpen_ = true;
-    SetViewMode(ViewMode::Text);
     lastQuery_.clear();
     matches_.clear();
     matchIndex_ = 0;
@@ -661,7 +653,11 @@ void OcrResultWindow::UpdateSearch(bool selectFirst) {
     if (query.empty() || result_.lines.empty()) {
         matches_.clear();
         matchIndex_ = 0;
-        SendMessageW(text_, EM_SETSEL, 0, 0);
+        if (ShowingLines()) {
+            selectedLine_ = -1;
+        } else {
+            SendMessageW(text_, EM_SETSEL, 0, 0);
+        }
         RefreshSearchStatus();
         return;
     }
@@ -678,7 +674,11 @@ void OcrResultWindow::UpdateSearch(bool selectFirst) {
         matchIndex_ = 0;
     }
     if (matches_.empty()) {
-        SendMessageW(text_, EM_SETSEL, 0, 0);
+        if (ShowingLines()) {
+            selectedLine_ = -1;
+        } else {
+            SendMessageW(text_, EM_SETSEL, 0, 0);
+        }
     } else if (selectFirst) {
         SelectMatch(matchIndex_);
     }
@@ -703,6 +703,13 @@ void OcrResultWindow::SelectMatch(std::size_t index) {
         return;
     }
     const std::size_t lineIndex = matches_[index];
+    if (ShowingLines()) {
+        // 逐行/排版模式：直接把命中的行选中并滚到可见，不切换显示模式。
+        selectedLine_ = static_cast<int>(std::min<std::size_t>(lineIndex, kMaxLines - 1));
+        EnsureSelectionVisible();
+        InvalidateRect(window_, &contentBodyRect_, FALSE);
+        return;
+    }
     std::size_t charOffset = 0;
     for (std::size_t i = 0; i < lineIndex && i < result_.lines.size(); ++i) {
         const std::string& line = result_.lines[i].text;
@@ -745,7 +752,7 @@ void OcrResultWindow::Layout() {
     // 顶部只保留识别统计与搜索按钮：显示模式在文本区顶部切换。
     const int rowHeight = ScaleInt(30.0f);
     chipRect_ = RECT{ pad, y, width_ - pad, y + rowHeight };
-    const int smallWidth = ScaleInt(118.0f);
+    const int smallWidth = ScaleInt(78.0f);
     const int smallHeight = ScaleInt(28.0f);
     const int smallTop = y + (rowHeight - smallHeight) / 2;
     searchButton_ = RECT{ width_ - pad - smallWidth, smallTop, width_ - pad,
@@ -799,10 +806,10 @@ void OcrResultWindow::Layout() {
         const int imageHeight = std::clamp(scaled, ScaleInt(60.0f), ScaleInt(180.0f));
         previewHeight = imageHeight + ScaleInt(12.0f) + ScaleInt(8.0f);
     }
-    const int maxContent = ScaleInt(760.0f) - (y + contentHeight + previewHeight +
+    const int maxContent = ScaleInt(900.0f) - (y + contentHeight + previewHeight +
                                                footerHeight + ScaleInt(14.0f));
     if (maxContent < 0) {
-        contentHeight = std::max(ScaleInt(140.0f), contentHeight + maxContent);
+        contentHeight = std::max(ScaleInt(180.0f), contentHeight + maxContent);
     }
     contentRect_ = RECT{ pad, y, width_ - pad, y + contentHeight };
     // 卡片内顶部留一行放「识别文本」标题与显示模式分段控件。
@@ -824,10 +831,7 @@ void OcrResultWindow::Layout() {
                                     modeGroup_.bottom - ScaleInt(2.0f) };
         }
     }
-    y += contentHeight + ScaleInt(8.0f);
-    // 卡片下方一行操作提示，和参考图一致：说明可选中、复制、修改、滚动。
-    contentHintRect_ = RECT{ pad + ScaleInt(4.0f), y, width_ - pad, y + ScaleInt(18.0f) };
-    y += ScaleInt(22.0f);
+    y += contentHeight + ScaleInt(10.0f);
 
     // 逐行/版面视图：每行按可用宽度量一次换行后的高度（长行不再省略号截断）。
     lineHeights_.clear();
@@ -1129,7 +1133,11 @@ void OcrResultWindow::HandleEditKey(HWND edit, WPARAM key) {
         return;
     }
     if (key == 'F' && control) {
-        OpenSearch();
+        if (searchOpen_) {
+            CloseSearch(true);
+        } else {
+            OpenSearch();
+        }
         return;
     }
     if (key == VK_F3) {
@@ -1197,6 +1205,18 @@ LRESULT CALLBACK OcrResultWindow::EditProc(HWND window, UINT message, WPARAM wPa
                              (isSearch && wParam == VK_RETURN);
         if (handled) {
             self->HandleEditKey(window, wParam);
+            return 0;
+        }
+    }
+    if (message == WM_MOUSEWHEEL && !isSearch) {
+        // 多行 EDIT 没有 WS_VSCROLL 时不会自己处理滚轮；显式按行滚动，文本模式才能滚。
+        const int delta = GET_WHEEL_DELTA_WPARAM(wParam);
+        if (delta != 0) {
+            const int lines = -(delta / WHEEL_DELTA) * 3;
+            SendMessageW(window, EM_LINESCROLL, 0, lines);
+            if (self->window_ != nullptr) {
+                InvalidateRect(self->window_, &self->contentBodyRect_, FALSE);
+            }
             return 0;
         }
     }
@@ -1362,6 +1382,14 @@ LRESULT OcrResultWindow::Handle(HWND window, UINT message, WPARAM wParam, LPARAM
                 lineScrollY_ = std::clamp(lineScrollY_ + (delta > 0 ? -3 : 3) * ScaleInt(kRowDip),
                                           0, maxScroll);
                 InvalidateRect(window_, &contentRect_, FALSE);
+                return 0;
+            }
+        }
+        if (!ShowingLines() && stage_ == Stage::Success && text_ != nullptr) {
+            POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+            ScreenToClient(window, &point);
+            if (PointIn(contentBodyRect_, point)) {
+                SendMessageW(text_, WM_MOUSEWHEEL, wParam, lParam);
                 return 0;
             }
         }
@@ -1581,6 +1609,10 @@ void OcrResultWindow::DrawLines(HDC dc) {
     const int labelWidth = blockMode ? ScaleInt(34.0f) : numberWidth;
     const int clipTop = contentBodyRect_.top + ScaleInt(6.0f);
     const int clipBottom = contentBodyRect_.bottom - ScaleInt(6.0f);
+    // 必须裁剪：滚动后的行不能画到标题、分隔线和卡片外面。
+    const int savedDc = SaveDC(dc);
+    IntersectClipRect(dc, contentBodyRect_.left, contentBodyRect_.top, contentBodyRect_.right,
+                      contentBodyRect_.bottom);
     int y = clipTop - lineScrollY_;
     for (std::size_t index = 0; index < lineHeights_.size(); ++index) {
         const int gap = index < lineGapAbove_.size() ? lineGapAbove_[index] : 0;
@@ -1691,6 +1723,7 @@ void OcrResultWindow::DrawLines(HDC dc) {
                     RECT{ trackLeft, thumbTop, trackLeft + thumbWidth, thumbTop + thumbHeight },
                     thumbWidth, RGB(0xB8, 0xB8, 0xBE), RGB(0xB8, 0xB8, 0xBE), 0);
     }
+    RestoreDC(dc, savedDc);
 }
 
 void OcrResultWindow::DrawLoading(HDC dc) {
@@ -1867,7 +1900,7 @@ void OcrResultWindow::PaintContent(HDC dc) {
         DeleteObject(pen);
         RECT searchText{ iconX + iconSize + ScaleInt(6.0f), searchButton_.top,
                          searchButton_.right, searchButton_.bottom };
-        DrawTextIn(dc, searchOpen_ ? L"收起搜索" : L"Ctrl + F 搜索", fontSmall_, tint,
+        DrawTextIn(dc, searchOpen_ ? L"收起" : L"搜索", fontSmall_, tint,
                    searchText, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     }
 
@@ -1931,10 +1964,6 @@ void OcrResultWindow::PaintContent(HDC dc) {
         if (ShowingLines()) {
             DrawLines(dc);
         }
-        RECT hint{ contentHintRect_.left + ScaleInt(2.0f), contentHintRect_.top,
-                   width_ - pad, contentHintRect_.bottom };
-        DrawTextIn(dc, L"支持文本选择、复制、修改和滚动", fontSmall_, kTextTertiary, hint,
-                   DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     } else {
         DrawEmpty(dc);
     }

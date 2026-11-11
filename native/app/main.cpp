@@ -2817,6 +2817,7 @@ int Run(const Options& options) {
         bool repaintOk = false;
         bool lineViewOk = false;
         bool lineNavOk = false;
+        bool textWheelOk = false;
         bool blockViewOk = false;
         int blockCount = 0;
         bool viewStableOk = false;
@@ -2960,6 +2961,33 @@ int Run(const Options& options) {
             AddFlag(report, "APP_OCR_SEARCH_BLOCKVIEW", blockViewOk);
             AddInt(report, "APP_OCR_SEARCH_BLOCKS", blockCount);
 
+            // 连续显示必须在滚轮下能滚动：多行结果 + 直接给 EDIT 发滚轮消息。
+            {
+                std::vector<core::ocr::OcrLine> many;
+                for (int i = 0; i < 60; ++i) {
+                    core::ocr::OcrLine line;
+                    line.text = "第" + std::to_string(i) + "行测试内容";
+                    line.box = core::Rect{ 20.0f, 20.0f + i * 20.0f, 420.0f,
+                                           36.0f + i * 20.0f };
+                    line.confidence = 0.9f;
+                    many.push_back(line);
+                }
+                searchWindow->PresentResultForTest(
+                    core::ocr::BuildResult(std::move(many)), 0.0);
+                searchWindow->SetLineViewForTest(false);
+                Sleep(100);
+                const int before = searchWindow->TextFirstLineForTest();
+                SendMessageW(searchWindow->TextHandleForTest(), WM_MOUSEWHEEL,
+                             MAKEWPARAM(0, static_cast<WORD>(-WHEEL_DELTA)),
+                             MAKELPARAM(10, 10));
+                Sleep(80);
+                const int after = searchWindow->TextFirstLineForTest();
+                textWheelOk = before == 0 && after > before;
+                searchWindow->PresentResultForTest(result, 0.0);
+                UpdateWindow(searchWindow->Handle());
+            }
+            AddFlag(report, "APP_OCR_TEXT_WHEEL", textWheelOk);
+
             // 拖动之后点按钮不许复位：把窗口挪开，再切逐行/文本，位置必须保持挪后的。
             RECT dragged{};
             GetWindowRect(searchWindow->Handle(), &dragged);
@@ -3034,7 +3062,7 @@ int Run(const Options& options) {
         AddInt(report, "APP_OCR_SEARCH_GREEN_OFF", cleared.green);
         AddInt(report, "APP_OCR_SEARCH_BLUE_OFF", cleared.blue);
         ocrSearchSelftestOk = opened && counterOk && wrapOk && caseOk && noneOk && clearOk &&
-                              repaintOk && lineViewOk && lineNavOk && blockViewOk && viewStableOk &&
+                              repaintOk && lineViewOk && lineNavOk && textWheelOk && blockViewOk && viewStableOk &&
                               dragStableOk && editOk && copyModeOk;
         log.Info(ocrSearchSelftestOk ? "ocr search selftest: ok" : "ocr search selftest: failed");
         running = false;

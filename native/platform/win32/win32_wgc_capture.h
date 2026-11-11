@@ -55,7 +55,8 @@ public:
 private:
     struct State;
 
-    bool StartItem(const winrt::Windows::Graphics::Capture::GraphicsCaptureItem& item);
+    bool StartItem(const winrt::Windows::Graphics::Capture::GraphicsCaptureItem& item,
+                   POINT origin = POINT{ 0, 0 });
     bool EnsureResident(int widthPx, int heightPx);
     void ReleaseResident();
 
@@ -68,9 +69,17 @@ private:
     core::IntRect bounds_{};
     int widthPx_ = 0;
     int heightPx_ = 0;
+    // 显示器录制时该显示器在屏幕上的原点（窗口录制为 0,0）。纹理每次重建都会重算
+    // bounds_，这里单独记住原点，避免被 EnsureResident 覆盖成 (0,0)。
+    int originX_ = 0;
+    int originY_ = 0;
     const char* errorKind_ = "none";
     bool cursorCapture_ = true;
     std::int32_t lastError_ = 0;
 };
+
+// 按 EnumDisplayMonitors 的枚举顺序返回包含该屏幕矩形中心的显示器序号；没有完全包含时
+// 取与它重叠面积最大的那块，再不行返回 0。与 OpenMonitor 用的是同一套枚举顺序。
+int WgcMonitorIndexForRect(const core::IntRect& screenRect);
 
 }

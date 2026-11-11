@@ -84,7 +84,8 @@ bool Win32WgcCapture::Open(int outputIndex) {
     return false;
 }
 
-bool Win32WgcCapture::StartItem(const winrt::Windows::Graphics::Capture::GraphicsCaptureItem& item) {
+bool Win32WgcCapture::StartItem(const winrt::Windows::Graphics::Capture::GraphicsCaptureItem& item,
+                                POINT origin) {
     try {
         state_->item = item;
         state_->device = WrapDevice(backend_.Device());
@@ -111,7 +112,11 @@ bool Win32WgcCapture::StartItem(const winrt::Windows::Graphics::Capture::Graphic
         // 所以这里先裁，别让调用方拿奇数去开编码器再被拒。
         const int width = size.Width & ~1;
         const int height = size.Height & ~1;
-        bounds_ = core::IntRect{ 0, 0, width, height };
+        // 显示器录制要把显示器在屏幕上的原点带上：调用方的选区是屏幕坐标，编码器的裁剪
+        // 是「源纹理内」坐标，多屏时用 (0,0) 作为原点会把副屏的选区算错。
+        originX_ = origin.x;
+        originY_ = origin.y;
+        bounds_ = core::IntRect{ origin.x, origin.y, origin.x + width, origin.y + height };
         widthPx_ = width;
         heightPx_ = height;
         errorKind_ = "ok";
@@ -195,11 +200,18 @@ bool Win32WgcCapture::OpenMonitor(int outputIndex) {
             return false;
         }
 
+        MONITORINFO monitorInfo{};
+        monitorInfo.cbSize = sizeof(monitorInfo);
+        POINT origin{ 0, 0 };
+        if (GetMonitorInfoW(pick.monitor, &monitorInfo)) {
+            origin = POINT{ monitorInfo.rcMonitor.left, monitorInfo.rcMonitor.top };
+        }
+
         auto interop = winrt::get_activation_factory<GraphicsCaptureItem, IGraphicsCaptureItemInterop>();
         GraphicsCaptureItem item{ nullptr };
         winrt::check_hresult(interop->CreateForMonitor(
             pick.monitor, winrt::guid_of<GraphicsCaptureItem>(), winrt::put_abi(item)));
-        return StartItem(item);
+        return StartItem(item, origin);
     } catch (const winrt::hresult_error& error) {
         lastError_ = static_cast<std::int32_t>(error.code().value);
         errorKind_ = KindFor(error.code().value);
@@ -303,7 +315,7 @@ bool Win32WgcCapture::EnsureResident(int widthPx, int heightPx) {
 
     widthPx_ = widthPx;
     heightPx_ = heightPx;
-    bounds_ = core::IntRect{ 0, 0, widthPx, heightPx };
+    bounds_ = core::IntRect{ originX_, originY_, originX_ + widthPx, originY_ + heightPx };
     return true;
 }
 
@@ -388,6 +400,71 @@ bool Win32WgcCapture::WaitForUpdate(std::int64_t timeoutMs, core::FrameUpdate& o
         errorKind_ = KindFor(error.code().value);
         return false;
     }
+}
+
+int WgcMonitorIndexForRect(const core::IntRect& screenRect) {
+    const int centerX = (screenRect.left + screenRect.right) / 2;
+    const int centerY = (screenRect.top + screenRect.bottom) / 2;
+
+    // 第一遍：中心点落在哪块显示器里就用哪块（与 OpenMonitor 同一个枚举顺序）。
+    struct CenterPick {
+        int x = 0;
+        int y = 0;
+        int index = 0;
+        int found = -1;
+    } center{ centerX, centerY, 0, -1 };
+    EnumDisplayMonitors(
+        nullptr, nullptr,
+        [](HMONITOR monitor, HDC, LPRECT, LPARAM param) -> BOOL {
+            auto* state = reinterpret_cast<CenterPick*>(param);
+            MONITORINFO info{};
+            info.cbSize = sizeof(info);
+            if (GetMonitorInfoW(monitor, &info) && state->x >= info.rcMonitor.left &&
+                state->x < info.rcMonitor.right && state->y >= info.rcMonitor.top &&
+                state->y < info.rcMonitor.bottom) {
+                state->found = state->index;
+                return FALSE;
+            }
+            ++state->index;
+            return TRUE;
+        },
+        reinterpret_cast<LPARAM>(&center));
+    if (center.found >= 0) {
+        return center.found;
+    }
+
+    // 中心点落在显示器间隙时，取与选区重叠面积最大的一块；都没有就退回 0。
+    struct AreaPick {
+        core::IntRect rect{};
+        int index = 0;
+        int best = 0;
+        long long bestArea = 0;
+    } area{ screenRect, 0, 0, 0 };
+    EnumDisplayMonitors(
+        nullptr, nullptr,
+        [](HMONITOR monitor, HDC, LPRECT, LPARAM param) -> BOOL {
+            auto* state = reinterpret_cast<AreaPick*>(param);
+            MONITORINFO info{};
+            info.cbSize = sizeof(info);
+            if (GetMonitorInfoW(monitor, &info)) {
+                const int left = std::max(state->rect.left, static_cast<int>(info.rcMonitor.left));
+                const int top = std::max(state->rect.top, static_cast<int>(info.rcMonitor.top));
+                const int right = std::min(state->rect.right, static_cast<int>(info.rcMonitor.right));
+                const int bottom =
+                    std::min(state->rect.bottom, static_cast<int>(info.rcMonitor.bottom));
+                const long long width = right - left;
+                const long long height = bottom - top;
+                const long long overlap = (width > 0 && height > 0) ? width * height : 0;
+                if (overlap > state->bestArea) {
+                    state->bestArea = overlap;
+                    state->best = state->index;
+                }
+            }
+            ++state->index;
+            return TRUE;
+        },
+        reinterpret_cast<LPARAM>(&area));
+    return area.best;
 }
 
 }

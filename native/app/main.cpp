@@ -646,7 +646,12 @@ public:
                                                             systemAudio_.get(), microphone_.get());
 
         core::RecordingOptions options;
-        options.outputIndex = 0;
+        // 显示器录制：选区在哪个显示器上就采哪个，不能固定采 0 号（多屏时副屏选区会被
+        // 当成主屏坐标而裁错/退化成整屏）。窗口录制不需要输出序号。
+        options.outputIndex =
+            (captureMonitor && captureWindow == nullptr && !cropRegion.IsEmpty())
+                ? halocap::platform::win32::WgcMonitorIndexForRect(cropRegion)
+                : 0;
         options.targetFps = settings.recording.FramesPerSecond();
         options.outputPathUtf8 = path_;
         options.audioEnabled = settings.recording.WantsAudio();
@@ -1000,6 +1005,10 @@ int Run(const Options& options) {
     std::vector<std::unique_ptr<halocap::app::PinWindow>> pins;
     bool recordStarted = false;
     bool recordStopped = false;
+    // 录制实际输出的宽高（验证多屏选区裁剪是否落在选中的那块）。停止后会话即释放，
+    // 所以在 Stop 之前先记下来。
+    int recordOutputWidth = 0;
+    int recordOutputHeight = 0;
     core::RecordingStats recordStats;
 
     auto refreshTray = [&]() {
@@ -3669,6 +3678,8 @@ int Run(const Options& options) {
 
         if (recordRequested && recordingActive &&
             static_cast<std::int64_t>(GetTickCount64()) >= recordDeadlineMs) {
+            recordOutputWidth = recording.OutputWidth();
+            recordOutputHeight = recording.OutputHeight();
             recordStopped = recording.Stop(recordStats);
             recordingActive = false;
             closeRecordingUi();
@@ -3756,6 +3767,8 @@ int Run(const Options& options) {
             AddInt(report, "APP_RECORD_REGION_HEIGHT", options.recordRegion.bottom -
                                                            options.recordRegion.top);
         }
+        AddInt(report, "APP_RECORD_OUTPUT_WIDTH", recordOutputWidth);
+        AddInt(report, "APP_RECORD_OUTPUT_HEIGHT", recordOutputHeight);
         // 无人值守录制的判据：起来了、停了、有帧、文件非空。
         ok = ok && recordStarted && recordStopped && recordStats.framesSubmitted > 0 && bytes > 0;
     }

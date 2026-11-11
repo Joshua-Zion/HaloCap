@@ -3189,6 +3189,44 @@ int Run(const Options& options) {
         if (wrote) {
             pinClipboard();
         }
+        // 透明 PNG/DIB：贴图内容必须保留 alpha（1.x 用 Pbgra32 渲染）。
+        bool pinAlphaOk = false;
+        bool pinAlphaSkipped = false;
+        {
+            constexpr int kAlphaSize = 64;
+            std::vector<std::uint8_t> transparent(
+                static_cast<std::size_t>(kAlphaSize) * kAlphaSize * 4);
+            for (std::size_t i = 0; i + 3 < transparent.size(); i += 4) {
+                transparent[i + 0] = 0;
+                transparent[i + 1] = 0;
+                transparent[i + 2] = 255;
+                transparent[i + 3] = 128;
+            }
+            const bool alphaWritten = halocap::platform::win32::CopyBgraToClipboard(
+                nullptr, transparent.data(), kAlphaSize, kAlphaSize, kAlphaSize * 4);
+            if (!alphaWritten) {
+                pinAlphaSkipped = true;
+                pinAlphaOk = true;
+            } else {
+                const std::size_t beforeAlpha = pins.size();
+                pinClipboard();
+                Sleep(120);
+                if (pins.size() > beforeAlpha) {
+                    const std::uint32_t pixel =
+                        pins.back()->CompositedPixelForTest(kAlphaSize / 2, kAlphaSize / 2);
+                    const int composedAlpha = static_cast<int>(pixel >> 24);
+                    const int composedRed = static_cast<int>((pixel >> 16) & 0xFF);
+                    pinAlphaOk = pins.back()->ContentHasAlphaForTest() &&
+                                 pins.back()->ContentAlphaForTest(kAlphaSize / 2,
+                                                                  kAlphaSize / 2) == 128 &&
+                                 composedAlpha == 128 && composedRed >= 250;
+                    AddInt(report, "APP_PIN_ALPHA_COMPOSED", composedAlpha);
+                    AddInt(report, "APP_PIN_ALPHA_RED", composedRed);
+                }
+            }
+        }
+        AddFlag(report, "APP_PIN_ALPHA", pinAlphaOk);
+        AddFlag(report, "APP_PIN_ALPHA_SKIPPED", pinAlphaSkipped);
         Sleep(350);
 
         // 把鼠标移到第一张贴图上，让悬停工具条出现在证明图里。
@@ -3281,7 +3319,7 @@ int Run(const Options& options) {
         AddInt(report, "APP_PIN_COUNT", static_cast<long long>(pins.size() - before));
 
         pinSelftestOk = wrote && pinned && proof && pinAnnotateOk && pinMenuOk && pinPlainOk &&
-                        pinOptionSlack >= 0 && pinOptionSlack <= 20;
+                        pinAlphaOk && pinOptionSlack >= 0 && pinOptionSlack <= 20;
         log.Info(pinSelftestOk ? "pin selftest: ok" : "pin selftest: failed");
         running = false;
     }

@@ -397,6 +397,13 @@ bool PinWindow::Create(const std::uint8_t* bgra, int width, int height, int scre
         fontFamilyW_ = L"Microsoft YaHei UI";
     }
     content_.assign(bgra, bgra + static_cast<std::size_t>(width) * height * 4);
+    contentHasAlpha_ = false;
+    for (std::size_t i = 3; i < content_.size(); i += 4) {
+        if (content_[i] != 255) {
+            contentHasAlpha_ = true;
+            break;
+        }
+    }
     contentWidth_ = width;
     contentHeight_ = height;
     contentScreenX_ = screenX;
@@ -1060,7 +1067,7 @@ void PinWindow::Render() {
         graphics.SetInterpolationMode(Gdiplus::InterpolationModeNearestNeighbor);
         graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
         Gdiplus::Bitmap source(contentWidth_, contentHeight_, contentWidth_ * 4,
-                               PixelFormat32bppRGB, content_.data());
+                               PixelFormat32bppARGB, content_.data());
         graphics.DrawImage(&source,
                            Gdiplus::RectF(0.0f, 0.0f, static_cast<float>(displayWidth_),
                                           static_cast<float>(displayHeight_)));
@@ -1098,18 +1105,25 @@ void PinWindow::Render() {
                                                                    : 0);
             const int distance = std::max(outsideX, outsideY);
 
+            if (insideContent) {
+                // display 已经是 PARGB；直接拷，不能再乘一次 alpha（会把半透明压暗）。
+                const std::size_t sourceIndex =
+                    (static_cast<std::size_t>(contentY) * displayWidth_ + contentX) * 4;
+                layered[(static_cast<std::size_t>(y) * windowWidth_ + x) * 4 + 0] =
+                    display[sourceIndex + 0];
+                layered[(static_cast<std::size_t>(y) * windowWidth_ + x) * 4 + 1] =
+                    display[sourceIndex + 1];
+                layered[(static_cast<std::size_t>(y) * windowWidth_ + x) * 4 + 2] =
+                    display[sourceIndex + 2];
+                layered[(static_cast<std::size_t>(y) * windowWidth_ + x) * 4 + 3] =
+                    display[sourceIndex + 3];
+                continue;
+            }
             std::uint8_t b = 0;
             std::uint8_t g = 0;
             std::uint8_t r = 0;
             std::uint8_t a = 0;
-            if (insideContent) {
-                const std::size_t sourceIndex =
-                    (static_cast<std::size_t>(contentY) * displayWidth_ + contentX) * 4;
-                b = display[sourceIndex + 0];
-                g = display[sourceIndex + 1];
-                r = display[sourceIndex + 2];
-                a = display[sourceIndex + 3];
-            } else if (border_ > 0 && distance <= border_) {
+            if (border_ > 0 && distance <= border_) {
                 b = borderB;
                 g = borderG;
                 r = borderR;
@@ -1187,7 +1201,7 @@ void PinWindow::PaintMosaicAt(core::Point local) {
         graphics.SetInterpolationMode(Gdiplus::InterpolationModeNearestNeighbor);
         graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
         Gdiplus::Bitmap source(contentWidth_, contentHeight_, contentWidth_ * 4,
-                               PixelFormat32bppRGB, content_.data());
+                               PixelFormat32bppARGB, content_.data());
         graphics.DrawImage(&source,
                            Gdiplus::RectF(0.0f, 0.0f, static_cast<float>(contentWidth_),
                                           static_cast<float>(contentHeight_)));
@@ -1948,6 +1962,20 @@ void PinWindow::HandleOption(PinAction action) {
 
 // ---- 导出 ----
 
+std::uint32_t PinWindow::CompositedPixelForTest(int x, int y) {
+    int width = 0;
+    int height = 0;
+    const std::vector<std::uint8_t> pixels = ComposeImage(&width, &height);
+    if (x < 0 || y < 0 || x >= width || y >= height) {
+        return 0;
+    }
+    const std::size_t index = (static_cast<std::size_t>(y) * width + x) * 4;
+    return static_cast<std::uint32_t>(pixels[index + 0]) |
+           (static_cast<std::uint32_t>(pixels[index + 1]) << 8) |
+           (static_cast<std::uint32_t>(pixels[index + 2]) << 16) |
+           (static_cast<std::uint32_t>(pixels[index + 3]) << 24);
+}
+
 std::vector<std::uint8_t> PinWindow::ComposeImage(int* width, int* height) {
     *width = contentWidth_;
     *height = contentHeight_;
@@ -1962,12 +1990,30 @@ std::vector<std::uint8_t> PinWindow::ComposeImage(int* width, int* height) {
     graphics.SetSmoothingMode(Gdiplus::SmoothingModeAntiAlias);
     graphics.SetPixelOffsetMode(Gdiplus::PixelOffsetModeHalf);
     Gdiplus::Bitmap source(contentWidth_, contentHeight_, contentWidth_ * 4,
-                           PixelFormat32bppRGB, content_.data());
+                           PixelFormat32bppARGB, content_.data());
     graphics.DrawImage(&source, Gdiplus::RectF(0.0f, 0.0f,
                                                static_cast<float>(contentWidth_),
                                                static_cast<float>(contentHeight_)));
     if (!document_.Items().empty()) {
         RenderAnnotations(graphics, 1.0f, 0.0f, 0.0f, document_.Items());
+    }
+    // GDI+ 的 PARGB 画布写出来是预乘 alpha；保存/复制用的是直通 alpha（WIC/DIB 约定）。
+    for (std::size_t i = 0; i + 3 < pixels.size(); i += 4) {
+        const unsigned alpha = pixels[i + 3];
+        if (alpha == 255) {
+            continue;
+        }
+        if (alpha == 0) {
+            pixels[i + 0] = 0;
+            pixels[i + 1] = 0;
+            pixels[i + 2] = 0;
+            continue;
+        }
+        for (int channel = 0; channel < 3; ++channel) {
+            const unsigned value = (static_cast<unsigned>(pixels[i + channel]) * 255 + alpha / 2) /
+                                   alpha;
+            pixels[i + channel] = static_cast<std::uint8_t>(std::min(255u, value));
+        }
     }
     return pixels;
 }

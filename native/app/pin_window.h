@@ -74,6 +74,15 @@ public:
     int OptionContentRightForTest() const;
     int MenuRectLeftForTest() const { return menuScreenX_; }
     int MenuRectTopForTest() const { return menuScreenY_; }
+    bool ContentHasAlphaForTest() const { return contentHasAlpha_; }
+    int ContentAlphaForTest(int x, int y) const {
+        if (x < 0 || y < 0 || x >= contentWidth_ || y >= contentHeight_) {
+            return -1;
+        }
+        return content_[(static_cast<std::size_t>(y) * contentWidth_ + x) * 4 + 3];
+    }
+    // 合成后的像素（BGRA，未预乘）：复制/另存看到的就是这个。
+    std::uint32_t CompositedPixelForTest(int x, int y);
 
 private:
     enum class PinAction : int {
@@ -206,6 +215,7 @@ private:
     int contentScreenX_ = 0;
     int contentScreenY_ = 0;
     std::vector<std::uint8_t> content_;
+    bool contentHasAlpha_ = false;
 
     PinWindowOptions options_;
     float uiScale_ = 1.0f;

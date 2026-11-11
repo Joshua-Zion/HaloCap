@@ -101,6 +101,14 @@ bool ReadDib(HGLOBAL handle, std::int64_t maxBytes, ClipboardImage* image) {
     if (header->biSize >= sizeof(BITMAPINFOHEADER) && header->biWidth > 0 &&
         header->biHeight != 0 &&
         (header->biBitCount == 32 || header->biBitCount == 24)) {
+        // V5 头带 alpha mask 时 alpha 是有效数据（含 0）；普通 CF_DIB 的 32 位
+        // BI_RGB 里 alpha 字节常常全是 0，只是填充，不能当透明处理。
+        bool alphaMeaningful = false;
+        if (header->biSize >= sizeof(BITMAPV5HEADER)) {
+            const auto* v5 = reinterpret_cast<const BITMAPV5HEADER*>(base);
+            alphaMeaningful =
+                header->biBitCount == 32 && v5->bV5AlphaMask == 0xFF000000u;
+        }
         const int width = header->biWidth;
         const int height = std::abs(header->biHeight);
         const std::int64_t bytes = static_cast<std::int64_t>(width) * height * 4;
@@ -132,7 +140,8 @@ bool ReadDib(HGLOBAL handle, std::int64_t maxBytes, ClipboardImage* image) {
                     }
                 }
             }
-            if (!anyAlpha) {
+            if (!anyAlpha && !alphaMeaningful) {
+                // 32 位 DIB 的 alpha 全为 0：多半只是填充字节，按不透明处理。
                 for (std::size_t i = 3; i < image->bgra.size(); i += 4) {
                     image->bgra[i] = 255;
                 }
@@ -197,6 +206,13 @@ bool ReadClipboard(ClipboardReadResult* result) {
                     result->hasImage = !result->image.bgra.empty();
                     GlobalUnlock(handle);
                 }
+            }
+        }
+
+        if (!result->hasImage && IsClipboardFormatAvailable(CF_DIBV5)) {
+            HANDLE handle = GetClipboardData(CF_DIBV5);
+            if (handle != nullptr) {
+                result->hasImage = ReadDib(handle, 256LL * 1024 * 1024, &result->image);
             }
         }
 
@@ -421,7 +437,14 @@ bool RenderColorCard(core::clipboard::Color color, double scale, ClipboardImage*
                              RECT full{ 0, 0, width, height };
                              FillRect(memory, &full,
                                       static_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
-                             HBRUSH brush = CreateSolidBrush(RGB(color.r, color.g, color.b));
+                             // 半透明颜色预览按白底混合，和 1.x 的 SolidColorBrush 观感一致。
+                             const auto overWhite = [&](std::uint8_t channel) {
+                                 return static_cast<std::uint8_t>(
+                                     (channel * color.a + 255 * (255 - color.a)) / 255);
+                             };
+                             HBRUSH brush = CreateSolidBrush(RGB(overWhite(color.r),
+                                                                overWhite(color.g),
+                                                                overWhite(color.b)));
                              RECT swatch{ 0, 0, width, swatchHeight };
                              FillRect(memory, &swatch, brush);
                              DeleteObject(brush);

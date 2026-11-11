@@ -1618,107 +1618,110 @@ void SettingsWindow::Render() {
                  RectF(scrollX + 16.0f, y + 32.0f, 380, 16), textSecondary);
         y += 62.0f;
 
-        y += 20.0f;
-        groupLabel(L"模型");
-        {
-            const int rows = std::max(1, static_cast<int>(ocrModels_.size()));
-            const float rowHeight = 58.0f;
-            cardStart(58.0f + rowHeight * static_cast<float>(rows) + 62.0f + 28.0f);
-            std::wstring selected = Utf8ToWide(settings_.ocr.model);
-            const bool selectedFound =
-                std::any_of(ocrModels_.begin(), ocrModels_.end(),
-                            [&](const OcrModelEntry& entry) { return entry.id == selected; });
-            if (!selectedFound) {
-                selected.clear();
-            }
-            if (ocrModels_.empty()) {
-                DrawText(g, L"模型目录里还没有可用的模型", &fonts->setting,
-                         RectF(scrollX + 16.0f, y + 12.0f, 300, 18), textPrimary);
-                DrawText(g, L"可下载官方模型，或把模型目录手动放入", &fonts->desc,
-                         RectF(scrollX + 16.0f, y + 32.0f, 380, 16), textSecondary);
-                y += rowHeight;
-            }
-            for (int i = 0; i < static_cast<int>(ocrModels_.size()); ++i) {
-                const OcrModelEntry& entry = ocrModels_[static_cast<std::size_t>(i)];
-                const bool active = entry.id == selected;
-                const float rowTop = y;
-                if (i > 0) {
-                    divider(scrollX, scrollW);
-                }
-                const float cx = scrollX + 28.0f;
-                const float cy = rowTop + 29.0f;
-                SolidBrush white(card);
-                g.FillEllipse(&white, cx - 7.0f, cy - 7.0f, 14.0f, 14.0f);
-                Pen ring(active ? accent : Color(255, 0xC9, 0xC9, 0xCF), 1.4f);
-                g.DrawEllipse(&ring, cx - 7.0f, cy - 7.0f, 14.0f, 14.0f);
-                if (active) {
-                    SolidBrush dot(accent);
-                    g.FillEllipse(&dot, cx - 3.5f, cy - 3.5f, 7.0f, 7.0f);
-                }
-                DrawText(g, entry.title, &fonts->setting,
-                         RectF(scrollX + 46.0f, rowTop + 11.0f, 380.0f, 18.0f), textPrimary);
-                DrawText(g, entry.detail, &fonts->desc,
-                         RectF(scrollX + 46.0f, rowTop + 32.0f, 430.0f, 16.0f),
-                         textSecondary);
-                AddHotspot(RECT{ static_cast<LONG>(scrollX + 8.0f),
-                                 static_cast<LONG>(rowTop + 4.0f),
-                                 static_cast<LONG>(scrollX + scrollW - 8.0f),
-                                 static_cast<LONG>(rowTop + rowHeight - 4.0f) },
-                           kIdOcrModelBase + i);
-                y += rowHeight;
-            }
-
-            divider(scrollX, scrollW);
+        // 模型目录只对「模型识别」有意义：原生引擎下不显示这一节。
+        if (settings_.ocr.engine == core::OcrEngine::Model) {
+            y += 20.0f;
+            groupLabel(L"模型");
             {
-                const bool installed =
+                const int rows = std::max(1, static_cast<int>(ocrModels_.size()));
+                const float rowHeight = 58.0f;
+                cardStart(rowHeight * static_cast<float>(rows) + 62.0f + 28.0f);
+                std::wstring selected = Utf8ToWide(settings_.ocr.model);
+                const bool selectedFound =
                     std::any_of(ocrModels_.begin(), ocrModels_.end(),
-                                [](const OcrModelEntry& entry) {
-                                    return entry.id ==
-                                           Utf8ToWide(core::kOcrModelSmallFolder);
-                                });
-                const core::OcrModelDownload& download = core::OcrModelSmallDownload();
-                DrawText(g, L"下载官方模型", &fonts->setting,
-                         RectF(scrollX + 16.0f, y + 12.0f, 220, 18), textPrimary);
-                DrawText(g, installed
-                                ? L"PP-OCRv6 高精度已下载"
-                                : L"PP-OCRv6 高精度 · 约 " +
-                                      std::to_wstring(download.TotalBytes() / (1024 * 1024)) +
-                                      L" MB",
-                         &fonts->desc, RectF(scrollX + 16.0f, y + 32.0f, 360, 16),
-                         textSecondary);
-                const float buttonH = 30.0f;
-                const float by = y + (62.0f - buttonH) * 0.5f;
-                const float downloadW = 72.0f;
-                const float dx = scrollX + scrollW - cardPad - downloadW;
-                FillRoundRect(g, RectF(dx, by, downloadW, buttonH), 7.0f, accent);
-                DrawText(g, installed ? L"重新下载" : L"下载", &fonts->buttonBold,
-                         RectF(dx, by, downloadW, buttonH), Color(255, 255, 255, 255),
-                         StringAlignmentCenter);
-                AddHotspot(RECT{ static_cast<LONG>(dx), static_cast<LONG>(by),
-                                 static_cast<LONG>(dx + downloadW),
-                                 static_cast<LONG>(by + buttonH) },
-                           kIdOcrModelDownload);
-
-                const float openW = 78.0f;
-                const float ox = dx - openW - 8.0f;
-                FillRoundRect(g, RectF(ox, by, openW, buttonH), 7.0f,
-                              Color(255, 255, 255, 255));
-                StrokeRoundRect(g, RectF(ox, by, openW, buttonH), 7.0f,
-                                Color(255, 0xD9, 0xD9, 0xDE));
-                DrawText(g, L"打开目录", &fonts->setting,
-                         RectF(ox, by, openW, buttonH), textPrimary, StringAlignmentCenter);
-                AddHotspot(RECT{ static_cast<LONG>(ox), static_cast<LONG>(by),
-                                 static_cast<LONG>(ox + openW),
-                                 static_cast<LONG>(by + buttonH) },
-                           kIdOcrModelOpen);
-                y += 62.0f;
+                                [&](const OcrModelEntry& entry) { return entry.id == selected; });
+                if (!selectedFound) {
+                    selected.clear();
+                }
+                if (ocrModels_.empty()) {
+                    DrawText(g, L"模型目录里还没有可用的模型", &fonts->setting,
+                             RectF(scrollX + 16.0f, y + 12.0f, 300, 18), textPrimary);
+                    DrawText(g, L"可下载官方模型，或把模型目录手动放入", &fonts->desc,
+                             RectF(scrollX + 16.0f, y + 32.0f, 380, 16), textSecondary);
+                    y += rowHeight;
+                }
+                for (int i = 0; i < static_cast<int>(ocrModels_.size()); ++i) {
+                    const OcrModelEntry& entry = ocrModels_[static_cast<std::size_t>(i)];
+                    const bool active = entry.id == selected;
+                    const float rowTop = y;
+                    if (i > 0) {
+                        divider(scrollX, scrollW);
+                    }
+                    const float cx = scrollX + 28.0f;
+                    const float cy = rowTop + 29.0f;
+                    SolidBrush white(card);
+                    g.FillEllipse(&white, cx - 7.0f, cy - 7.0f, 14.0f, 14.0f);
+                    Pen ring(active ? accent : Color(255, 0xC9, 0xC9, 0xCF), 1.4f);
+                    g.DrawEllipse(&ring, cx - 7.0f, cy - 7.0f, 14.0f, 14.0f);
+                    if (active) {
+                        SolidBrush dot(accent);
+                        g.FillEllipse(&dot, cx - 3.5f, cy - 3.5f, 7.0f, 7.0f);
+                    }
+                    DrawText(g, entry.title, &fonts->setting,
+                             RectF(scrollX + 46.0f, rowTop + 11.0f, 380.0f, 18.0f), textPrimary);
+                    DrawText(g, entry.detail, &fonts->desc,
+                             RectF(scrollX + 46.0f, rowTop + 32.0f, 430.0f, 16.0f),
+                             textSecondary);
+                    AddHotspot(RECT{ static_cast<LONG>(scrollX + 8.0f),
+                                     static_cast<LONG>(rowTop + 4.0f),
+                                     static_cast<LONG>(scrollX + scrollW - 8.0f),
+                                     static_cast<LONG>(rowTop + rowHeight - 4.0f) },
+                               kIdOcrModelBase + i);
+                    y += rowHeight;
+                }
+    
+                divider(scrollX, scrollW);
+                {
+                    const bool installed =
+                        std::any_of(ocrModels_.begin(), ocrModels_.end(),
+                                    [](const OcrModelEntry& entry) {
+                                        return entry.id ==
+                                               Utf8ToWide(core::kOcrModelSmallFolder);
+                                    });
+                    const core::OcrModelDownload& download = core::OcrModelSmallDownload();
+                    DrawText(g, L"下载官方模型", &fonts->setting,
+                             RectF(scrollX + 16.0f, y + 12.0f, 220, 18), textPrimary);
+                    DrawText(g, installed
+                                    ? L"PP-OCRv6 高精度已下载"
+                                    : L"PP-OCRv6 高精度 · 约 " +
+                                          std::to_wstring(download.TotalBytes() / (1024 * 1024)) +
+                                          L" MB",
+                             &fonts->desc, RectF(scrollX + 16.0f, y + 32.0f, 360, 16),
+                             textSecondary);
+                    const float buttonH = 30.0f;
+                    const float by = y + (62.0f - buttonH) * 0.5f;
+                    const float downloadW = 72.0f;
+                    const float dx = scrollX + scrollW - cardPad - downloadW;
+                    FillRoundRect(g, RectF(dx, by, downloadW, buttonH), 7.0f, accent);
+                    DrawText(g, installed ? L"重新下载" : L"下载", &fonts->buttonBold,
+                             RectF(dx, by, downloadW, buttonH), Color(255, 255, 255, 255),
+                             StringAlignmentCenter);
+                    AddHotspot(RECT{ static_cast<LONG>(dx), static_cast<LONG>(by),
+                                     static_cast<LONG>(dx + downloadW),
+                                     static_cast<LONG>(by + buttonH) },
+                               kIdOcrModelDownload);
+    
+                    const float openW = 78.0f;
+                    const float ox = dx - openW - 8.0f;
+                    FillRoundRect(g, RectF(ox, by, openW, buttonH), 7.0f,
+                                  Color(255, 255, 255, 255));
+                    StrokeRoundRect(g, RectF(ox, by, openW, buttonH), 7.0f,
+                                    Color(255, 0xD9, 0xD9, 0xDE));
+                    DrawText(g, L"打开目录", &fonts->setting,
+                             RectF(ox, by, openW, buttonH), textPrimary, StringAlignmentCenter);
+                    AddHotspot(RECT{ static_cast<LONG>(ox), static_cast<LONG>(by),
+                                     static_cast<LONG>(ox + openW),
+                                     static_cast<LONG>(by + buttonH) },
+                               kIdOcrModelOpen);
+                    y += 62.0f;
+                }
+                DrawText(g,
+                         L"模型按目录识别：每个子目录放 det / rec 的 onnx 与字典 txt 即可选择；"
+                         L"方向分类模型可选，缺省用内置的。",
+                         &fonts->desc, RectF(scrollX + 16.0f, y + 6.0f, scrollW - 32.0f, 16.0f),
+                         textTertiary);
+                y += 28.0f;
             }
-            DrawText(g,
-                     L"模型按目录识别：每个子目录放 det / rec 的 onnx 与字典 txt 即可选择；"
-                     L"方向分类模型可选，缺省用内置的。",
-                     &fonts->desc, RectF(scrollX + 16.0f, y + 6.0f, scrollW - 32.0f, 16.0f),
-                     textTertiary);
-            y += 28.0f;
         }
 
         y += 20.0f;

@@ -33,7 +33,7 @@ struct OcrResultOptions {
     core::OcrEngine engine = core::OcrEngine::Native;
     bool autoCopy = false;
     bool fromPin = false;
-    bool showImage = true;
+    bool showImage = false;
     bool skipRecognition = false;   // 自检用：直接喂结果，不走识别
     core::IntRect anchor{};         // 选区/贴图在屏幕上的矩形（窗口定位用）
     std::string fontFamily = "Microsoft YaHei UI";
@@ -74,6 +74,8 @@ public:
     }
     bool BlockViewForTest() const { return viewMode_ == ViewMode::Blocks; }
     int BlockCountForTest() const { return static_cast<int>(result_.blocks.size()); }
+    void MoveSelectionForTest(int delta) { MoveSelection(delta); }
+    int SelectedLineForTest() const { return selectedLine_; }
     int TextLineCountForTest() const {
         return text_ != nullptr ? static_cast<int>(SendMessageW(text_, EM_GETLINECOUNT, 0, 0)) : 0;
     }
@@ -150,6 +152,8 @@ private:
 
     void SetViewMode(ViewMode mode);
     bool ShowingLines() const { return viewMode_ != ViewMode::Text; }
+    void MoveSelection(int delta);
+    void EnsureSelectionVisible();
     const std::wstring& ViewButtonLabel() const;
     void SetImageVisible(bool visible);
     void OpenSearch();
@@ -198,7 +202,7 @@ private:
     int token_ = 0;
 
     ViewMode viewMode_ = ViewMode::Text;
-    bool showImage_ = true;
+    bool showImage_ = false;
     bool searchOpen_ = false;
     // 逐行/版面视图按「换行后的实际高度」排：长行不会被省略号截断。
     int lineScrollY_ = 0;
@@ -209,6 +213,8 @@ private:
     std::vector<int> lineBlockIndex_;
     int lineTotalHeight_ = 0;
     int hoveredLine_ = -1;
+    // 逐行/版面视图里用 ↑↓ 选中的行；Enter 复制。
+    int selectedLine_ = -1;
     Hit hoveredHit_ = Hit::None;
 
     RECT textScrollTrack_{};

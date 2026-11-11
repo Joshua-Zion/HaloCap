@@ -167,6 +167,7 @@ struct Options {
     std::wstring windowPickerSelftestPath;
     std::wstring radialClickSelftestPath;
     int settingsSelftestPage = -1;
+    int settingsSelftestScroll = 0;
 
     // 非空 = 无人值守的录屏 UI 自检：边框/倒计时/浮层的位置、排除采集、按钮与抓图。
     std::wstring recordingUiSelftestPath;
@@ -406,6 +407,8 @@ Options ParseOptions(int argc, char** argv) {
             options.ocrModelDownloadSelftestPath = Utf8ToWide(argv[++i]);
         } else if (argument == "--settings-page" && i + 1 < argc) {
             options.settingsSelftestPage = std::atoi(argv[++i]);
+        } else if (argument == "--settings-scroll" && i + 1 < argc) {
+            options.settingsSelftestScroll = std::atoi(argv[++i]);
         } else if (argument == "--radial-click-selftest" && i + 1 < argc) {
             options.radialClickSelftestPath = Utf8ToWide(argv[++i]);
         } else if (argument == "--window-picker-selftest" && i + 1 < argc) {
@@ -2166,26 +2169,40 @@ int Run(const Options& options) {
             Sleep(400);
             RECT ocrWindowRect{};
             bool ocrWindowVisible = false;
-            bool ocrWindowOnTop = false;
+            bool ocrWindowNormalLevel = false;
             if (ocr != nullptr && ocr->Valid()) {
                 GetWindowRect(ocr->Handle(), &ocrWindowRect);
                 ocrWindowVisible = IsWindowVisible(ocr->Handle()) != FALSE;
-                POINT center{ (ocrWindowRect.left + ocrWindowRect.right) / 2,
-                              (ocrWindowRect.top + ocrWindowRect.bottom) / 2 };
-                ocrWindowOnTop = WindowFromPoint(center) == ocr->Handle() ||
-                                 GetAncestor(WindowFromPoint(center), GA_ROOT) == ocr->Handle();
+                // 结果窗是普通层级：不能带 WS_EX_TOPMOST（否则会一直压在对照内容上面）。
+                const LONG_PTR exStyle = GetWindowLongPtrW(ocr->Handle(), GWL_EXSTYLE);
+                ocrWindowNormalLevel = (exStyle & WS_EX_TOPMOST) == 0;
             }
             AddFlag(report, "APP_OCR_WINDOW_VISIBLE", ocrWindowVisible);
             AddInt(report, "APP_OCR_TEXT_LINES_CTRL",
                    ocr != nullptr ? ocr->TextLineCountForTest() : -1);
             AddFlag(report, "APP_OCR_TEXT_SCROLLBAR",
                     ocr != nullptr && ocr->TextScrollVisibleForTest());
-            AddFlag(report, "APP_OCR_WINDOW_ON_TOP", ocrWindowOnTop);
+            AddFlag(report, "APP_OCR_WINDOW_NORMAL_LEVEL", ocrWindowNormalLevel);
             AddText(report, "APP_OCR_WINDOW_RECT",
                     (std::to_string(ocrWindowRect.left) + "," + std::to_string(ocrWindowRect.top) +
                      " " + std::to_string(ocrWindowRect.right - ocrWindowRect.left) + "x" +
                      std::to_string(ocrWindowRect.bottom - ocrWindowRect.top)).c_str());
+            // 证明图：普通层级窗口会被前台浏览器盖住，抓图前临时置顶，抓完恢复。
+            if (ocr != nullptr && ocr->Valid()) {
+                const LONG_PTR style = GetWindowLongPtrW(ocr->Handle(), GWL_EXSTYLE);
+                SetWindowLongPtrW(ocr->Handle(), GWL_EXSTYLE, style | WS_EX_TOPMOST);
+                SetWindowPos(ocr->Handle(), HWND_TOPMOST, 0, 0, 0, 0,
+                             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+                UpdateWindow(ocr->Handle());
+                Sleep(200);
+            }
             const bool proof = screenshotOverlay->GrabDesktopToPng(options.ocrSelftestPath);
+            if (ocr != nullptr && ocr->Valid()) {
+                const LONG_PTR style = GetWindowLongPtrW(ocr->Handle(), GWL_EXSTYLE);
+                SetWindowLongPtrW(ocr->Handle(), GWL_EXSTYLE, style & ~WS_EX_TOPMOST);
+                SetWindowPos(ocr->Handle(), HWND_NOTOPMOST, 0, 0, 0, 0,
+                             SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            }
             // 结果窗口自身再印一张：桌面抓图看不到它时，用这张判断是「没画」还是「被遮」。
             if (ocr != nullptr && ocr->Valid()) {
                 RECT wr{};
@@ -2799,6 +2816,7 @@ int Run(const Options& options) {
         bool clearOk = false;
         bool repaintOk = false;
         bool lineViewOk = false;
+        bool lineNavOk = false;
         bool blockViewOk = false;
         int blockCount = 0;
         bool viewStableOk = false;
@@ -2861,6 +2879,19 @@ int Run(const Options& options) {
             UpdateWindow(searchWindow->Handle());
             Sleep(300);
             lineViewOk = searchWindow->LineViewForTest();
+            // 逐行视图的键盘选择：第一次 ↓ 选中首行，再前进两行、Home/End 夹到首尾。
+            searchWindow->MoveSelectionForTest(1);
+            const bool navFirst = searchWindow->SelectedLineForTest() == 0;
+            searchWindow->MoveSelectionForTest(2);
+            const bool navDown = searchWindow->SelectedLineForTest() == 2;
+            searchWindow->MoveSelectionForTest(-10);
+            const bool navHome = searchWindow->SelectedLineForTest() == 0;
+            searchWindow->MoveSelectionForTest(1000);
+            const bool navEnd =
+                searchWindow->SelectedLineForTest() ==
+                std::min<int>(searchWindow->LineCountForTest(), 500) - 1;
+            lineNavOk = navFirst && navDown && navHome && navEnd;
+            AddFlag(report, "APP_OCR_SEARCH_LINE_NAV", lineNavOk);
             halocap::platform::win32::DesktopImage linesDesktop;
             if (halocap::platform::win32::GrabPrimaryDesktop(linesDesktop)) {
                 halocap::platform::win32::SaveBgraPng(
@@ -2956,7 +2987,7 @@ int Run(const Options& options) {
         AddInt(report, "APP_OCR_SEARCH_GREEN_OFF", cleared.green);
         AddInt(report, "APP_OCR_SEARCH_BLUE_OFF", cleared.blue);
         ocrSearchSelftestOk = opened && counterOk && wrapOk && caseOk && noneOk && clearOk &&
-                              repaintOk && lineViewOk && blockViewOk && viewStableOk &&
+                              repaintOk && lineViewOk && lineNavOk && blockViewOk && viewStableOk &&
                               dragStableOk && editOk;
         log.Info(ocrSearchSelftestOk ? "ocr search selftest: ok" : "ocr search selftest: failed");
         running = false;
@@ -2968,6 +2999,9 @@ int Run(const Options& options) {
         openSettings();
         if (settingsWindow != nullptr && settingsWindow->Valid() && options.settingsSelftestPage >= 0) {
             settingsWindow->ShowPageForTest(options.settingsSelftestPage);
+            if (options.settingsSelftestScroll > 0) {
+                settingsWindow->ScrollForTest(options.settingsSelftestScroll);
+            }
         }
         Sleep(350);
 

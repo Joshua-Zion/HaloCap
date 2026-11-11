@@ -35,10 +35,10 @@ constexpr COLORREF kSegmentBg = RGB(0xF0, 0xF0, 0xF3);
 constexpr COLORREF kSegmentBorder = RGB(0xE2, 0xE2, 0xE7);
 constexpr COLORREF kSegmentActiveBorder = RGB(0xDC, 0xDC, 0xE1);
 
-constexpr int kWidthDip = 560;
+constexpr int kWidthDip = 640;
 constexpr int kPadDip = 20;
 constexpr int kTitleDip = 58;
-constexpr int kContentDip = 190;
+constexpr int kContentDip = 220;
 constexpr int kFooterDip = 58;
 constexpr int kRowDip = 30;
 constexpr int kMaxLines = 500;
@@ -122,7 +122,7 @@ bool OcrResultWindow::EnsureClass() {
     static const bool registered = [] {
         WNDCLASSEXW description{};
         description.cbSize = sizeof(description);
-        description.style = CS_DROPSHADOW;
+        description.style = CS_DROPSHADOW | CS_DBLCLKS;
         description.lpfnWndProc = &OcrResultWindow::WndProc;
         description.hInstance = GetModuleHandleW(nullptr);
         description.hCursor = LoadCursorW(nullptr, IDC_ARROW);
@@ -153,7 +153,8 @@ bool OcrResultWindow::Create(void* owner, const std::uint8_t* bgra, int width, i
     searchLabel_ = L"输入关键词";
 
     const std::wstring title = options_.fromPin ? L"HaloCap 贴图识别" : L"HaloCap 文字识别";
-    window_ = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW, kClassName, title.c_str(),
+    // 普通层级窗口（不置顶），和设置窗一致；结果窗口不应盖住用户正在对照的内容。
+    window_ = CreateWindowExW(WS_EX_TOOLWINDOW, kClassName, title.c_str(),
                               WS_POPUP, 0, 0, 100, 100, static_cast<HWND>(owner), nullptr,
                               GetModuleHandleW(nullptr), this);
     if (window_ == nullptr) {
@@ -279,6 +280,7 @@ void OcrResultWindow::StartRecognition() {
     elapsedMs_ = 0.0;
     lineScrollY_ = 0;
     hoveredLine_ = -1;
+    selectedLine_ = -1;
     if (text_ != nullptr) {
         SetWindowTextW(text_, L"");
     }
@@ -301,6 +303,7 @@ void OcrResultWindow::ApplyOutcome(const OcrOutcome& outcome) {
     plainText_ = Utf8ToWide(result_.plainText);
     lineScrollY_ = 0;
     hoveredLine_ = -1;
+    selectedLine_ = -1;
     if (!outcome.error.empty()) {
         stage_ = Stage::Failed;
         warning_ = Utf8ToWide(outcome.error);
@@ -356,7 +359,15 @@ void OcrResultWindow::ShowStatus(const std::wstring& message, bool error) {
 }
 
 void OcrResultWindow::ResetStatus() {
-    status_ = stage_ == Stage::Success ? L"Esc 关闭 · 可直接编辑 · Ctrl+F 搜索" : L"Esc 关闭";
+    if (stage_ != Stage::Success) {
+        status_ = L"Esc 关闭";
+    } else if (viewMode_ == ViewMode::Text) {
+        status_ = L"文本视图 · 可直接编辑 · Ctrl+F 搜索";
+    } else if (viewMode_ == ViewMode::Lines) {
+        status_ = L"逐行视图 · 单击选中，双击或 Enter 复制 · ↑↓ 切换";
+    } else {
+        status_ = L"版面视图 · 单击选中，双击或 Enter 复制 · ↑↓ 切换";
+    }
     statusError_ = false;
     if (window_ != nullptr) {
         KillTimer(window_, 2);
@@ -494,8 +505,48 @@ void OcrResultWindow::SetViewMode(ViewMode mode) {
         }
     }
     viewMode_ = mode;
+    selectedLine_ = -1;
     Layout();
+    ResetStatus();
     InvalidateRect(window_, nullptr, FALSE);
+}
+
+void OcrResultWindow::MoveSelection(int delta) {
+    if (!ShowingLines() || stage_ != Stage::Success || result_.lines.empty()) {
+        return;
+    }
+    const int count = std::min<int>(static_cast<int>(result_.lines.size()), kMaxLines);
+    if (selectedLine_ < 0) {
+        selectedLine_ = delta >= 0 ? 0 : count - 1;
+    } else {
+        selectedLine_ = std::clamp(selectedLine_ + delta, 0, count - 1);
+    }
+    EnsureSelectionVisible();
+    InvalidateRect(window_, &contentRect_, FALSE);
+}
+
+void OcrResultWindow::EnsureSelectionVisible() {
+    if (selectedLine_ < 0 || selectedLine_ >= static_cast<int>(lineHeights_.size())) {
+        return;
+    }
+    const int viewTop = contentRect_.top + ScaleInt(6.0f);
+    const int viewBottom = contentRect_.bottom - ScaleInt(6.0f);
+    const int view = std::max(1, viewBottom - viewTop);
+    int top = viewTop - lineScrollY_;
+    for (int i = 0; i < selectedLine_; ++i) {
+        top += (i < static_cast<int>(lineGapAbove_.size()) ? lineGapAbove_[i] : 0) +
+               lineHeights_[static_cast<std::size_t>(i)];
+    }
+    top += selectedLine_ < static_cast<int>(lineGapAbove_.size())
+               ? lineGapAbove_[static_cast<std::size_t>(selectedLine_)]
+               : 0;
+    const int bottom = top + lineHeights_[static_cast<std::size_t>(selectedLine_)];
+    if (top < viewTop) {
+        lineScrollY_ -= viewTop - top;
+    } else if (bottom > viewBottom) {
+        lineScrollY_ += bottom - viewBottom;
+    }
+    lineScrollY_ = std::clamp(lineScrollY_, 0, std::max(0, lineTotalHeight_ - view));
 }
 
 const std::wstring& OcrResultWindow::ViewButtonLabel() const {
@@ -743,10 +794,10 @@ void OcrResultWindow::Layout() {
         const int imageHeight = std::clamp(scaled, ScaleInt(60.0f), ScaleInt(180.0f));
         previewHeight = imageHeight + ScaleInt(12.0f) + ScaleInt(8.0f);
     }
-    const int maxContent = ScaleInt(660.0f) - (y + contentHeight + previewHeight +
+    const int maxContent = ScaleInt(760.0f) - (y + contentHeight + previewHeight +
                                                footerHeight + ScaleInt(14.0f));
     if (maxContent < 0) {
-        contentHeight = std::max(ScaleInt(110.0f), contentHeight + maxContent);
+        contentHeight = std::max(ScaleInt(140.0f), contentHeight + maxContent);
     }
     contentRect_ = RECT{ pad, y, width_ - pad, y + contentHeight };
     y += contentHeight + ScaleInt(10.0f);
@@ -1067,6 +1118,37 @@ void OcrResultWindow::HandleEditKey(HWND edit, WPARAM key) {
         CopyAll();
         return;
     }
+    // 逐行/版面视图：方向键选行，Enter 复制；Home/End 跳到首尾。
+    if (edit == window_ && !searchOpen_ && ShowingLines() && stage_ == Stage::Success) {
+        if (key == VK_UP) {
+            MoveSelection(-1);
+            return;
+        }
+        if (key == VK_DOWN) {
+            MoveSelection(1);
+            return;
+        }
+        if (key == VK_PRIOR) {
+            MoveSelection(-5);
+            return;
+        }
+        if (key == VK_NEXT) {
+            MoveSelection(5);
+            return;
+        }
+        if (key == VK_HOME) {
+            MoveSelection(-1000000);
+            return;
+        }
+        if (key == VK_END) {
+            MoveSelection(1000000);
+            return;
+        }
+        if (key == VK_RETURN && selectedLine_ >= 0) {
+            CopyLine(static_cast<std::size_t>(selectedLine_));
+            return;
+        }
+    }
     if (edit == search_ && key == VK_RETURN) {
         StepMatch(shift ? -1 : 1);
         return;
@@ -1223,6 +1305,21 @@ LRESULT OcrResultWindow::Handle(HWND window, UINT message, WPARAM wParam, LPARAM
         }
         const int line = LineAt(point);
         if (line >= 0) {
+            selectedLine_ = line;
+            // 行右端的复制图标：单击就复制；其余区域只选中，双击或 Enter 才复制。
+            if (point.x >= contentRect_.right - ScaleInt(46.0f)) {
+                CopyLine(static_cast<std::size_t>(line));
+            }
+            InvalidateRect(window_, &contentRect_, FALSE);
+        }
+        return 0;
+    }
+
+    case WM_LBUTTONDBLCLK: {
+        const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        const int line = LineAt(point);
+        if (line >= 0) {
+            selectedLine_ = line;
             CopyLine(static_cast<std::size_t>(line));
         }
         return 0;
@@ -1459,7 +1556,14 @@ void OcrResultWindow::DrawLines(HDC dc) {
         const int height = lineHeights_[index];
         if (y + height >= clipTop && y <= clipBottom) {
             RECT rowRect{ left, y, right, y + height };
-            if (static_cast<int>(index) == hoveredLine_) {
+            const bool selected = static_cast<int>(index) == selectedLine_;
+            if (selected) {
+                RECT highlight = rowRect;
+                highlight.top = std::max<LONG>(highlight.top, clipTop);
+                highlight.bottom = std::min<LONG>(highlight.bottom, clipBottom);
+                FillRounded(dc, highlight, ScaleInt(8.0f), RGB(0xEA, 0xF3, 0xFF),
+                            RGB(0xCB, 0xE2, 0xFF), 1);
+            } else if (static_cast<int>(index) == hoveredLine_) {
                 RECT hover = rowRect;
                 hover.top = std::max<LONG>(hover.top, clipTop);
                 hover.bottom = std::min<LONG>(hover.bottom, clipBottom);

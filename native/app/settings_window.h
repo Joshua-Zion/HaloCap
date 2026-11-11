@@ -3,6 +3,7 @@
 #include "capability.h"
 #include "settings.h"
 
+#include <algorithm>
 #include <functional>
 #include <memory>
 #include <string>
@@ -39,6 +40,11 @@ public:
 
     // 自检/截图用：直接切到某一页。
     void ShowPageForTest(int index);
+    void ScrollForTest(int dip) {
+        const int maxScroll = std::max(0, contentHeight_ - viewHeightDip_);
+        scroll_ = std::clamp(dip, 0, maxScroll);
+        Render();
+    }
 
     // 自检用：热键捕获是低级钩子驱动的，只能注入真按键来验，验完读这三个读数。
     void BeginHotkeyCaptureForTest(int index) { StartHotkeyCapture(index); }

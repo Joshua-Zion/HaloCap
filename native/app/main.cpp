@@ -48,6 +48,7 @@
 #include "win32_input_host.h"
 #include "win32_store.h"
 #include "win32_surface_window.h"
+#include "win32_update_fetch.h"
 #include "win32_wgc_capture.h"
 #include "window_at_point.h"
 #include "window_picker.h"
@@ -174,6 +175,11 @@ struct Options {
     // 交付：--version 打印版本；--check-update 读一份清单并比较版本。
     bool version = false;
     std::wstring updateManifestPath;
+    // --update-check：直接查 GitHub Releases 的最新版本；--update-atom 改用本地 atom 文件；
+    // --download-to 顺便把该版本的 zip 下到这个目录（给自检用）。
+    bool updateCheck = false;
+    std::wstring updateAtomPath;
+    std::wstring updateDownloadDir;
 };
 
 std::wstring Utf8ToWide(std::string_view text) {
@@ -408,6 +414,13 @@ Options ParseOptions(int argc, char** argv) {
             options.version = true;
         } else if (argument == "--check-update" && i + 1 < argc) {
             options.updateManifestPath = Utf8ToWide(argv[++i]);
+        } else if (argument == "--update-check") {
+            options.updateCheck = true;
+        } else if (argument == "--update-atom" && i + 1 < argc) {
+            options.updateAtomPath = Utf8ToWide(argv[++i]);
+            options.updateCheck = true;
+        } else if (argument == "--download-to" && i + 1 < argc) {
+            options.updateDownloadDir = Utf8ToWide(argv[++i]);
         } else if (argument == "--no-tray") {
             options.tray = false;
         } else if (argument == "--no-input") {
@@ -439,6 +452,9 @@ void PrintUsage() {
         "  --tray-menu-selftest PATH      open the drawn tray menu, click, capture, exit\n"
         "  --version                   print the delivery version and exit\n"
         "  --check-update PATH         compare this build with an update manifest\n"
+        "  --update-check               query GitHub Releases for the latest version\n"
+        "  --update-atom PATH           use a local releases.atom instead of GitHub\n"
+        "  --download-to DIR            with --update-check: also download the zip\n"
         "  --settings-selftest PATH    open the settings pages, capture, exit\n"
         "  --overlay-size 1920x1080\n"
         "  --no-tray | --no-input | --no-overlay\n");
@@ -3859,6 +3875,70 @@ int main(int argc, char** argv) {
         std::printf("UPDATE_URL=%s\n", manifest.url.c_str());
         std::printf("UPDATE_SIZE=%lld\n", static_cast<long long>(manifest.size));
         return 0;
+    }
+
+    if (options.updateCheck) {
+        // 与设置页「检查更新」同一条路：GitHub Releases 的 atom feed 里取最新 tag。
+        // GUI 子系统下 stdout 不可靠，结果同时写 --report 文件，自检按文件读。
+        std::string report;
+        int exitCode = 0;
+        std::string body;
+        std::string error;
+        bool fetched = false;
+        if (!options.updateAtomPath.empty()) {
+            body = ReadTextFileUtf8(options.updateAtomPath);
+            fetched = !body.empty();
+            if (!fetched) {
+                error = "atom-file";
+            }
+        } else {
+            fetched = halocap::platform::win32::HttpGetUtf8(
+                L"https://github.com/Joshua-Zion/HaloCap/releases.atom", &body, &error);
+        }
+        std::string tag;
+        std::string parseError;
+        if (!fetched) {
+            AddText(report, "UPDATE_CHECK", "FAILED");
+            AddText(report, "REASON", error);
+            exitCode = 2;
+        } else if (!core::ParseLatestTagFromAtom(body, &tag, &parseError)) {
+            AddText(report, "UPDATE_CHECK", "FAILED");
+            AddText(report, "REASON", parseError);
+            exitCode = 2;
+        } else {
+            AddText(report, "UPDATE_CHECK", "OK");
+            AddText(report, "UPDATE_CURRENT", halocap::app::kHaloCapVersion);
+            AddText(report, "UPDATE_LATEST", tag);
+            AddInt(report, "UPDATE_AVAILABLE",
+                   core::IsNewerVersion(tag, halocap::app::kHaloCapVersion) ? 1 : 0);
+            if (!options.updateDownloadDir.empty()) {
+                const std::wstring tagWide = Utf8ToWide(tag);
+                std::error_code ignored;
+                std::filesystem::create_directories(options.updateDownloadDir, ignored);
+                const std::wstring file =
+                    options.updateDownloadDir + L"\\HaloCap-" + tagWide + L"-win-x64.zip";
+                const std::wstring url =
+                    L"https://github.com/Joshua-Zion/HaloCap/releases/download/v" + tagWide +
+                    L"/HaloCap-" + tagWide + L"-win-x64.zip";
+                std::string downloadError;
+                const bool downloaded = halocap::platform::win32::HttpDownloadToFile(
+                    url, file, {}, &downloadError);
+                AddFlag(report, "UPDATE_DOWNLOAD", downloaded);
+                if (downloaded) {
+                    AddText(report, "UPDATE_DOWNLOAD_PATH", WideToUtf8(file));
+                    AddInt(report, "UPDATE_DOWNLOAD_BYTES",
+                           FileBytesUtf8(WideToUtf8(file)));
+                } else {
+                    AddText(report, "UPDATE_DOWNLOAD_ERROR", downloadError);
+                    exitCode = 2;
+                }
+            }
+        }
+        std::printf("%s", report.c_str());
+        if (!options.reportPath.empty()) {
+            WriteReportFile(options.reportPath, report);
+        }
+        return exitCode;
     }
 
     // 正常启动只允许一份；selftest 可能被连跑多次，跳过这条。

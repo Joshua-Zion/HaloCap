@@ -2,6 +2,23 @@
 
 本文件记录 HaloCap 的版本变化，按版本从新到旧排列。安装与使用说明见 [README](README.md)，发布包见 [Releases](https://github.com/Joshua-Zion/HaloCap/releases)。
 
+## 2.1.0
+
+完善「检查更新」：直接查询 GitHub Releases 的最新版本，有更新时弹窗提示，并可在应用内下载更新包。
+
+### 新增 / 改进
+
+- 「设置 → 关于 → 检查更新」改为查询 GitHub Releases（`releases.atom`），显示当前与最新版本；发现新版本时弹窗询问，确认后在工作线程里下载到 `%LOCALAPPDATA%\HaloCap2\update\v<版本>\`，页脚实时显示下载进度，完成后可一键打开所在文件夹。
+- 下载走 WinHTTP 流式写入，带进度与超时，不会把整个更新包读进内存，也不会卡住设置窗口。
+- 仍可用 `%LOCALAPPDATA%\HaloCap2\update.url` 指向镜像的 atom 源。
+- 新增 `--update-check` 命令行自检（配合 `--update-atom` / `--download-to` / `--report`），用于无人值守核对版本与下载通道。
+
+### 验证
+
+- 18/18 单元测试（新增 atom feed 解析用例）。
+- 发布前实测：GitHub 最新为 2.0.1、当前 2.1.0 → 无更新；本地合成 v9.9.9 feed → 判定有更新。
+- 应用内下载器从 v2.0.1 Release 下载得到 11,864,942 字节，SHA256 与发布资产一致。
+
 ## 2.0.1
 
 修复多显示器下区域录制位置不对：选区在副屏时，录制会按主屏坐标去裁剪（或退化成整屏），录出的画面不是选中的那块。

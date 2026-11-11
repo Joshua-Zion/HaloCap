@@ -36,6 +36,20 @@ using namespace Gdiplus;
 constexpr wchar_t kClassName[] = L"HaloCapSettings";
 // 目录选择线程把结果（堆上的 std::wstring*）通过这条消息交回主线程。
 constexpr UINT kMsgDirectoryPicked = WM_APP + 0x51;
+// 更新流程：检查结果 / 下载进度 / 下载完成（都从工作线程 PostMessage 回来）。
+constexpr UINT kMsgUpdateChecked = WM_APP + 0x60;
+constexpr UINT kMsgUpdateProgress = WM_APP + 0x61;   // wParam = 0..100
+constexpr UINT kMsgUpdateDownloaded = WM_APP + 0x62;
+
+struct UpdateCheckOutcome {
+    std::wstring tag;
+    std::wstring error;
+};
+
+struct UpdateDownloadOutcome {
+    std::wstring path;
+    std::wstring error;
+};
 constexpr float kWindowW = 916.0f;   // 820 卡片 + 48 DIP/侧 透明边给阴影
 constexpr float kWindowH = 716.0f;
 constexpr float kMargin = 48.0f;    // 卡片 inset：48 DIP 阴影余量
@@ -743,44 +757,99 @@ void SettingsWindow::CopySummary() {
 }
 
 void SettingsWindow::CheckUpdate() {
-    std::string json;
-    std::wstring source = L"本地清单";
-    const std::string url = ReadUpdateUrl();
-    if (!url.empty()) {
+    if (updateBusy_ || window_ == nullptr) {
+        return;
+    }
+    updateBusy_ = true;
+    error_.clear();
+    status_ = L"正在检查更新…";
+    Render();
+
+    // update.url 可以指向镜像的 atom 源；没配就用 GitHub Releases 的公开 feed。
+    const std::string overrideUrl = ReadUpdateUrl();
+    const std::wstring feed =
+        overrideUrl.empty()
+            ? std::wstring(L"https://github.com/Joshua-Zion/HaloCap/releases.atom")
+            : Utf8ToWide(overrideUrl);
+    const HWND window = window_;
+
+    // 网络请求放到独立线程：WinHTTP 超时 / 慢网都不能卡住设置窗口。
+    std::thread([window, feed]() {
+        auto* outcome = new UpdateCheckOutcome();
+        std::string body;
         std::string networkError;
-        if (halocap::platform::win32::HttpGetUtf8(Utf8ToWide(url), &json, &networkError) &&
-            !json.empty()) {
-            source = L"网络清单";
+        if (!halocap::platform::win32::HttpGetUtf8(feed, &body, &networkError)) {
+            outcome->error = L"检查更新失败：" + Utf8ToWide(networkError);
         } else {
-            json.clear();
+            std::string tag;
+            std::string parseError;
+            if (core::ParseLatestTagFromAtom(body, &tag, &parseError)) {
+                outcome->tag = Utf8ToWide(tag);
+            } else {
+                outcome->error = L"更新源格式无法识别：" + Utf8ToWide(parseError);
+            }
         }
-    }
-    if (json.empty()) {
-        json = ReadLocalUpdateManifest();
-    }
-    if (json.empty()) {
-        MessageBoxW(window_,
-                    L"未找到更新清单：可在 %LOCALAPPDATA%\\HaloCap2\\update.url 写清单地址，"
-                    L"或放 update.json。",
-                    L"HaloCap 更新", MB_OK | MB_ICONINFORMATION);
+        if (PostMessageW(window, kMsgUpdateChecked, 0, reinterpret_cast<LPARAM>(outcome)) == 0) {
+            delete outcome;
+        }
+    }).detach();
+}
+
+void SettingsWindow::BeginUpdateDownload(const std::wstring& version) {
+    if (updateBusy_ || window_ == nullptr || version.empty()) {
         return;
     }
-    core::UpdateManifest manifest;
-    std::string error;
-    if (!core::ParseUpdateManifest(json, &manifest, &error)) {
-        MessageBoxW(window_, L"更新清单解析失败，详见日志。", L"HaloCap 更新",
-                    MB_OK | MB_ICONWARNING);
-        return;
+    updateBusy_ = true;
+    error_.clear();
+    status_ = L"正在下载更新 0%…";
+    Render();
+
+    const HWND window = window_;
+    std::thread([window, version]() {
+        wchar_t localAppData[MAX_PATH] = {};
+        std::wstring directory;
+        if (GetEnvironmentVariableW(L"LOCALAPPDATA", localAppData, MAX_PATH) != 0) {
+            directory = std::wstring(localAppData) + L"\\HaloCap2\\update\\v" + version;
+        } else {
+            wchar_t temporary[MAX_PATH] = {};
+            GetTempPathW(MAX_PATH, temporary);
+            directory = std::wstring(temporary) + L"HaloCapUpdate\\v" + version;
+        }
+        std::error_code ignored;
+        std::filesystem::create_directories(directory, ignored);
+
+        const std::wstring file = directory + L"\\HaloCap-" + version + L"-win-x64.zip";
+        const std::wstring url =
+            L"https://github.com/Joshua-Zion/HaloCap/releases/download/v" + version +
+            L"/HaloCap-" + version + L"-win-x64.zip";
+
+        auto* outcome = new UpdateDownloadOutcome();
+        outcome->path = file;
+        std::string error;
+        const bool ok = halocap::platform::win32::HttpDownloadToFile(
+            url, file,
+            [window](std::int64_t received, std::int64_t total) {
+                if (total <= 0) {
+                    return;
+                }
+                int percent = static_cast<int>(received * 100 / total);
+                percent = std::clamp(percent, 0, 100);
+                PostMessageW(window, kMsgUpdateProgress, static_cast<WPARAM>(percent), 0);
+            },
+            &error);
+        if (!ok) {
+            outcome->error = L"下载失败：" + Utf8ToWide(error);
+        }
+        if (PostMessageW(window, kMsgUpdateDownloaded, 0, reinterpret_cast<LPARAM>(outcome)) == 0) {
+            delete outcome;
+        }
+    }).detach();
+}
+
+void SettingsWindow::OpenFolder(const std::wstring& path) {
+    if (!path.empty()) {
+        ShellExecuteW(nullptr, L"open", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
     }
-    const bool newer = core::IsNewerVersion(manifest.version, halocap::app::kHaloCapVersion);
-    std::wstring message = L"当前版本：" + Utf8ToWide(halocap::app::kHaloCapVersion) +
-                           L"\n最新版本：" + Utf8ToWide(manifest.version) + L"\n\n";
-    message += newer ? L"发现新版本，可从清单中的地址下载。" : L"已经是最新版本。";
-    if (newer) {
-        message += L"\n" + Utf8ToWide(manifest.url);
-    }
-    message += L"\n来源：" + source;
-    MessageBoxW(window_, message.c_str(), L"HaloCap 更新", MB_OK | MB_ICONINFORMATION);
 }
 
 void SettingsWindow::ChooseDirectory() {
@@ -1545,7 +1614,7 @@ void SettingsWindow::Render() {
                  textSecondary);
         DrawText(g, L"模型目录：" + Utf8ToWide(modelsDirectory_), &fonts->desc,
                  RectF(scrollX + 16.0f, y + 58.0f, scrollW - 32.0f, 16), textSecondary);
-        DrawText(g, L"更新清单：%LOCALAPPDATA%\\HaloCap2\\update.url（网络）或 update.json（本地）",
+        DrawText(g, L"更新来源：GitHub Releases（可在 %LOCALAPPDATA%\\HaloCap2\\update.url 覆盖镜像）",
                  &fonts->desc, RectF(scrollX + 16.0f, y + 80.0f, scrollW - 32.0f, 16),
                  textSecondary);
         DrawText(g, L"识别完全在本机完成，图片不会上传网络。", &fonts->desc,
@@ -1592,6 +1661,10 @@ void SettingsWindow::Render() {
         DrawText(g, error_, &fonts->desc,
                  RectF(banner.X + 10.0f, banner.Y, banner.Width - 20.0f, banner.Height),
                  Color(255, 0xB3, 0x26, 0x1E));
+    } else if (!status_.empty()) {
+        // 检查更新 / 下载进度：中性文字，比「更改在保存后生效」醒目但不报错。
+        DrawText(g, status_, &fonts->desc,
+                 RectF(headerX, footerTop, cancelX - 16.0f - headerX, kFooter), textPrimary);
     } else {
         DrawText(g, L"更改在保存后生效", &fonts->desc,
                  RectF(headerX, footerTop, cancelX - 16.0f - headerX, kFooter), textTertiary);
@@ -1739,6 +1812,72 @@ LRESULT SettingsWindow::Handle(HWND window, UINT message, WPARAM wParam, LPARAM 
             }
             settings_.recordingDirectory = Utf8FromWide(chosen);
             Render();
+        }
+        return 0;
+    }
+    case kMsgUpdateChecked: {
+        updateBusy_ = false;
+        auto* outcome = reinterpret_cast<UpdateCheckOutcome*>(lParam);
+        if (outcome == nullptr) {
+            return 0;
+        }
+        const std::wstring tag = outcome->tag;
+        const std::wstring failure = outcome->error;
+        delete outcome;
+        status_.clear();
+        Render();
+        if (!failure.empty()) {
+            MessageBoxW(window_, failure.c_str(), L"HaloCap 更新", MB_OK | MB_ICONWARNING);
+            return 0;
+        }
+        if (core::IsNewerVersion(Utf8FromWide(tag), halocap::app::kHaloCapVersion)) {
+            const std::wstring message =
+                L"发现新版本 v" + tag + L"（当前 v" +
+                Utf8ToWide(halocap::app::kHaloCapVersion) +
+                L"）。\n\n是否现在下载更新？下载完成后会放在本地更新目录，关闭本程序后解压覆盖即可。";
+            if (MessageBoxW(window_, message.c_str(), L"HaloCap 更新",
+                            MB_YESNO | MB_ICONINFORMATION) == IDYES) {
+                BeginUpdateDownload(tag);
+            }
+        } else {
+            const std::wstring message =
+                L"已经是最新版本 v" + Utf8ToWide(halocap::app::kHaloCapVersion) + L"。";
+            MessageBoxW(window_, message.c_str(), L"HaloCap 更新", MB_OK | MB_ICONINFORMATION);
+        }
+        return 0;
+    }
+    case kMsgUpdateProgress: {
+        const int percent = static_cast<int>(wParam);
+        status_ = percent >= 100 ? std::wstring(L"正在写入更新包…")
+                                 : L"正在下载更新 " + std::to_wstring(percent) + L"%…";
+        Render();
+        return 0;
+    }
+    case kMsgUpdateDownloaded: {
+        updateBusy_ = false;
+        auto* outcome = reinterpret_cast<UpdateDownloadOutcome*>(lParam);
+        if (outcome == nullptr) {
+            return 0;
+        }
+        const std::wstring path = outcome->path;
+        const std::wstring failure = outcome->error;
+        delete outcome;
+        if (!failure.empty()) {
+            status_.clear();
+            Render();
+            MessageBoxW(window_, failure.c_str(), L"HaloCap 更新", MB_OK | MB_ICONWARNING);
+            return 0;
+        }
+        status_ = L"更新已下载";
+        Render();
+        std::filesystem::path directory(path);
+        directory = directory.parent_path();
+        const std::wstring message =
+            L"更新包已下载到：\n" + path +
+            L"\n\n关闭 HaloCap 后把压缩包解压覆盖到程序目录即可完成更新。\n是否打开所在文件夹？";
+        if (MessageBoxW(window_, message.c_str(), L"HaloCap 更新",
+                        MB_YESNO | MB_ICONINFORMATION) == IDYES) {
+            OpenFolder(directory.wstring());
         }
         return 0;
     }

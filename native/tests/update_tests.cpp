@@ -68,6 +68,37 @@ void TestVersions() {
     CheckTrue(!halocap::core::IsNewerVersion("1.9.9", "2.0.0"), "older is not an update");
 }
 
+void TestAtomFeed() {
+    const std::string feed = R"(<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <id>tag:github.com,2008:Repository/1/v2.1.0</id>
+    <updated>2026-11-11T10:00:00Z</updated>
+    <link rel="alternate" type="text/html" href="https://github.com/Joshua-Zion/HaloCap/releases/tag/v2.1.0"/>
+    <title>HaloCap v2.1.0</title>
+  </entry>
+  <entry>
+    <id>tag:github.com,2008:Repository/1/v2.0.1</id>
+    <link rel="alternate" type="text/html" href="https://github.com/Joshua-Zion/HaloCap/releases/tag/v2.0.1"/>
+    <title>HaloCap v2.0.1</title>
+  </entry>
+</feed>)";
+
+    std::string tag;
+    std::string error;
+    CheckTrue(halocap::core::ParseLatestTagFromAtom(feed, &tag, &error), "atom feed finds a tag");
+    CheckTrue(tag == "2.1.0", "atom feed takes the newest tag and strips v");
+
+    CheckTrue(!halocap::core::ParseLatestTagFromAtom("<feed></feed>", &tag, &error),
+              "atom without entry is rejected");
+    CheckTrue(!halocap::core::ParseLatestTagFromAtom("<feed><entry></entry></feed>", &tag, &error),
+              "entry without tag link is rejected");
+    const std::string badTag =
+        "<feed><entry><link href=\"https://github.com/o/r/releases/tag/latest\"/></entry></feed>";
+    CheckTrue(!halocap::core::ParseLatestTagFromAtom(badTag, &tag, &error),
+              "non-version tag is rejected");
+}
+
 }
 
 int main() {
@@ -75,6 +106,7 @@ int main() {
 
     TestManifest();
     TestVersions();
+    TestAtomFeed();
 
     if (failures != 0) {
         std::printf("UPDATE_TESTS=FAILED %d/%d\n", failures, checks);

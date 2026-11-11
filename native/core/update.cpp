@@ -259,4 +259,56 @@ bool IsNewerVersion(std::string_view candidate, std::string_view current) {
     return CompareVersions(candidate, current) > 0;
 }
 
+bool ParseLatestTagFromAtom(std::string_view xml, std::string* tag, std::string* error) {
+    std::string localError;
+    if (error == nullptr) {
+        error = &localError;
+    }
+    if (tag == nullptr) {
+        *error = "tag is null";
+        return false;
+    }
+
+    // 第一个 <entry> 是最新一次发布；它的备用链接形如
+    //   <link rel="alternate" ... href="https://github.com/<owner>/<repo>/releases/tag/v2.1.0"/>
+    // 取 href 里的 tag 部分，比解析 <title>（发布名可能带前缀）可靠。
+    const std::size_t entry = xml.find("<entry");
+    if (entry == std::string_view::npos) {
+        *error = "feed has no entry";
+        return false;
+    }
+    constexpr std::string_view kMarker = "/releases/tag/";
+    const std::size_t marker = xml.find(kMarker, entry);
+    if (marker == std::string_view::npos) {
+        *error = "entry has no tag link";
+        return false;
+    }
+
+    std::size_t start = marker + kMarker.size();
+    std::size_t end = start;
+    while (end < xml.size()) {
+        const char character = xml[end];
+        if (character == '"' || character == '<' || character == ' ' || character == '\r' ||
+            character == '\n' || character == '\t' || character == '/') {
+            break;
+        }
+        ++end;
+    }
+    if (end <= start) {
+        *error = "tag is empty";
+        return false;
+    }
+
+    std::string value(xml.substr(start, end - start));
+    if (!value.empty() && (value.front() == 'v' || value.front() == 'V')) {
+        value.erase(value.begin());
+    }
+    if (value.empty() || !std::isdigit(static_cast<unsigned char>(value.front()))) {
+        *error = "tag is not a version";
+        return false;
+    }
+    *tag = std::move(value);
+    return true;
+}
+
 }

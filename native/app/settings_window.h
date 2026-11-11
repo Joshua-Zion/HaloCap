@@ -85,6 +85,8 @@ private:
     void Save();
     void CopySummary();
     void CheckUpdate();
+    void BeginUpdateDownload(const std::wstring& version);
+    void OpenFolder(const std::wstring& path);
     void ChooseDirectory();
     std::wstring SummaryText() const;
 
@@ -112,6 +114,9 @@ private:
     int hoverId_ = 0;
     int captureIndex_ = -1;
     std::wstring error_;
+    // 页脚的状态行（检查更新 / 下载进度），与 error_（红底错误横幅）互斥。
+    std::wstring status_;
+    bool updateBusy_ = false;
     HHOOK keyHook_ = nullptr;
     int hookEvents_ = 0;
     bool ctrlDown_ = false;

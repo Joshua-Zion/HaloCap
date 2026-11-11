@@ -25,4 +25,8 @@ int CompareVersions(std::string_view left, std::string_view right);
 
 bool IsNewerVersion(std::string_view candidate, std::string_view current);
 
+// 从 GitHub 的 releases.atom 里取最新版本的 tag（去掉前导 v）。取第一个 <entry> 的
+// /releases/tag/<tag> 链接；找不到或 tag 不像版本号时返回 false。
+bool ParseLatestTagFromAtom(std::string_view xml, std::string* tag, std::string* error);
+
 }

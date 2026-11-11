@@ -2822,6 +2822,7 @@ int Run(const Options& options) {
         bool viewStableOk = false;
         bool dragStableOk = false;
         bool editOk = false;
+        bool copyModeOk = false;
         HighlightCounts highlighted;
         HighlightCounts cleared;
         if (opened) {
@@ -2893,7 +2894,18 @@ int Run(const Options& options) {
             lineNavOk = navFirst && navDown && navHome && navEnd;
             AddFlag(report, "APP_OCR_SEARCH_LINE_NAV", lineNavOk);
             halocap::platform::win32::DesktopImage linesDesktop;
-            if (halocap::platform::win32::GrabPrimaryDesktop(linesDesktop)) {
+            // 证明图：普通层级窗口会被前台应用盖住，抓图前临时置顶，抓完恢复。
+            const LONG_PTR lineStyle = GetWindowLongPtrW(searchWindow->Handle(), GWL_EXSTYLE);
+            SetWindowLongPtrW(searchWindow->Handle(), GWL_EXSTYLE, lineStyle | WS_EX_TOPMOST);
+            SetWindowPos(searchWindow->Handle(), HWND_TOPMOST, 0, 0, 0, 0,
+                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            UpdateWindow(searchWindow->Handle());
+            Sleep(150);
+            const bool linesShot = halocap::platform::win32::GrabPrimaryDesktop(linesDesktop);
+            SetWindowLongPtrW(searchWindow->Handle(), GWL_EXSTYLE, lineStyle);
+            SetWindowPos(searchWindow->Handle(), HWND_NOTOPMOST, 0, 0, 0, 0,
+                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            if (linesShot) {
                 halocap::platform::win32::SaveBgraPng(
                     options.ocrSearchSelftestPath + L".lines.png", linesDesktop.bgra.data(),
                     linesDesktop.width, linesDesktop.height, linesDesktop.width * 4);
@@ -2971,6 +2983,33 @@ int Run(const Options& options) {
                      searchWindow->PlainTextForTest() == L"Halo 编辑\r\n第二行" &&
                      searchWindow->LineCountForTest() == 2;
             AddFlag(report, "APP_OCR_SEARCH_EDITABLE", editOk);
+
+            // 复制优先选区；切到逐行显示后复制全部仍是纯文本（不带行号），编辑内容不丢。
+            searchWindow->SetEditSelectionForTest(0, 4);
+            searchWindow->CopyAllForTest();
+            Sleep(50);
+            halocap::platform::win32::ClipboardReadResult selectionClip;
+            const bool selectionRead =
+                halocap::platform::win32::ReadClipboard(&selectionClip);
+            const bool selectionCopyOk =
+                selectionRead && selectionClip.hasText && selectionClip.text == "Halo";
+            searchWindow->SetEditSelectionForTest(0, 0);
+            searchWindow->SetLineViewForTest(true);
+            searchWindow->SetLineViewForTest(false);
+            const bool editPreserved =
+                searchWindow->PlainTextForTest() == L"Halo 编辑\r\n第二行";
+            searchWindow->SetLineViewForTest(true);
+            searchWindow->CopyAllForTest();
+            Sleep(50);
+            halocap::platform::win32::ClipboardReadResult allClip;
+            const bool allRead = halocap::platform::win32::ReadClipboard(&allClip);
+            const bool plainCopyOk =
+                allRead && allClip.hasText && allClip.text == "Halo 编辑\r\n第二行";
+            searchWindow->SetLineViewForTest(false);
+            AddFlag(report, "APP_OCR_COPY_SELECTION", selectionCopyOk);
+            AddFlag(report, "APP_OCR_EDIT_PRESERVED", editPreserved);
+            AddFlag(report, "APP_OCR_COPY_PLAIN_IN_LINES", plainCopyOk);
+            copyModeOk = selectionCopyOk && editPreserved && plainCopyOk;
             searchWindow.reset();
         }
 
@@ -2988,7 +3027,7 @@ int Run(const Options& options) {
         AddInt(report, "APP_OCR_SEARCH_BLUE_OFF", cleared.blue);
         ocrSearchSelftestOk = opened && counterOk && wrapOk && caseOk && noneOk && clearOk &&
                               repaintOk && lineViewOk && lineNavOk && blockViewOk && viewStableOk &&
-                              dragStableOk && editOk;
+                              dragStableOk && editOk && copyModeOk;
         log.Info(ocrSearchSelftestOk ? "ocr search selftest: ok" : "ocr search selftest: failed");
         running = false;
     }

@@ -95,6 +95,13 @@ public:
         }
     }
     void SyncEditedTextForTest() { SyncEditedText(); }
+    void SetEditSelectionForTest(int start, int end) {
+        if (text_ != nullptr) {
+            SendMessageW(text_, EM_SETSEL, static_cast<WPARAM>(start),
+                         static_cast<LPARAM>(end));
+        }
+    }
+    void CopyAllForTest() { CopyAll(); }
     const std::wstring& PlainTextForTest() const { return plainText_; }
 
     // 搜索自检（原有签名保持不变）。
@@ -114,13 +121,14 @@ private:
         None = 0,
         CloseTop,
         SearchButton,
-        ViewButton,
+        ModeContinuous,
+        ModeLines,
+        ModeBlocks,
         SearchPrevious,
         SearchNext,
         SearchClose,
         Retry,
         ImageToggle,
-        CloseFooter,
         CopyAll,
         EmptyRetry,
         TextScrollThumb,
@@ -154,7 +162,6 @@ private:
     bool ShowingLines() const { return viewMode_ != ViewMode::Text; }
     void MoveSelection(int delta);
     void EnsureSelectionVisible();
-    const std::wstring& ViewButtonLabel() const;
     void SetImageVisible(bool visible);
     void OpenSearch();
     void CloseSearch(bool focusWindow);
@@ -175,6 +182,7 @@ private:
     void DrawButton(HDC dc, const RECT& rect, const std::wstring& text, bool primary,
                     bool active, bool hover);
     void DrawSmallButton(HDC dc, const RECT& rect, const std::wstring& text, bool hover);
+    void DrawModeSegment(HDC dc);
     void DrawPreview(HDC dc);
     void DrawLines(HDC dc);
     // 文本框右侧的细滚动条（不用系统滚动条：太宽、带箭头，会压到文字）。
@@ -244,7 +252,6 @@ private:
     RECT closeTop_{};
     RECT chipRect_{};
     RECT searchButton_{};
-    RECT viewButton_{};
     RECT searchBar_{};
     RECT searchEditRect_{};
     RECT searchPrev_{};
@@ -252,12 +259,16 @@ private:
     RECT searchClose_{};
     RECT warningRect_{};
     RECT contentRect_{};
+    // 内容卡片内的标题行（「识别文本」+ 显示模式分段控件）与真正的文本区。
+    RECT contentHeaderRect_{};
+    RECT contentBodyRect_{};
+    RECT modeGroup_{};
+    RECT modeOptions_[3]{};
     RECT previewCard_{};
     RECT previewImage_{};
     RECT footerRect_{};
     RECT retryButton_{};
     RECT imageButton_{};
-    RECT closeFooter_{};
     RECT copyAllButton_{};
     RECT emptyRetry_{};
 

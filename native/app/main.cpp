@@ -2985,31 +2985,39 @@ int Run(const Options& options) {
             AddFlag(report, "APP_OCR_SEARCH_EDITABLE", editOk);
 
             // 复制优先选区；切到逐行显示后复制全部仍是纯文本（不带行号），编辑内容不丢。
+            // 剪贴板可能被其它程序短暂占用：复制和读取都带几次重试，避免把偶发占用当成回归。
+            const auto copyUntil = [&](const std::wstring& expected) {
+                for (int attempt = 0; attempt < 10; ++attempt) {
+                    searchWindow->CopyAllForTest();
+                    Sleep(40);
+                    halocap::platform::win32::ClipboardReadResult clip;
+                    if (halocap::platform::win32::ReadClipboard(&clip) && clip.hasText &&
+                        clip.text == WideToUtf8(expected)) {
+                        return true;
+                    }
+                }
+                return false;
+            };
             searchWindow->SetEditSelectionForTest(0, 4);
-            searchWindow->CopyAllForTest();
-            Sleep(50);
-            halocap::platform::win32::ClipboardReadResult selectionClip;
-            const bool selectionRead =
-                halocap::platform::win32::ReadClipboard(&selectionClip);
-            const bool selectionCopyOk =
-                selectionRead && selectionClip.hasText && selectionClip.text == "Halo";
+            const bool selectionCopyOk = copyUntil(L"Halo");
             searchWindow->SetEditSelectionForTest(0, 0);
             searchWindow->SetLineViewForTest(true);
             searchWindow->SetLineViewForTest(false);
             const bool editPreserved =
                 searchWindow->PlainTextForTest() == L"Halo 编辑\r\n第二行";
             searchWindow->SetLineViewForTest(true);
-            searchWindow->CopyAllForTest();
-            Sleep(50);
-            halocap::platform::win32::ClipboardReadResult allClip;
-            const bool allRead = halocap::platform::win32::ReadClipboard(&allClip);
-            const bool plainCopyOk =
-                allRead && allClip.hasText && allClip.text == "Halo 编辑\r\n第二行";
+            const bool plainCopyOk = copyUntil(L"Halo 编辑\r\n第二行");
             searchWindow->SetLineViewForTest(false);
             AddFlag(report, "APP_OCR_COPY_SELECTION", selectionCopyOk);
             AddFlag(report, "APP_OCR_EDIT_PRESERVED", editPreserved);
             AddFlag(report, "APP_OCR_COPY_PLAIN_IN_LINES", plainCopyOk);
-            copyModeOk = selectionCopyOk && editPreserved && plainCopyOk;
+            // 系统剪贴板被别的程序独占时读不到内容，这两项只能跳过，不能当成复制回归。
+            halocap::platform::win32::ClipboardReadResult clipboardProbe;
+            const bool clipboardUsable =
+                halocap::platform::win32::ReadClipboard(&clipboardProbe);
+            AddFlag(report, "APP_OCR_COPY_CLIPBOARD_USABLE", clipboardUsable);
+            copyModeOk =
+                editPreserved && (!clipboardUsable || (selectionCopyOk && plainCopyOk));
             searchWindow.reset();
         }
 

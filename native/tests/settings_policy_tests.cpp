@@ -302,7 +302,6 @@ void TestDefaults() {
 
     CheckTrue(settings.ocr.engine == core::OcrEngine::Native, "ocr engine default");
     CheckTrue(!settings.ocr.autoCopy, "ocr autoCopy default");
-    CheckTrue(settings.ocr.pinOcrEnabled, "ocr pinOcr default");
     CheckTrue(settings.ocr.autoStart, "ocr autoStart default");
     CheckTrue(settings.ocr.model.empty(), "ocr model default is the bundled model");
 
@@ -372,8 +371,9 @@ void TestLegacyDocument() {
               "legacy hotkeys are reported as migrated");
     // 1.x 把四个只读计算属性也写进了文件；它们不是「不认识的键」，但也不是需要读的键。
     CheckList(parsed.report.ignoredKeys,
-              { "recording.framesPerSecond", "recording.countdownSeconds",
-                "recording.audioBitrateValue", "recording.wantsAudio" },
+              { "ocr.pinOcrEnabled", "recording.framesPerSecond",
+                "recording.countdownSeconds", "recording.audioBitrateValue",
+                "recording.wantsAudio" },
               "legacy derived fields are reported as ignored");
     CheckEmpty(parsed.report.repairedKeys, "legacy document repairs nothing");
     CheckEmpty(parsed.report.droppedKeys, "legacy document drops nothing");
@@ -393,7 +393,6 @@ void TestRoundTrip() {
     custom.pinGlowEnabled = false;
     custom.ocr.engine = core::OcrEngine::Model;
     custom.ocr.autoCopy = true;
-    custom.ocr.pinOcrEnabled = false;
     custom.ocr.autoStart = false;
     custom.ocr.model = "ppocrv6-small";
     custom.recording.resolution = core::RecordingResolution::P1440;

@@ -103,7 +103,6 @@ enum : int {
     kIdToggleConvertFiles = 31,
     kIdTogglePinGlow = 32,
     kIdToggleAutoCopy = 33,
-    kIdTogglePinOcr = 34,
     kIdToggleSystemAudio = 35,
     kIdToggleMicrophone = 36,
     kIdToggleRecordCursor = 37,
@@ -1223,7 +1222,6 @@ void SettingsWindow::Click(int id) {
         break;
     case kIdTogglePinGlow: settings_.pinGlowEnabled = !settings_.pinGlowEnabled; break;
     case kIdToggleAutoCopy: settings_.ocr.autoCopy = !settings_.ocr.autoCopy; break;
-    case kIdTogglePinOcr: settings_.ocr.pinOcrEnabled = !settings_.ocr.pinOcrEnabled; break;
     case kIdToggleSystemAudio:
         settings_.recording.systemAudio = !settings_.recording.systemAudio;
         break;
@@ -1380,7 +1378,7 @@ void SettingsWindow::Render() {
         L"启动方式、光圈大小与贴图外观",
         L"呼出光圈与四个动作的全局按键，单键会独占该键",
         L"图片格式与剪贴板行为",
-        L"选择识别引擎与结果偏好",
+        L"选择识别引擎、模型与结果偏好",
         L"录制范围、画面与声音",
         L"版本、更新与诊断信息",
     };
@@ -1391,6 +1389,24 @@ void SettingsWindow::Render() {
              RectF(headerX, headerY, 400.0f, 28.0f), textPrimary);
     DrawText(g, pageSubtitles[static_cast<int>(page_)], &fonts->subtitle,
              RectF(headerX, headerY + 31.0f, 460.0f, 18.0f), textSecondary);
+
+    // 标题栏右上角的关闭按钮（与 WM_NCHITTEST 里留出的 inClose 区域一致）。
+    {
+        const RectF closeRect(kWindowW - kMargin - 14.0f - 28.0f, kMargin, 28.0f, kTitleBar);
+        if (hoverId_ == kIdClose) {
+            SolidBrush hover(Color(255, 0xEC, 0xEC, 0xF0));
+            g.FillEllipse(&hover, closeRect.X + 4.0f, closeRect.Y + 11.0f, 20.0f, 20.0f);
+        }
+        Pen cross(hoverId_ == kIdClose ? textPrimary : textTertiary, 1.4f);
+        const float cx = closeRect.X + 14.0f;
+        const float cy = closeRect.Y + 21.0f;
+        g.DrawLine(&cross, cx - 5.0f, cy - 5.0f, cx + 5.0f, cy + 5.0f);
+        g.DrawLine(&cross, cx + 5.0f, cy - 5.0f, cx - 5.0f, cy + 5.0f);
+        AddHotspot(RECT{ static_cast<LONG>(closeRect.X), static_cast<LONG>(closeRect.Y),
+                         static_cast<LONG>(closeRect.X + closeRect.Width),
+                         static_cast<LONG>(closeRect.Y + closeRect.Height) },
+                   kIdClose);
+    }
 
     const float scrollTop = headerY + 62.0f;
     const float scrollBottom = frame.Y + frame.Height - kFooter;
@@ -1575,7 +1591,7 @@ void SettingsWindow::Render() {
         break;
     }
     case Page::Ocr: {
-        groupLabel(L"识别");
+        groupLabel(L"识别与结果");
         cardStart(186.0f);
         segmentAt(scrollX + scrollW - cardPad, y, 62.0f, { L"原生识别", L"模型识别" },
                   kGroupOcrEngine, settings_.ocr.engine == core::OcrEngine::Model ? 1 : 0,
@@ -1706,8 +1722,8 @@ void SettingsWindow::Render() {
         }
 
         y += 20.0f;
-        groupLabel(L"引擎说明");
-        cardStart(128.0f);
+        groupLabel(L"说明");
+        cardStart(158.0f);
         DrawText(g, L"Windows 原生", &fonts->settingBold,
                  RectF(scrollX + 16.0f, y + 14.0f, 200, 18), textPrimary);
         DrawText(g,
@@ -1718,22 +1734,17 @@ void SettingsWindow::Render() {
         Pen ocrDivider(hairline, 1.0f);
         g.DrawLine(&ocrDivider, scrollX + 16.0f, y + 74.0f, scrollX + scrollW - 16.0f,
                    y + 74.0f);
-        DrawText(g, L"PP-OCRv6", &fonts->settingBold,
+        DrawText(g, L"PP-OCRv6 模型", &fonts->settingBold,
                  RectF(scrollX + 16.0f, y + 82.0f, 200, 18), textPrimary);
-        DrawText(g, L"内置极速模型随包提供；模型目录里也可以放其他 PP-OCR 系列模型，按目录切换。",
+        DrawText(g, L"模型目录中的模型都可以直接选用，包括下载的官方模型与自行放入的 ONNX 模型。",
                  &fonts->desc, RectF(scrollX + 16.0f, y + 102.0f, scrollW - 32.0f, 18),
                  textSecondary);
-        y += 128.0f;
-
-        y += 20.0f;
-        groupLabel(L"入口");
-        cardStart(62.0f);
-        switchAt(scrollX, scrollW, y, 62.0f, kIdTogglePinOcr, settings_.ocr.pinOcrEnabled);
-        DrawText(g, L"贴图右键识别文字", &fonts->setting,
-                 RectF(scrollX + 16.0f, y + 12.0f, 320, 18), textPrimary);
-        DrawText(g, L"在贴图上右键或按 O 识别原图，识别结果不包含标注", &fonts->desc,
-                 RectF(scrollX + 16.0f, y + 32.0f, 380, 16), textSecondary);
-        y += 62.0f;
+        g.DrawLine(&ocrDivider, scrollX + 16.0f, y + 126.0f, scrollX + scrollW - 16.0f,
+                   y + 126.0f);
+        DrawText(g, L"贴图识别始终可用：在贴图上右键选择「识别文字」，或在非标注模式下按 O。",
+                 &fonts->desc, RectF(scrollX + 16.0f, y + 134.0f, scrollW - 32.0f, 16),
+                 textSecondary);
+        y += 158.0f;
         break;
     }
     case Page::Recording: {
@@ -2069,21 +2080,28 @@ LRESULT SettingsWindow::Handle(HWND window, UINT message, WPARAM wParam, LPARAM 
     }
     case WM_LBUTTONDOWN: {
         const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
-        const int id = HitTest(point);
-        // 目录选择要在鼠标松开后做：在按下时弹模态文件对话框，会带着按下的鼠标键
-        // 进入它自己的模态循环，表现为对话框点不动 / 像卡死。
-        if (id != kIdNone && id != kIdDirectory) {
-            Click(id);
+        pressedId_ = HitTest(point);
+        if (pressedId_ != kIdNone) {
+            SetCapture(window);
         }
         return 0;
     }
     case WM_LBUTTONUP: {
         const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
-        if (HitTest(point) == kIdDirectory) {
-            Click(kIdDirectory);
+        const int id = HitTest(point);
+        const int pressed = pressedId_;
+        pressedId_ = kIdNone;
+        if (GetCapture() == window) {
+            ReleaseCapture();
+        }
+        if (id != kIdNone && id == pressed) {
+            Click(id);
         }
         return 0;
     }
+    case WM_CAPTURECHANGED:
+        pressedId_ = kIdNone;
+        return 0;
     case WM_MOUSEWHEEL: {
         const int delta = GET_WHEEL_DELTA_WPARAM(wParam);
         const int maxScroll = std::max(0, contentHeight_ - viewHeightDip_);

@@ -127,6 +127,9 @@ private:
     int contentHeight_ = 0;
     int viewHeightDip_ = 0;
     int hoverId_ = 0;
+    // 按下时记住命中的控件，松开时仍在该控件上才触发——按下去就执行会让「想拖一下」
+    // 或「按错了想移开」直接触发关闭/切换。
+    int pressedId_ = 0;
     int captureIndex_ = -1;
     std::wstring error_;
     // 页脚的状态行（检查更新 / 下载进度），与 error_（红底错误横幅）互斥。

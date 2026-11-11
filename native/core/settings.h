@@ -102,7 +102,6 @@ enum class RecordingAudioBitrate : std::int32_t { K128 = 128000, K192 = 192000 }
 struct OcrSettings {
     OcrEngine engine = OcrEngine::Native;
     bool autoCopy = false;
-    bool pinOcrEnabled = true;
     // 选好区域后自动开始识别；关掉则停在选区，等 Enter 或「识别」按钮确认。
     bool autoStart = true;
     // 选中的模型目录名（models\<model>）；空表示用随包内置的模型。
@@ -164,7 +163,7 @@ struct AppSettings {
                menuSize == other.menuSize && recordingDirectory == other.recordingDirectory &&
                convertFilePathsToImages == other.convertFilePathsToImages &&
                pinGlowEnabled == other.pinGlowEnabled && autoStart == other.autoStart && ocr.engine == other.ocr.engine &&
-               ocr.autoCopy == other.ocr.autoCopy && ocr.pinOcrEnabled == other.ocr.pinOcrEnabled &&
+               ocr.autoCopy == other.ocr.autoCopy &&
                ocr.autoStart == other.ocr.autoStart && ocr.model == other.ocr.model &&
                recording == other.recording;
     }

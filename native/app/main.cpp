@@ -1365,7 +1365,7 @@ int Run(const Options& options) {
     const auto pinOptions = [&]() {
         halocap::app::PinWindowOptions options;
         options.outline = liveSettings.pinGlowEnabled;
-        options.ocrEnabled = liveSettings.ocr.pinOcrEnabled;
+        options.ocrEnabled = true;
         options.jpeg = settings.screenshotFormat == core::ScreenshotFormat::Jpeg;
         return options;
     };
@@ -2340,15 +2340,18 @@ int Run(const Options& options) {
                 testWindow->Handle(), WM_NCHITTEST, 0,
                 MAKELPARAM(windowRect.left + 300, windowRect.top + 80));
             const bool draggable = dragHit == HTCAPTION;
-            const auto click = [&](int x, int y) {
-                const LPARAM point = MAKELPARAM(x, y);
+            // 自检里的坐标是 DIP；鼠标消息要按当前 DPI 缩放折算成客户区像素。
+            const double clickScale = testWindow->ScaleForTest() / 100.0;
+            const auto click = [&](int xDip, int yDip) {
+                const LPARAM point = MAKELPARAM(static_cast<int>(std::lround(xDip * clickScale)),
+                                                static_cast<int>(std::lround(yDip * clickScale)));
                 SendMessageW(testWindow->Handle(), WM_LBUTTONDOWN, MK_LBUTTON, point);
                 SendMessageW(testWindow->Handle(), WM_LBUTTONUP, 0, point);
             };
             click(800, 241);   // 通用页「开机自启」开关（组标签下方第一行）
             const std::int64_t clickStart = QpcNowUs();
             click(100, 273);   // 切到「录屏」页
-            click(793, 533);   // 倒计时选「5 秒」
+            click(793, 595);   // 倒计时选「5 秒」
             const double clickMs = static_cast<double>(QpcNowUs() - clickStart) / 1000.0;
             Sleep(120);
 

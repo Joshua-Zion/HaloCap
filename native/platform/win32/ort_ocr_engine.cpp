@@ -79,6 +79,11 @@ bool ReadDictionary(const std::string& path, std::vector<std::string>* dictionar
         *error = "dictionary is empty";
         return false;
     }
+    // PaddleOCR 的 use_space_char=True 会在字典末尾追加一个空格类；导出的 txt 里
+    // 没有这一行。不补的话 CTC 解不出空格，英文单词会连成一串。
+    if (dictionary->back() != " ") {
+        dictionary->push_back(" ");
+    }
     return true;
 }
 

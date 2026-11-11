@@ -568,7 +568,7 @@ const char* const kKnownLeafPaths[] = {
     "schemaVersion",   "hotkey",            "screenshotHotkey", "ocrHotkey",     "recordHotkey",
     "pinHotkey",       "screenshotFormat",  "menuSize",         "recordingDirectory",
     "convertFilePathsToImages", "pinGlowEnabled", "autoStart",
-    "ocr.engine",      "ocr.autoCopy",      "ocr.pinOcrEnabled", "ocr.autoStart",
+    "ocr.engine",      "ocr.autoCopy",      "ocr.autoStart",
     "ocr.model",       "ocr.modelVariant",
     "recording.resolution", "recording.frameRate", "recording.quality", "recording.recordCursor",
     "recording.countdown",  "recording.range",     "recording.systemAudio", "recording.microphone",
@@ -583,6 +583,8 @@ const char* const kDerivedLegacyPaths[] = {
     "recording.countdownSeconds",
     "recording.audioBitrateValue",
     "recording.wantsAudio",
+    // 2.2.1 去掉了「贴图右键识别文字」开关：入口一直存在，旧文件里的值忽略即可。
+    "ocr.pinOcrEnabled",
 };
 
 bool IsIn(const char* const* list, std::size_t count, std::string_view path) {
@@ -1070,7 +1072,6 @@ void ParseSettings(std::string_view utf8, AppSettings& settings, SettingsReadRep
     ReadEnumField(tree, "ocr.engine", kOcrEngineEntries, EntryCount(kOcrEngineEntries), settings.ocr.engine,
                   report);
     ReadBoolField(tree, "ocr.autoCopy", settings.ocr.autoCopy, report);
-    ReadBoolField(tree, "ocr.pinOcrEnabled", settings.ocr.pinOcrEnabled, report);
     ReadBoolField(tree, "ocr.autoStart", settings.ocr.autoStart, report);
     ReadStringField(tree, "ocr.model", settings.ocr.model, report);
     // 2.2.0 写的是「极速/高精度」二选一；同名的模型目录还在就沿用，避免升级后回到内置。
@@ -1125,7 +1126,6 @@ std::string SerializeSettings(const AppSettings& settings) {
     const std::size_t ocr = AddObject(tree, root, "ocr");
     AddText(tree, ocr, "engine", OcrEngineName(settings.ocr.engine));
     AddBoolean(tree, ocr, "autoCopy", settings.ocr.autoCopy);
-    AddBoolean(tree, ocr, "pinOcrEnabled", settings.ocr.pinOcrEnabled);
     AddBoolean(tree, ocr, "autoStart", settings.ocr.autoStart);
     AddText(tree, ocr, "model", settings.ocr.model);
 

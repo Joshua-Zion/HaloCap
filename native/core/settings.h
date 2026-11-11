@@ -105,6 +105,8 @@ struct OcrSettings {
     bool pinOcrEnabled = true;
     // 选好区域后自动开始识别；关掉则停在选区，等 Enter 或「识别」按钮确认。
     bool autoStart = true;
+    // OCR 模型变体：0 = PP-OCRv6 tiny（内置），1 = PP-OCRv6 small（需下载）。
+    std::int32_t modelVariant = 0;
 };
 
 struct RecordingSettings {
@@ -163,7 +165,8 @@ struct AppSettings {
                convertFilePathsToImages == other.convertFilePathsToImages &&
                pinGlowEnabled == other.pinGlowEnabled && autoStart == other.autoStart && ocr.engine == other.ocr.engine &&
                ocr.autoCopy == other.ocr.autoCopy && ocr.pinOcrEnabled == other.ocr.pinOcrEnabled &&
-               ocr.autoStart == other.ocr.autoStart && recording == other.recording;
+               ocr.autoStart == other.ocr.autoStart && ocr.modelVariant == other.ocr.modelVariant &&
+               recording == other.recording;
     }
 };
 

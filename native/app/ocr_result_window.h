@@ -65,8 +65,15 @@ public:
     double ElapsedMsForTest() const { return elapsedMs_; }
     core::IntRect PreviewRectForTest() const;
     void SetImageVisibleForTest(bool visible);
-    void SetLineViewForTest(bool lineView);
-    bool LineViewForTest() const { return lineView_; }
+    void SetLineViewForTest(bool lineView) {
+        SetViewMode(lineView ? ViewMode::Lines : ViewMode::Text);
+    }
+    bool LineViewForTest() const { return viewMode_ != ViewMode::Text; }
+    void SetBlockViewForTest(bool blocks) {
+        SetViewMode(blocks ? ViewMode::Blocks : ViewMode::Text);
+    }
+    bool BlockViewForTest() const { return viewMode_ == ViewMode::Blocks; }
+    int BlockCountForTest() const { return static_cast<int>(result_.blocks.size()); }
     int TextLineCountForTest() const {
         return text_ != nullptr ? static_cast<int>(SendMessageW(text_, EM_GETLINECOUNT, 0, 0)) : 0;
     }
@@ -97,6 +104,9 @@ public:
 
 private:
     enum class Stage { Loading, Success, Empty, Failed };
+
+    // 文本（可编辑的纯文本）/ 逐行（带行号）/ 版面（按识别出的内容块分组）。
+    enum class ViewMode { Text, Lines, Blocks };
 
     enum class Hit {
         None = 0,
@@ -140,7 +150,9 @@ private:
     void CopyAll();
     void CopyLine(std::size_t index);
 
-    void SetLineView(bool lineView);
+    void SetViewMode(ViewMode mode);
+    bool ShowingLines() const { return viewMode_ != ViewMode::Text; }
+    const std::wstring& ViewButtonLabel() const;
     void SetImageVisible(bool visible);
     void OpenSearch();
     void CloseSearch(bool focusWindow);
@@ -189,12 +201,16 @@ private:
     std::wstring warning_;
     int token_ = 0;
 
-    bool lineView_ = false;
+    ViewMode viewMode_ = ViewMode::Text;
     bool showImage_ = true;
     bool searchOpen_ = false;
-    // 逐行视图按「换行后的实际高度」排：长行不会被省略号截断。
+    // 逐行/版面视图按「换行后的实际高度」排：长行不会被省略号截断。
     int lineScrollY_ = 0;
     std::vector<int> lineHeights_;
+    // 版面视图里每行上方额外留的分块间距（与 lineHeights_ 一一对应）。
+    std::vector<int> lineGapAbove_;
+    // 每行所属的块下标；块首行用来画块标签与分隔。
+    std::vector<int> lineBlockIndex_;
     int lineTotalHeight_ = 0;
     int hoveredLine_ = -1;
     Hit hoveredHit_ = Hit::None;

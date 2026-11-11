@@ -86,6 +86,7 @@ private:
     void CopySummary();
     void CheckUpdate();
     void BeginUpdateDownload(const std::wstring& version);
+    void BeginOcrModelDownload();
     void OpenFolder(const std::wstring& path);
     void ChooseDirectory();
     std::wstring SummaryText() const;

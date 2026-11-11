@@ -543,8 +543,52 @@ OcrResult BuildResult(std::vector<OcrLine> lines, float lineTolerance) {
     }
 
     result.lines = std::move(ordered);
+    result.blocks = GroupLinesIntoBlocks(result.lines);
     result.plainText = ToPlainText(result);
     return result;
+}
+
+std::vector<OcrBlock> GroupLinesIntoBlocks(const std::vector<OcrLine>& lines,
+                                           float gapRatio) {
+    std::vector<OcrBlock> blocks;
+    if (lines.empty()) {
+        return blocks;
+    }
+
+    float heightSum = 0.0f;
+    for (const OcrLine& line : lines) {
+        heightSum += std::max(1.0f, line.box.Height());
+    }
+    const float averageHeight =
+        std::max(1.0f, heightSum / static_cast<float>(lines.size()));
+
+    OcrBlock current;
+    current.box = lines.front().box;
+    for (std::size_t index = 0; index < lines.size(); ++index) {
+        const OcrLine& line = lines[index];
+        if (index > 0) {
+            const OcrLine& previous = lines[index - 1];
+            const float verticalGap = line.box.top - previous.box.bottom;
+            // 水平投影完全错开：换列，例如同一行里隔得很远的右栏文字，
+            // 或左边一栏的正文下面是右边一栏的标题。
+            const float overlap =
+                std::min(current.box.right, line.box.right) -
+                std::max(current.box.left, line.box.left);
+            const bool columnJump = overlap < -2.5f * averageHeight;
+            if (verticalGap > gapRatio * averageHeight || columnJump) {
+                blocks.push_back(std::move(current));
+                current = OcrBlock{};
+                current.box = line.box;
+            }
+        }
+        current.lines.push_back(index);
+        current.box.left = std::min(current.box.left, line.box.left);
+        current.box.top = std::min(current.box.top, line.box.top);
+        current.box.right = std::max(current.box.right, line.box.right);
+        current.box.bottom = std::max(current.box.bottom, line.box.bottom);
+    }
+    blocks.push_back(std::move(current));
+    return blocks;
 }
 
 std::string ToPlainText(const OcrResult& result) {

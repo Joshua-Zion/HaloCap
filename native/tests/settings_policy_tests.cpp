@@ -2,6 +2,7 @@
 // 以及逐键修复与报告到底报了什么。这里不碰磁盘——磁盘那一半在 tools/store_probe 里。
 #include "settings.h"
 
+#include "ocr_model.h"
 #include "encoder.h"
 
 #include <cstdio>
@@ -303,6 +304,7 @@ void TestDefaults() {
     CheckTrue(!settings.ocr.autoCopy, "ocr autoCopy default");
     CheckTrue(settings.ocr.pinOcrEnabled, "ocr pinOcr default");
     CheckTrue(settings.ocr.autoStart, "ocr autoStart default");
+    CheckTrue(settings.ocr.modelVariant == 0, "ocr modelVariant default is tiny");
 
     const core::RecordingSettings& recording = settings.recording;
     CheckTrue(recording.resolution == core::RecordingResolution::Original, "resolution default");
@@ -393,6 +395,7 @@ void TestRoundTrip() {
     custom.ocr.autoCopy = true;
     custom.ocr.pinOcrEnabled = false;
     custom.ocr.autoStart = false;
+    custom.ocr.modelVariant = 1;
     custom.recording.resolution = core::RecordingResolution::P1440;
     custom.recording.frameRate = core::RecordingFrameRate::Sixty;
     custom.recording.quality = core::RecordingQuality::High;
@@ -629,6 +632,25 @@ void TestHotkeyParsing() {
     CheckList(noKey.report.repairedKeys, { "hotkey" }, "KeySymbol::None is not a hotkey");
 }
 
+void TestOcrModelCatalog() {
+    CheckTrue(core::kOcrModelVariantCount == 2, "two ocr model variants");
+    const core::OcrModelInfo& tiny = core::OcrModelInfoFor(core::OcrModelVariant::Tiny);
+    const core::OcrModelInfo& small = core::OcrModelInfoFor(core::OcrModelVariant::Small);
+    CheckTrue(tiny.bundled && !small.bundled, "tiny is bundled, small is downloaded");
+    CheckTrue(std::string(tiny.id) == "ppocrv6-tiny", "tiny id");
+    CheckTrue(std::string(small.id) == "ppocrv6-small", "small id");
+    CheckTrue(core::OcrModelVariantFromIndex(1) == core::OcrModelVariant::Small,
+              "index 1 is small");
+    CheckTrue(core::OcrModelVariantFromIndex(9) == core::OcrModelVariant::Tiny,
+              "out of range falls back to tiny");
+    const core::OcrModelDownload download = core::OcrModelDownloadFor(core::OcrModelVariant::Small);
+    CheckTrue(download.detUrl != nullptr && download.recUrl != nullptr &&
+                  download.dictUrl != nullptr,
+              "small has download urls");
+    CheckTrue(core::OcrModelDownloadFor(core::OcrModelVariant::Tiny).TotalBytes() == 0,
+              "tiny has nothing to download");
+}
+
 void TestUnrecognizedKeys() {
     Parsed dropped = Parse(R"({"menuSize":"Medium","mystery":1,"ocr":{"engine":"Model","threshold":5}})");
     CheckList(dropped.report.droppedKeys, { "mystery", "ocr.threshold" },
@@ -839,6 +861,7 @@ int main() {
     TestRoundTrip();
     TestEnumNames();
     TestRepairs();
+    TestOcrModelCatalog();
     TestHotkeyParsing();
     TestUnrecognizedKeys();
     TestSingleKeyRules();

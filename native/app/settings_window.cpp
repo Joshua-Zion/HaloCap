@@ -22,6 +22,7 @@
 
 #include "update.h"
 #include "version.h"
+#include "ocr_model.h"
 #include "soft_shadow.h"
 #include "win32_tray.h"
 #include "win32_update_fetch.h"
@@ -40,6 +41,38 @@ constexpr UINT kMsgDirectoryPicked = WM_APP + 0x51;
 constexpr UINT kMsgUpdateChecked = WM_APP + 0x60;
 constexpr UINT kMsgUpdateProgress = WM_APP + 0x61;   // wParam = 0..100
 constexpr UINT kMsgUpdateDownloaded = WM_APP + 0x62;
+// OCR 模型下载：进度与结果。
+constexpr UINT kMsgOcrModelProgress = WM_APP + 0x70;
+constexpr UINT kMsgOcrModelDownloaded = WM_APP + 0x71;
+
+struct OcrModelOutcome {
+    std::wstring error;
+};
+
+// OCR 高精度模型的本地目录与安装判定（三件模型文件 + 共用的分类模型）。
+std::wstring OcrSmallModelDirectory() {
+    wchar_t localAppData[MAX_PATH] = {};
+    if (GetEnvironmentVariableW(L"LOCALAPPDATA", localAppData, MAX_PATH) == 0) {
+        return {};
+    }
+    return std::wstring(localAppData) + L"\\HaloCap2\\models\\ppocrv6-small";
+}
+
+bool ModelFileExists(const std::wstring& directory, const char* name) {
+    if (directory.empty()) {
+        return false;
+    }
+    std::error_code error;
+    return std::filesystem::exists(std::filesystem::path(directory) / name, error);
+}
+
+bool OcrSmallModelInstalled() {
+    const std::wstring directory = OcrSmallModelDirectory();
+    return ModelFileExists(directory, core::kOcrModelDetName) &&
+           ModelFileExists(directory, core::kOcrModelRecName) &&
+           ModelFileExists(directory, core::kOcrModelDictName) &&
+           ModelFileExists(directory, core::kOcrModelClsName);
+}
 
 struct UpdateCheckOutcome {
     std::wstring tag;
@@ -81,6 +114,7 @@ enum : int {
     kIdDirectory = 210,
     kIdUpdate = 211,
     kIdCopySummary = 212,
+    kIdOcrModelDownload = 40,
 };
 
 // 分段控件的组号（id = kIdSegmentBase + group * 10 + option）。
@@ -93,6 +127,7 @@ enum : int {
     kGroupQuality = 5,
     kGroupRange = 6,
     kGroupCountdown = 7,
+    kGroupOcrModel = 8,
 };
 
 SettingsWindow* g_hotkeyOwner = nullptr;
@@ -852,6 +887,88 @@ void SettingsWindow::OpenFolder(const std::wstring& path) {
     }
 }
 
+void SettingsWindow::BeginOcrModelDownload() {
+    if (updateBusy_ || window_ == nullptr) {
+        return;
+    }
+    if (OcrSmallModelInstalled()) {
+        status_ = L"高精度模型已下载";
+        Render();
+        return;
+    }
+    updateBusy_ = true;
+    error_.clear();
+    status_ = L"正在下载模型 0%…";
+    Render();
+
+    const HWND window = window_;
+    const std::wstring clsSource =
+        Utf8ToWide(modelsDirectory_) + L"\\" + Utf8ToWide(core::kOcrModelClsName);
+    std::thread([window, clsSource]() {
+        auto* outcome = new OcrModelOutcome();
+        const std::wstring directory = OcrSmallModelDirectory();
+        if (directory.empty()) {
+            outcome->error = L"无法定位本地模型目录";
+        } else {
+            std::error_code ignored;
+            std::filesystem::create_directories(directory, ignored);
+            const core::OcrModelDownload files =
+                core::OcrModelDownloadFor(core::OcrModelVariant::Small);
+            const long long total = files.TotalBytes();
+            long long done = 0;
+            std::string error;
+            struct Item {
+                const char* url;
+                const char* name;
+                long long bytes;
+            };
+            const Item items[3] = {
+                { files.detUrl, core::kOcrModelDetName, files.detBytes },
+                { files.recUrl, core::kOcrModelRecName, files.recBytes },
+                { files.dictUrl, core::kOcrModelDictName, files.dictBytes },
+            };
+            bool ok = true;
+            for (const Item& item : items) {
+                const std::wstring target = directory + L"\\" + Utf8ToWide(item.name);
+                const long long doneBefore = done;
+                const bool fileOk = halocap::platform::win32::HttpDownloadToFile(
+                    Utf8ToWide(item.url), target,
+                    [window, doneBefore, total](std::int64_t received, std::int64_t) {
+                        if (total <= 0) {
+                            return;
+                        }
+                        int percent = static_cast<int>((doneBefore + received) * 100 / total);
+                        percent = std::clamp(percent, 0, 100);
+                        PostMessageW(window, kMsgOcrModelProgress,
+                                     static_cast<WPARAM>(percent), 0);
+                    },
+                    &error);
+                if (!fileOk) {
+                    ok = false;
+                    break;
+                }
+                done = doneBefore + item.bytes;
+            }
+            if (ok) {
+                // 分类模型与内置模型共用，复制一份到模型目录。
+                std::error_code copyError;
+                std::filesystem::copy_file(
+                    clsSource, std::filesystem::path(directory) / core::kOcrModelClsName,
+                    std::filesystem::copy_options::overwrite_existing, copyError);
+                if (copyError) {
+                    outcome->error = L"无法写入分类模型";
+                }
+            } else if (outcome->error.empty()) {
+                outcome->error = L"模型下载失败：" + Utf8ToWide(error);
+            }
+        }
+        if (PostMessageW(window, kMsgOcrModelDownloaded, 0, reinterpret_cast<LPARAM>(outcome)) ==
+            0) {
+            delete outcome;
+        }
+    }).detach();
+}
+
 void SettingsWindow::ChooseDirectory() {
     if (pickerOpen_ || window_ == nullptr) {
         return;
@@ -982,6 +1099,10 @@ void SettingsWindow::Click(int id) {
         ChooseDirectory();
         return;
     }
+    if (id == kIdOcrModelDownload) {
+        BeginOcrModelDownload();
+        return;
+    }
     if (id >= kIdHotkeyBase && id < kIdHotkeyBase + 5) {
         StartHotkeyCapture(id - kIdHotkeyBase);
         return;
@@ -1000,6 +1121,9 @@ void SettingsWindow::Click(int id) {
         case kGroupOcrEngine:
             settings_.ocr.engine =
                 option == 0 ? core::OcrEngine::Native : core::OcrEngine::Model;
+            break;
+        case kGroupOcrModel:
+            settings_.ocr.modelVariant = option == 1 ? 1 : 0;
             break;
         case kGroupResolution:
             settings_.recording.resolution = static_cast<core::RecordingResolution>(option);
@@ -1410,6 +1534,41 @@ void SettingsWindow::Render() {
         DrawText(g, L"关闭后，选好区域需按回车或点「识别」才开始", &fonts->desc,
                  RectF(scrollX + 16.0f, y + 32.0f, 380, 16), textSecondary);
         y += 62.0f;
+
+        y += 20.0f;
+        groupLabel(L"模型");
+        cardStart(124.0f);
+        segmentAt(scrollX + scrollW - cardPad, y, 62.0f, { L"极速", L"高精度" },
+                  kGroupOcrModel, settings_.ocr.modelVariant == 1 ? 1 : 0, 64.0f);
+        DrawText(g, L"识别模型", &fonts->setting,
+                 RectF(scrollX + 16.0f, y + 12.0f, 200, 18), textPrimary);
+        DrawText(g, L"极速内置；高精度对中英混排与小字更稳，需要下载", &fonts->desc,
+                 RectF(scrollX + 16.0f, y + 32.0f, 420, 16), textSecondary);
+        y += 62.0f;
+
+        divider(scrollX, scrollW);
+        {
+            const bool installed = OcrSmallModelInstalled();
+            DrawText(g, L"PP-OCRv6 small", &fonts->setting,
+                     RectF(scrollX + 16.0f, y + 12.0f, 220, 18), textPrimary);
+            DrawText(g, installed ? L"已下载，可在上方切换到「高精度」使用"
+                                  : L"未下载 · 约 31 MB · 更高精度、字典更全",
+                     &fonts->desc, RectF(scrollX + 16.0f, y + 32.0f, 380, 16), textSecondary);
+            if (!installed) {
+                const float buttonW = 72.0f;
+                const float buttonH = 30.0f;
+                const float bx = scrollX + scrollW - cardPad - buttonW;
+                const float by = y + (62.0f - buttonH) * 0.5f;
+                FillRoundRect(g, RectF(bx, by, buttonW, buttonH), 7.0f, accent);
+                DrawText(g, L"下载", &fonts->buttonBold, RectF(bx, by, buttonW, buttonH),
+                         Color(255, 255, 255, 255), StringAlignmentCenter);
+                AddHotspot(RECT{ static_cast<LONG>(bx), static_cast<LONG>(by),
+                                 static_cast<LONG>(bx + buttonW),
+                                 static_cast<LONG>(by + buttonH) },
+                           kIdOcrModelDownload);
+            }
+            y += 62.0f;
+        }
 
         y += 20.0f;
         groupLabel(L"引擎说明");
@@ -1879,6 +2038,31 @@ LRESULT SettingsWindow::Handle(HWND window, UINT message, WPARAM wParam, LPARAM 
                         MB_YESNO | MB_ICONINFORMATION) == IDYES) {
             OpenFolder(directory.wstring());
         }
+        return 0;
+    }
+    case kMsgOcrModelProgress: {
+        const int percent = static_cast<int>(wParam);
+        status_ = percent >= 100 ? std::wstring(L"正在写入模型…")
+                                 : L"正在下载模型 " + std::to_wstring(percent) + L"%…";
+        Render();
+        return 0;
+    }
+    case kMsgOcrModelDownloaded: {
+        updateBusy_ = false;
+        auto* outcome = reinterpret_cast<OcrModelOutcome*>(lParam);
+        if (outcome == nullptr) {
+            return 0;
+        }
+        const std::wstring failure = outcome->error;
+        delete outcome;
+        if (!failure.empty()) {
+            status_.clear();
+            Render();
+            MessageBoxW(window_, failure.c_str(), L"HaloCap OCR", MB_OK | MB_ICONWARNING);
+            return 0;
+        }
+        status_ = L"高精度模型已下载，可在上方切换使用";
+        Render();
         return 0;
     }
     case WM_KEYDOWN:

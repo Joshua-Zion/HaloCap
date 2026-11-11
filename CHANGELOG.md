@@ -2,6 +2,24 @@
 
 本文件记录 HaloCap 的版本变化，按版本从新到旧排列。安装与使用说明见 [README](README.md)，发布包见 [Releases](https://github.com/Joshua-Zion/HaloCap/releases)。
 
+## 2.2.0
+
+增强文字识别：可下载并切换更高精度的模型，结果窗口新增按内容块排版的「版面」视图。
+
+### 新增 / 改进
+
+- 「设置 → 文字识别 → 模型」新增档位选择：**极速**（PP-OCRv6 tiny，随包内置）与**高精度**（PP-OCRv6 small，约 31 MB）。选择高精度后点「下载」即从本仓库的 `models-v1` Release 流式下载检测、识别模型与字典到 `%LOCALAPPDATA%\HaloCap2\models\ppocrv6-small\`，页脚显示进度；已下载时点同一按钮只会提示「高精度模型已下载」，不会重复传输。档位写入 `settings.json` 的 `ocr.modelVariant`（`ppocrv6-tiny` / `ppocrv6-small`），重启后保持。
+- 识别时按当前档位解析模型目录：高精度模型齐全才用它，缺文件时自动回落到内置极速模型，不会因为模型不完整而识别失败。
+- 结果窗口的视图按钮改为循环切换「文本 → 逐行 → 版面」。版面视图在 core 里按几何位置聚块（行距超过平均行高的 0.8 倍或水平方向完全错开就另起一块），块首标「块 N」，块间画分隔线并留出间距，块内仍保留逐行换行与单击复制。
+- 设置窗口的报告字段新增 `APP_OCR_MODEL_VARIANT` 与 `APP_OCR_MODEL_DIR`，便于自检核对实际使用的模型。
+
+### 验证
+
+- 18/18 单元测试通过；新增版面聚块用例（紧凑行归一块、段落间距与换列各自成块、空输入无块）与模型目录/下载目录的目录项、索引映射、字节数用例。
+- OCR 搜索自检新增 `APP_OCR_SEARCH_BLOCKVIEW=1`、`APP_OCR_SEARCH_BLOCKS=2`：两段文字聚成两块，视图与行数均正确。
+- 真机切换验证：设置 `ocr.modelVariant=1` 后 `APP_OCR_MODEL_VARIANT=1`、`APP_OCR_MODEL_DIR=…\HaloCap2\models\ppocrv6-small`，模型识别 11 行成功；恢复设置后回到内置模型。
+- 托管资源：GitHub Release `models-v1` 提供 `PP-OCRv6_det_small.onnx`（9,929,594 字节）、`PP-OCRv6_rec_small.onnx`（21,234,383 字节）、`ppocrv6_dict.txt`（74,947 字节），下载地址均返回 200。
+
 ## 2.1.0
 
 完善「检查更新」：直接查询 GitHub Releases 的最新版本，有更新时弹窗提示，并可在应用内下载更新包。

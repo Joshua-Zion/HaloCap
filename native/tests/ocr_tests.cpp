@@ -240,6 +240,29 @@ void TestBuildResultKeepsTightRowOrder() {
     }
 }
 
+// 版面聚块：行距紧的行并成一块，空出明显行距或换列时另起一块。
+void TestGroupLinesIntoBlocks() {
+    std::vector<ocr::OcrLine> lines;
+    lines.push_back({ "标题", core::Rect{ 10.0f, 10.0f, 210.0f, 34.0f }, 0.9f });
+    lines.push_back({ "第一段第一行", core::Rect{ 10.0f, 44.0f, 410.0f, 64.0f }, 0.9f });
+    lines.push_back({ "第一段第二行", core::Rect{ 10.0f, 68.0f, 410.0f, 88.0f }, 0.9f });
+    lines.push_back({ "第二段", core::Rect{ 10.0f, 120.0f, 410.0f, 140.0f }, 0.9f });
+    lines.push_back({ "右栏", core::Rect{ 600.0f, 120.0f, 700.0f, 140.0f }, 0.9f });
+
+    const std::vector<ocr::OcrBlock> blocks = ocr::GroupLinesIntoBlocks(lines);
+    CheckEqual(static_cast<long long>(blocks.size()), 3, "three layout blocks");
+    if (blocks.size() == 3) {
+        CheckEqual(static_cast<long long>(blocks[0].lines.size()), 3,
+                   "tight lines share one block");
+        CheckEqual(static_cast<long long>(blocks[1].lines.size()), 1, "paragraph gap splits");
+        CheckEqual(static_cast<long long>(blocks[2].lines.size()), 1, "column jump splits");
+        CheckNear(blocks[0].box.bottom, 88.0f, 0.01f, "block box covers its lines");
+        CheckEqual(static_cast<long long>(blocks[2].lines[0]), 4, "block keeps line indices");
+    }
+    CheckEqual(static_cast<long long>(ocr::GroupLinesIntoBlocks({}).size()), 0,
+               "no lines means no blocks");
+}
+
 // 行聚类：同一行的碎片按 left 排序，竖直中心拉开半个行高以上就分行。
 void TestGroupTextBoxesIntoLines() {
     std::vector<core::Rect> boxes;
@@ -319,6 +342,7 @@ int main() {
     TestBuildResultMergesRowFragments();
     TestBuildResultSanitize();
     TestBuildResultKeepsTightRowOrder();
+    TestGroupLinesIntoBlocks();
     TestGroupTextBoxesIntoLines();
     TestMergeRowBoxes();
     TestParseOcrLineRecord();

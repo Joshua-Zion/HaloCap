@@ -30,6 +30,7 @@
 #include "dxgi_desktop_duplication.h"
 #include "mf_h264_encoder.h"
 #include "ocr_engine.h"
+#include "ocr_model.h"
 #include "ocr_result_window.h"
 #include "ocr_worker.h"
 #include "ort_ocr_engine.h"
@@ -809,6 +810,25 @@ std::string ResolveOcrModelDirectory() {    if (const char* environment = std::g
     return {};
 }
 
+// 按设置里选的模型变体解析目录：Small 需要已经下载（目录里三件齐），否则退回内置 Tiny。
+std::string ResolveOcrModelDirectoryFor(std::int32_t variantIndex) {
+    const core::OcrModelVariant variant = core::OcrModelVariantFromIndex(variantIndex);
+    if (variant == core::OcrModelVariant::Small) {
+        wchar_t localAppData[MAX_PATH] = {};
+        if (GetEnvironmentVariableW(L"LOCALAPPDATA", localAppData, MAX_PATH) != 0) {
+            const std::filesystem::path directory =
+                std::filesystem::path(localAppData) / "HaloCap2" / "models" / "ppocrv6-small";
+            std::error_code error;
+            if (std::filesystem::exists(directory / core::kOcrModelDetName, error) &&
+                std::filesystem::exists(directory / core::kOcrModelRecName, error) &&
+                std::filesystem::exists(directory / core::kOcrModelDictName, error)) {
+                return directory.string();
+            }
+        }
+    }
+    return ResolveOcrModelDirectory();
+}
+
 int Run(const Options& options) {
     // DPI 必须在枚举输出与建窗口之前设好，否则坐标按 DIP 算（1.x 与采集 seam 的老坑）。
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
@@ -858,6 +878,9 @@ int Run(const Options& options) {
     AddInt(report, "APP_SETTINGS_REPAIRED", static_cast<long long>(loaded.report.repairedKeys.size()));
     AddInt(report, "APP_SETTINGS_DROPPED", static_cast<long long>(loaded.report.droppedKeys.size()));
     AddText(report, "APP_RECORD_DIRECTORY", liveSettings.recordingDirectory);
+    AddInt(report, "APP_OCR_MODEL_VARIANT", liveSettings.ocr.modelVariant);
+    AddText(report, "APP_OCR_MODEL_DIR",
+            ResolveOcrModelDirectoryFor(liveSettings.ocr.modelVariant));
 
     // ---- 2) 托盘与热键 ----
     core::TrayMenuState trayState;
@@ -1327,12 +1350,13 @@ int Run(const Options& options) {
 
     // OCR 识别在后台线程跑 worker，完成后 PostMessage 回结果窗口。结果窗口一打开就显示
     // 「正在识别」，切换引擎/重试走的都是这条路径。
-    const auto startOcr = [](core::OcrEngine engine, int token, const std::uint8_t* bgra,
-                             int width, int height, HWND notify) {
+    const auto startOcr = [&liveSettings](core::OcrEngine engine, int token,
+                                          const std::uint8_t* bgra, int width, int height,
+                                          HWND notify) {
         auto pixels = std::make_shared<std::vector<std::uint8_t>>(
             bgra, bgra + static_cast<std::size_t>(width) * height * 4);
         const std::string engineName = engine == core::OcrEngine::Native ? "winrt" : "pp";
-        std::string models = ResolveOcrModelDirectory();
+        std::string models = ResolveOcrModelDirectoryFor(liveSettings.ocr.modelVariant);
         std::thread([pixels, width, height, engine, token, notify, engineName,
                      models]() mutable {
             auto* outcome = new halocap::app::OcrOutcome();
@@ -2745,6 +2769,8 @@ int Run(const Options& options) {
         bool clearOk = false;
         bool repaintOk = false;
         bool lineViewOk = false;
+        bool blockViewOk = false;
+        int blockCount = 0;
         bool viewStableOk = false;
         bool dragStableOk = false;
         bool editOk = false;
@@ -2821,6 +2847,46 @@ int Run(const Options& options) {
             viewStableOk = viewStable;
             AddFlag(report, "APP_OCR_SEARCH_VIEW_STABLE", viewStable);
 
+            // 版面视图：两段文字（中间空出明显行距）必须聚成两块，块首行带「块 N」标签。
+            {
+                std::vector<core::ocr::OcrLine> paragraphLines;
+                const char* const paragraphTexts[] = { "第一段第一行", "第一段第二行",
+                                                       "第二段" };
+                const float paragraphTops[] = { 20.0f, 66.0f, 150.0f };
+                for (int i = 0; i < 3; ++i) {
+                    core::ocr::OcrLine line;
+                    line.text = paragraphTexts[i];
+                    line.box = core::Rect{ 20.0f, paragraphTops[i], 420.0f,
+                                           paragraphTops[i] + 32.0f };
+                    line.confidence = 0.9f;
+                    paragraphLines.push_back(line);
+                }
+                const core::ocr::OcrResult paragraph =
+                    core::ocr::BuildResult(std::move(paragraphLines));
+                searchWindow->PresentResultForTest(paragraph, 0.0);
+                const bool textViewBefore = !searchWindow->BlockViewForTest();
+                searchWindow->SetBlockViewForTest(true);
+                UpdateWindow(searchWindow->Handle());
+                Sleep(250);
+                blockCount = searchWindow->BlockCountForTest();
+                blockViewOk = textViewBefore && searchWindow->BlockViewForTest() &&
+                              searchWindow->LineViewForTest() && blockCount == 2 &&
+                              searchWindow->LineCountForTest() == 3;
+                halocap::platform::win32::DesktopImage blocksDesktop;
+                if (halocap::platform::win32::GrabPrimaryDesktop(blocksDesktop)) {
+                    halocap::platform::win32::SaveBgraPng(
+                        options.ocrSearchSelftestPath + L".blocks.png",
+                        blocksDesktop.bgra.data(), blocksDesktop.width,
+                        blocksDesktop.height, blocksDesktop.width * 4);
+                }
+                searchWindow->SetBlockViewForTest(false);
+                searchWindow->PresentResultForTest(result, 0.0);
+                UpdateWindow(searchWindow->Handle());
+                Sleep(150);
+            }
+            AddFlag(report, "APP_OCR_SEARCH_BLOCKVIEW", blockViewOk);
+            AddInt(report, "APP_OCR_SEARCH_BLOCKS", blockCount);
+
             // 拖动之后点按钮不许复位：把窗口挪开，再切逐行/文本，位置必须保持挪后的。
             RECT dragged{};
             GetWindowRect(searchWindow->Handle(), &dragged);
@@ -2860,7 +2926,8 @@ int Run(const Options& options) {
         AddInt(report, "APP_OCR_SEARCH_GREEN_OFF", cleared.green);
         AddInt(report, "APP_OCR_SEARCH_BLUE_OFF", cleared.blue);
         ocrSearchSelftestOk = opened && counterOk && wrapOk && caseOk && noneOk && clearOk &&
-                              repaintOk && lineViewOk && viewStableOk && dragStableOk && editOk;
+                              repaintOk && lineViewOk && blockViewOk && viewStableOk &&
+                              dragStableOk && editOk;
         log.Info(ocrSearchSelftestOk ? "ocr search selftest: ok" : "ocr search selftest: failed");
         running = false;
     }

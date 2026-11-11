@@ -44,8 +44,16 @@ struct OcrLine {
     float confidence = 0.0f;
 };
 
+// 版面块：按几何位置把连续的行聚成一个内容块（段落、卡片、图注都算一块）。
+// lines 是 lines 数组的下标，保持阅读顺序；box 是块的外接框。
+struct OcrBlock {
+    std::vector<std::size_t> lines;
+    Rect box;
+};
+
 struct OcrResult {
     std::vector<OcrLine> lines;
+    std::vector<OcrBlock> blocks;
     std::string plainText;
 };
 
@@ -94,6 +102,11 @@ std::string DecodeCtc(const float* logits, int timeSteps, int classes,
 
 // 把识别结果按阅读顺序排好（同一行的按 x 排，不同行按 y 排）并生成纯文本。
 OcrResult BuildResult(std::vector<OcrLine> lines, float lineTolerance = 6.0f);
+
+// 把已经排好阅读顺序的行按几何位置聚成内容块：行间距超过 gapRatio 倍平均行高，
+// 或与当前块的水平投影完全错开（换列）就开新块。blocks 为空表示没有行。
+std::vector<OcrBlock> GroupLinesIntoBlocks(const std::vector<OcrLine>& lines,
+                                           float gapRatio = 0.8f);
 
 std::vector<std::size_t> FindMatchingLines(const OcrResult& result, std::string_view query);
 

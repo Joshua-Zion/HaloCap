@@ -15,6 +15,7 @@
     path.cpp
     mosaic.cpp
     ocr.cpp
+    ocr_model.cpp
     update.cpp
     clipboard.cpp
 )

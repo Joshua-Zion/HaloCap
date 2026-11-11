@@ -1,57 +1,74 @@
 #include "ocr_model.h"
 
 #include <algorithm>
+#include <cctype>
+#include <string_view>
 
 namespace halocap::core {
 
 namespace {
 
-const OcrModelInfo kCatalog[kOcrModelVariantCount] = {
-    { OcrModelVariant::Tiny, "ppocrv6-tiny", "极速", "PP-OCRv6 tiny · 随程序内置，速度快、占用低", true },
-    { OcrModelVariant::Small, "ppocrv6-small", "高精度",
-      "PP-OCRv6 small · 更强的小字/混排识别，需要下载（约 31 MB）", false },
-};
-
-constexpr const char* kModelsBase =
-    "https://github.com/Joshua-Zion/HaloCap/releases/download/models-v1/";
-
-// Small 的三个下载文件（det/rec/字典）。cls 与内置模型共用，下载后会从内置目录复制。
-const OcrModelDownload kSmallDownload{
-    "https://github.com/Joshua-Zion/HaloCap/releases/download/models-v1/PP-OCRv6_det_small.onnx",
-    "https://github.com/Joshua-Zion/HaloCap/releases/download/models-v1/PP-OCRv6_rec_small.onnx",
-    "https://github.com/Joshua-Zion/HaloCap/releases/download/models-v1/ppocrv6_dict.txt",
-    9929594,
-    21234383,
-    74947,
-};
-
-}  // namespace
-
-const OcrModelInfo* OcrModelCatalog() {
-    return kCatalog;
+std::string Lower(std::string text) {
+    std::transform(text.begin(), text.end(), text.begin(),
+                   [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+    return text;
 }
 
-const OcrModelInfo& OcrModelInfoFor(OcrModelVariant variant) {
-    const std::int32_t index = OcrModelVariantIndex(variant);
-    return kCatalog[std::clamp(index, 0, kOcrModelVariantCount - 1)];
+bool EndsWith(std::string_view text, std::string_view suffix) {
+    return text.size() >= suffix.size() &&
+           text.compare(text.size() - suffix.size(), suffix.size(), suffix) == 0;
 }
 
-OcrModelVariant OcrModelVariantFromIndex(std::int32_t index) {
-    if (index == static_cast<std::int32_t>(OcrModelVariant::Small)) {
-        return OcrModelVariant::Small;
+std::string FirstMatch(const std::vector<std::string>& names, std::string_view suffix,
+                       std::string_view keyword) {
+    for (const std::string& name : names) {
+        const std::string lower = Lower(name);
+        if (EndsWith(lower, suffix) && lower.find(keyword) != std::string::npos) {
+            return name;
+        }
     }
-    return OcrModelVariant::Tiny;
+    return {};
 }
 
-std::int32_t OcrModelVariantIndex(OcrModelVariant variant) {
-    return static_cast<std::int32_t>(variant);
-}
-
-OcrModelDownload OcrModelDownloadFor(OcrModelVariant variant) {
-    if (variant == OcrModelVariant::Small) {
-        return kSmallDownload;
+std::string FirstWithSuffix(const std::vector<std::string>& names, std::string_view suffix) {
+    for (const std::string& name : names) {
+        if (EndsWith(Lower(name), suffix)) {
+            return name;
+        }
     }
-    return OcrModelDownload{};
+    return {};
+}
+
+}
+
+OcrModelFiles DetectOcrModelFiles(const std::vector<std::string>& fileNames) {
+    OcrModelFiles files;
+    files.det = FirstMatch(fileNames, ".onnx", "det");
+    files.rec = FirstMatch(fileNames, ".onnx", "rec");
+    files.cls = FirstMatch(fileNames, ".onnx", "cls");
+    if (files.cls.empty()) {
+        files.cls = FirstMatch(fileNames, ".onnx", "textline");
+    }
+    files.dict = FirstMatch(fileNames, ".txt", "dict");
+    if (files.dict.empty()) {
+        files.dict = FirstWithSuffix(fileNames, ".txt");
+    }
+    return files;
+}
+
+const OcrModelDownload& OcrModelSmallDownload() {
+    static const OcrModelDownload download{
+        "ppocrv6-small",
+        "ppocrv6-small",
+        "PP-OCRv6 高精度",
+        "https://github.com/Joshua-Zion/HaloCap/releases/download/models-v1/PP-OCRv6_det_small.onnx",
+        "https://github.com/Joshua-Zion/HaloCap/releases/download/models-v1/PP-OCRv6_rec_small.onnx",
+        "https://github.com/Joshua-Zion/HaloCap/releases/download/models-v1/ppocrv6_dict.txt",
+        9929594,
+        21234383,
+        74947,
+    };
+    return download;
 }
 
 }

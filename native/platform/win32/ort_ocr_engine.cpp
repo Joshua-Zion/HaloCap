@@ -194,7 +194,9 @@ bool OrtOcrEngine::Initialize(const core::OcrEngineConfig& config, std::string* 
                               &impl_->recInput, &impl_->recOutput, error)) {
         return false;
     }
-    if (!impl_->CreateSession(config.modelDirectory + "\\" + config.clsModel, &impl_->cls,
+    const std::string clsDirectory =
+        config.clsDirectory.empty() ? config.modelDirectory : config.clsDirectory;
+    if (!impl_->CreateSession(clsDirectory + "\\" + config.clsModel, &impl_->cls,
                               &impl_->clsInput, &impl_->clsOutput, error)) {
         return false;
     }

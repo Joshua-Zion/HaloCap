@@ -51,6 +51,11 @@ public:
     int ScaleForTest() const { return static_cast<int>(scale_ * 100.0f + 0.5f); }
     bool HookInstalledForTest() const { return keyHook_ != nullptr; }
     int HookEventsForTest() const { return hookEvents_; }
+    // 模型下载自检：驱动真实下载线程，并读回进度消息条数与列表规模。
+    void BeginOcrModelDownloadForTest() { BeginOcrModelDownload(); }
+    bool ModelDownloadBusyForTest() const { return updateBusy_; }
+    int ModelProgressUpdatesForTest() const { return modelProgressUpdates_; }
+    int ModelCountForTest() const { return static_cast<int>(ocrModels_.size()); }
 
 private:
     enum class Page : int {
@@ -65,6 +70,14 @@ private:
     struct Hotspot {
         RECT rect{};
         int id = 0;
+    };
+
+    // 设置页「模型」列表里的一项：一个含 det/rec/字典的目录。
+    struct OcrModelEntry {
+        std::wstring id;        // 目录名；空 = 随包内置
+        std::wstring title;
+        std::wstring detail;
+        bool builtin = false;
     };
 
     static bool EnsureClass();
@@ -87,6 +100,7 @@ private:
     void CheckUpdate();
     void BeginUpdateDownload(const std::wstring& version);
     void BeginOcrModelDownload();
+    void RefreshOcrModels();
     void OpenFolder(const std::wstring& path);
     void ChooseDirectory();
     std::wstring SummaryText() const;
@@ -118,6 +132,8 @@ private:
     // 页脚的状态行（检查更新 / 下载进度），与 error_（红底错误横幅）互斥。
     std::wstring status_;
     bool updateBusy_ = false;
+    std::vector<OcrModelEntry> ocrModels_;
+    int modelProgressUpdates_ = 0;
     HHOOK keyHook_ = nullptr;
     int hookEvents_ = 0;
     bool ctrlDown_ = false;

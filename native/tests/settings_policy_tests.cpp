@@ -304,7 +304,7 @@ void TestDefaults() {
     CheckTrue(!settings.ocr.autoCopy, "ocr autoCopy default");
     CheckTrue(settings.ocr.pinOcrEnabled, "ocr pinOcr default");
     CheckTrue(settings.ocr.autoStart, "ocr autoStart default");
-    CheckTrue(settings.ocr.modelVariant == 0, "ocr modelVariant default is tiny");
+    CheckTrue(settings.ocr.model.empty(), "ocr model default is the bundled model");
 
     const core::RecordingSettings& recording = settings.recording;
     CheckTrue(recording.resolution == core::RecordingResolution::Original, "resolution default");
@@ -395,7 +395,7 @@ void TestRoundTrip() {
     custom.ocr.autoCopy = true;
     custom.ocr.pinOcrEnabled = false;
     custom.ocr.autoStart = false;
-    custom.ocr.modelVariant = 1;
+    custom.ocr.model = "ppocrv6-small";
     custom.recording.resolution = core::RecordingResolution::P1440;
     custom.recording.frameRate = core::RecordingFrameRate::Sixty;
     custom.recording.quality = core::RecordingQuality::High;
@@ -569,6 +569,19 @@ void TestRepairs() {
     CheckEqual(badVersion.report.schemaVersion, 0, "repaired schemaVersion reads as unset");
 }
 
+void TestOcrModelMigration() {
+    // 2.2.0 的二选一写法：small 直接映射到同名模型目录。
+    Parsed legacy = Parse(R"({"ocr":{"modelVariant":"ppocrv6-small"}})");
+    CheckTrue(legacy.settings.ocr.model == "ppocrv6-small", "legacy small maps to a model folder");
+    CheckList(legacy.report.migratedKeys, { "ocr.modelVariant" }, "legacy key is migrated");
+    CheckEmpty(legacy.report.droppedKeys, "legacy key is not dropped");
+
+    // 2.2.1 的目录名优先；旧值不再覆盖它。
+    Parsed current = Parse(R"({"ocr":{"model":"my-model","modelVariant":"ppocrv6-small"}})");
+    CheckTrue(current.settings.ocr.model == "my-model", "explicit model wins over legacy");
+    CheckEmpty(current.report.migratedKeys, "explicit model is not a migration");
+}
+
 void TestHotkeyParsing() {
     // 2.0 的规范文本：自己写出去的必须能读回来。
     Parsed text = Parse(R"({"hotkey":"Ctrl+Alt+K"})");
@@ -632,23 +645,36 @@ void TestHotkeyParsing() {
     CheckList(noKey.report.repairedKeys, { "hotkey" }, "KeySymbol::None is not a hotkey");
 }
 
-void TestOcrModelCatalog() {
-    CheckTrue(core::kOcrModelVariantCount == 2, "two ocr model variants");
-    const core::OcrModelInfo& tiny = core::OcrModelInfoFor(core::OcrModelVariant::Tiny);
-    const core::OcrModelInfo& small = core::OcrModelInfoFor(core::OcrModelVariant::Small);
-    CheckTrue(tiny.bundled && !small.bundled, "tiny is bundled, small is downloaded");
-    CheckTrue(std::string(tiny.id) == "ppocrv6-tiny", "tiny id");
-    CheckTrue(std::string(small.id) == "ppocrv6-small", "small id");
-    CheckTrue(core::OcrModelVariantFromIndex(1) == core::OcrModelVariant::Small,
-              "index 1 is small");
-    CheckTrue(core::OcrModelVariantFromIndex(9) == core::OcrModelVariant::Tiny,
-              "out of range falls back to tiny");
-    const core::OcrModelDownload download = core::OcrModelDownloadFor(core::OcrModelVariant::Small);
+void TestOcrModelFiles() {
+    // 官方 small 的文件名：大小写和前缀都不同，仍然按关键字认出来。
+    const core::OcrModelFiles official = core::DetectOcrModelFiles(
+        { "PP-OCRv6_det_small.onnx", "PP-OCRv6_rec_small.onnx", "ppocrv6_dict.txt" });
+    CheckTrue(official.Complete(), "official small set is complete");
+    CheckTrue(official.det == "PP-OCRv6_det_small.onnx", "det picked by keyword");
+    CheckTrue(official.rec == "PP-OCRv6_rec_small.onnx", "rec picked by keyword");
+    CheckTrue(official.dict == "ppocrv6_dict.txt", "dict picked by keyword");
+    CheckTrue(official.cls.empty(), "cls is optional");
+
+    // 用户自己的命名：方向分类用 textline 也能认；没有 dict 关键字时退回第一个 txt。
+    const core::OcrModelFiles custom = core::DetectOcrModelFiles(
+        { "model_det.onnx", "model_rec.onnx", "ppocrv5_textline_cls.onnx", "labels.txt" });
+    CheckTrue(custom.Complete() && custom.cls == "ppocrv5_textline_cls.onnx",
+              "textline onnx is the classifier");
+    CheckTrue(custom.dict == "labels.txt", "first txt is the dictionary fallback");
+
+    // 缺 rec 或字典的目录不算可用模型。
+    CheckTrue(!core::DetectOcrModelFiles({ "det.onnx", "dict.txt" }).Complete(),
+              "missing rec is incomplete");
+    CheckTrue(!core::DetectOcrModelFiles({ "det.onnx", "rec.onnx" }).Complete(),
+              "missing dictionary is incomplete");
+    CheckTrue(!core::DetectOcrModelFiles({}).Complete(), "empty directory is incomplete");
+
+    const core::OcrModelDownload& download = core::OcrModelSmallDownload();
     CheckTrue(download.detUrl != nullptr && download.recUrl != nullptr &&
                   download.dictUrl != nullptr,
               "small has download urls");
-    CheckTrue(core::OcrModelDownloadFor(core::OcrModelVariant::Tiny).TotalBytes() == 0,
-              "tiny has nothing to download");
+    CheckTrue(download.TotalBytes() == 9929594 + 21234383 + 74947,
+              "small download size is the sum of its files");
 }
 
 void TestUnrecognizedKeys() {
@@ -861,7 +887,8 @@ int main() {
     TestRoundTrip();
     TestEnumNames();
     TestRepairs();
-    TestOcrModelCatalog();
+    TestOcrModelFiles();
+    TestOcrModelMigration();
     TestHotkeyParsing();
     TestUnrecognizedKeys();
     TestSingleKeyRules();

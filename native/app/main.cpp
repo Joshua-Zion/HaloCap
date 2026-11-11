@@ -147,6 +147,7 @@ struct Options {
 
     // 非空 = 无人值守的设置页自检：打开六页设置 → 抓图 → 退出。
     std::wstring settingsSelftestPath;
+    std::wstring ocrModelDownloadSelftestPath;
     std::wstring settingsClickSelftestPath;
 
     // 非空 = 无人值守的热键自检：注入真按键走一遍捕获/冲突/取消/保存闸门。
@@ -401,6 +402,8 @@ Options ParseOptions(int argc, char** argv) {
             options.hotkeyLiveSelftestPath = Utf8ToWide(argv[++i]);
         } else if (argument == "--ocr-search-selftest" && i + 1 < argc) {
             options.ocrSearchSelftestPath = Utf8ToWide(argv[++i]);
+        } else if (argument == "--ocr-model-download-selftest" && i + 1 < argc) {
+            options.ocrModelDownloadSelftestPath = Utf8ToWide(argv[++i]);
         } else if (argument == "--settings-page" && i + 1 < argc) {
             options.settingsSelftestPage = std::atoi(argv[++i]);
         } else if (argument == "--radial-click-selftest" && i + 1 < argc) {
@@ -810,19 +813,38 @@ std::string ResolveOcrModelDirectory() {    if (const char* environment = std::g
     return {};
 }
 
-// 按设置里选的模型变体解析目录：Small 需要已经下载（目录里三件齐），否则退回内置 Tiny。
-std::string ResolveOcrModelDirectoryFor(std::int32_t variantIndex) {
-    const core::OcrModelVariant variant = core::OcrModelVariantFromIndex(variantIndex);
-    if (variant == core::OcrModelVariant::Small) {
+std::vector<std::string> ListModelFiles(const std::filesystem::path& directory) {
+    std::vector<std::string> names;
+    std::error_code error;
+    for (const auto& entry : std::filesystem::directory_iterator(directory, error)) {
+        if (entry.is_regular_file(error)) {
+            names.push_back(WideToUtf8(entry.path().filename().wstring()));
+        }
+    }
+    std::sort(names.begin(), names.end());
+    return names;
+}
+
+// 按设置里选的模型目录名解析：先找用户模型目录，再找程序目录；都没有就用内置模型。
+std::string ResolveOcrModelDirectoryFor(const std::string& modelId) {
+    if (!modelId.empty()) {
+        std::vector<std::filesystem::path> roots;
+        wchar_t executable[MAX_PATH] = {};
+        if (GetModuleFileNameW(nullptr, executable, MAX_PATH) != 0) {
+            roots.push_back(std::filesystem::path(executable).parent_path() / "models");
+        }
         wchar_t localAppData[MAX_PATH] = {};
         if (GetEnvironmentVariableW(L"LOCALAPPDATA", localAppData, MAX_PATH) != 0) {
-            const std::filesystem::path directory =
-                std::filesystem::path(localAppData) / "HaloCap2" / "models" / "ppocrv6-small";
+            roots.push_back(std::filesystem::path(localAppData) / "HaloCap2" / "models");
+        }
+        for (const std::filesystem::path& root : roots) {
+            const std::filesystem::path candidate = root / modelId;
             std::error_code error;
-            if (std::filesystem::exists(directory / core::kOcrModelDetName, error) &&
-                std::filesystem::exists(directory / core::kOcrModelRecName, error) &&
-                std::filesystem::exists(directory / core::kOcrModelDictName, error)) {
-                return directory.string();
+            if (!std::filesystem::is_directory(candidate, error)) {
+                continue;
+            }
+            if (core::DetectOcrModelFiles(ListModelFiles(candidate)).Complete()) {
+                return candidate.string();
             }
         }
     }
@@ -878,9 +900,9 @@ int Run(const Options& options) {
     AddInt(report, "APP_SETTINGS_REPAIRED", static_cast<long long>(loaded.report.repairedKeys.size()));
     AddInt(report, "APP_SETTINGS_DROPPED", static_cast<long long>(loaded.report.droppedKeys.size()));
     AddText(report, "APP_RECORD_DIRECTORY", liveSettings.recordingDirectory);
-    AddInt(report, "APP_OCR_MODEL_VARIANT", liveSettings.ocr.modelVariant);
+    AddText(report, "APP_OCR_MODEL", liveSettings.ocr.model);
     AddText(report, "APP_OCR_MODEL_DIR",
-            ResolveOcrModelDirectoryFor(liveSettings.ocr.modelVariant));
+            ResolveOcrModelDirectoryFor(liveSettings.ocr.model));
 
     // ---- 2) 托盘与热键 ----
     core::TrayMenuState trayState;
@@ -1356,9 +1378,10 @@ int Run(const Options& options) {
         auto pixels = std::make_shared<std::vector<std::uint8_t>>(
             bgra, bgra + static_cast<std::size_t>(width) * height * 4);
         const std::string engineName = engine == core::OcrEngine::Native ? "winrt" : "pp";
-        std::string models = ResolveOcrModelDirectoryFor(liveSettings.ocr.modelVariant);
-        std::thread([pixels, width, height, engine, token, notify, engineName,
-                     models]() mutable {
+        std::string models = ResolveOcrModelDirectoryFor(liveSettings.ocr.model);
+        const std::string clsDirectory = ResolveOcrModelDirectory();
+        std::thread([pixels, width, height, engine, token, notify, engineName, models,
+                     clsDirectory]() mutable {
             auto* outcome = new halocap::app::OcrOutcome();
             outcome->token = token;
             outcome->engine = engine;
@@ -1381,6 +1404,10 @@ int Run(const Options& options) {
                 if (!models.empty()) {
                     SetEnvironmentVariableW(L"HALOCAP_OCR_MODELS",
                                             Utf8ToWide(models).c_str());
+                }
+                if (!clsDirectory.empty()) {
+                    SetEnvironmentVariableW(L"HALOCAP_OCR_CLS_DIR",
+                                            Utf8ToWide(clsDirectory).c_str());
                 }
                 if (!halocap::app::WriteOcrWorkerInput(inputUtf8, pixels->data(), width,
                                                        height)) {
@@ -2983,6 +3010,60 @@ int Run(const Options& options) {
         running = false;
     }
 
+    // 模型下载自检：真实下载官方模型，并在下载期间持续泵消息、统计进度消息条数。
+    // 2.2.0 的回归是「每 64 KB 重绘一次」把消息队列塞满，窗口既看不到进度又像卡死；
+    // 这里要求下载完成且进度消息不超过 102 条（每 1% 一条，三个文件共用计数）。
+    bool ocrModelDownloadSelftestOk = true;
+    if (!options.ocrModelDownloadSelftestPath.empty()) {
+        ocrModelDownloadSelftestOk = false;
+        openSettings();
+        const bool opened = settingsWindow != nullptr && settingsWindow->Valid();
+        bool finished = false;
+        int updates = 0;
+        int models = 0;
+        bool proof = false;
+        if (opened) {
+            settingsWindow->ShowPageForTest(3);
+            settingsWindow->BeginOcrModelDownloadForTest();
+            const auto pump = [] {
+                MSG message;
+                while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+                    TranslateMessage(&message);
+                    DispatchMessageW(&message);
+                }
+            };
+            const ULONGLONG start = GetTickCount64();
+            while (GetTickCount64() - start < 180000) {
+                pump();
+                if (!settingsWindow->ModelDownloadBusyForTest()) {
+                    finished = true;
+                    break;
+                }
+                Sleep(15);
+            }
+            for (int i = 0; i < 20; ++i) {
+                pump();
+                Sleep(10);
+            }
+            updates = settingsWindow->ModelProgressUpdatesForTest();
+            models = settingsWindow->ModelCountForTest();
+            halocap::platform::win32::DesktopImage desktop;
+            proof = halocap::platform::win32::GrabPrimaryDesktop(desktop) &&
+                    halocap::platform::win32::SaveBgraPng(
+                        options.ocrModelDownloadSelftestPath, desktop.bgra.data(),
+                        desktop.width, desktop.height, desktop.width * 4);
+            settingsWindow->Close();
+        }
+        AddFlag(report, "APP_OCR_MODEL_DOWNLOAD_WINDOW", opened);
+        AddFlag(report, "APP_OCR_MODEL_DOWNLOAD_DONE", finished);
+        AddInt(report, "APP_OCR_MODEL_DOWNLOAD_UPDATES", updates);
+        AddInt(report, "APP_OCR_MODEL_DOWNLOAD_MODELS", models);
+        AddFlag(report, "APP_OCR_MODEL_DOWNLOAD_PROOF", proof);
+        ocrModelDownloadSelftestOk =
+            opened && finished && updates > 0 && updates <= 102 && models >= 1 && proof;
+        running = false;
+    }
+
     bool pinSelftestOk = true;
     if (!options.pinSelftestPath.empty()) {
         pinSelftestOk = false;
@@ -3865,6 +3946,7 @@ int Run(const Options& options) {
     AddFlag(report, "APP_HOTKEY_SELFTEST", hotkeySelftestOk);
     AddFlag(report, "APP_HOTKEY_LIVE_SELFTEST", hotkeyLiveOk);
     AddFlag(report, "APP_OCR_SEARCH_SELFTEST", ocrSearchSelftestOk);
+    AddFlag(report, "APP_OCR_MODEL_DOWNLOAD_SELFTEST", ocrModelDownloadSelftestOk);
     AddFlag(report, "APP_PIN_SELFTEST", pinSelftestOk);
     AddFlag(report, "APP_RADIAL_SELFTEST", radialSelftestOk);
     AddFlag(report, "APP_WINDOW_PICKER_SELFTEST", windowPickerSelftestOk);

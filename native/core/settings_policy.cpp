@@ -547,8 +547,6 @@ const char* EnumToName(const EnumEntry* table, std::size_t count, std::int32_t v
 HALOCAP_ENUM_TABLE(kScreenshotFormatEntries, { 0, "Png" }, { 1, "Jpeg" });
 HALOCAP_ENUM_TABLE(kMenuSizeEntries, { 0, "Small" }, { 1, "Medium" }, { 2, "Large" });
 HALOCAP_ENUM_TABLE(kOcrEngineEntries, { 0, "Native" }, { 1, "Model" });
-// OCR 模型变体：0 = PP-OCRv6 tiny（内置），1 = PP-OCRv6 small（下载）。
-HALOCAP_ENUM_TABLE(kOcrModelEntries, { 0, "ppocrv6-tiny" }, { 1, "ppocrv6-small" });
 HALOCAP_ENUM_TABLE(kResolutionEntries, { 0, "Original" }, { 1, "P2160" }, { 2, "P1440" },
                    { 3, "P1080" }, { 4, "P720" });
 HALOCAP_ENUM_TABLE(kFrameRateEntries, { 30, "Thirty" }, { 60, "Sixty" });
@@ -571,7 +569,7 @@ const char* const kKnownLeafPaths[] = {
     "pinHotkey",       "screenshotFormat",  "menuSize",         "recordingDirectory",
     "convertFilePathsToImages", "pinGlowEnabled", "autoStart",
     "ocr.engine",      "ocr.autoCopy",      "ocr.pinOcrEnabled", "ocr.autoStart",
-    "ocr.modelVariant",
+    "ocr.model",       "ocr.modelVariant",
     "recording.resolution", "recording.frameRate", "recording.quality", "recording.recordCursor",
     "recording.countdown",  "recording.range",     "recording.systemAudio", "recording.microphone",
     "recording.audioBitrate", "recording.autoStart",
@@ -1074,8 +1072,16 @@ void ParseSettings(std::string_view utf8, AppSettings& settings, SettingsReadRep
     ReadBoolField(tree, "ocr.autoCopy", settings.ocr.autoCopy, report);
     ReadBoolField(tree, "ocr.pinOcrEnabled", settings.ocr.pinOcrEnabled, report);
     ReadBoolField(tree, "ocr.autoStart", settings.ocr.autoStart, report);
-    ReadEnumField(tree, "ocr.modelVariant", kOcrModelEntries, EntryCount(kOcrModelEntries),
-                  settings.ocr.modelVariant, report);
+    ReadStringField(tree, "ocr.model", settings.ocr.model, report);
+    // 2.2.0 写的是「极速/高精度」二选一；同名的模型目录还在就沿用，避免升级后回到内置。
+    if (settings.ocr.model.empty()) {
+        const ConfigValue* legacy = tree.Find("ocr.modelVariant");
+        if (legacy != nullptr && legacy->kind == ValueKind::String &&
+            legacy->text == "ppocrv6-small") {
+            settings.ocr.model = "ppocrv6-small";
+            report.migratedKeys.emplace_back("ocr.modelVariant");
+        }
+    }
 
     ReadEnumField(tree, "recording.resolution", kResolutionEntries, EntryCount(kResolutionEntries),
                   settings.recording.resolution, report);
@@ -1121,8 +1127,7 @@ std::string SerializeSettings(const AppSettings& settings) {
     AddBoolean(tree, ocr, "autoCopy", settings.ocr.autoCopy);
     AddBoolean(tree, ocr, "pinOcrEnabled", settings.ocr.pinOcrEnabled);
     AddBoolean(tree, ocr, "autoStart", settings.ocr.autoStart);
-    AddText(tree, ocr, "modelVariant",
-            EnumToName(kOcrModelEntries, EntryCount(kOcrModelEntries), settings.ocr.modelVariant));
+    AddText(tree, ocr, "model", settings.ocr.model);
 
     const std::size_t recording = AddObject(tree, root, "recording");
     AddText(tree, recording, "resolution", ResolutionName(settings.recording.resolution));

@@ -9,6 +9,8 @@ namespace halocap::core {
 struct OcrEngineConfig {
     // 模型目录：det/rec/cls 三个 onnx 与字典都在这里。
     std::string modelDirectory;
+    // 分类模型不在模型目录里时可单独指定（用户只放了 det/rec/字典时用内置的那份）。
+    std::string clsDirectory;
     std::string detModel = "ppocrv6_tiny_det.onnx";
     std::string recModel = "ppocrv6_tiny_rec.onnx";
     std::string clsModel = "ppocrv5_textline_cls.onnx";

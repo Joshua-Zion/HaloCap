@@ -111,8 +111,6 @@ private:
     enum class Hit {
         None = 0,
         CloseTop,
-        EngineNative,
-        EngineModel,
         SearchButton,
         ViewButton,
         SearchPrevious,
@@ -173,8 +171,6 @@ private:
     void DrawButton(HDC dc, const RECT& rect, const std::wstring& text, bool primary,
                     bool active, bool hover);
     void DrawSmallButton(HDC dc, const RECT& rect, const std::wstring& text, bool hover);
-    void DrawSegment(HDC dc, const RECT& rect, const std::wstring& text, bool active,
-                     bool hover);
     void DrawPreview(HDC dc);
     void DrawLines(HDC dc);
     // 文本框右侧的细滚动条（不用系统滚动条：太宽、带箭头，会压到文字）。
@@ -241,9 +237,6 @@ private:
     RECT titleRect_{};
     RECT closeTop_{};
     RECT chipRect_{};
-    RECT engineGroup_{};
-    RECT engineNative_{};
-    RECT engineModel_{};
     RECT searchButton_{};
     RECT viewButton_{};
     RECT searchBar_{};

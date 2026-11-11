@@ -1,52 +1,49 @@
 #pragma once
 
-#include <cstdint>
+#include <string>
+#include <vector>
 
 namespace halocap::core {
 
-// OCR 模型变体：同一个 PP-OCRv6 系列的不同档位。
-// Tiny 随程序内置；Small 由用户在设置里下载（更高精度、字典也更大）。
-enum class OcrModelVariant : std::int32_t {
-    Tiny = 0,
-    Small = 1,
+// 模型目录里的一套 PP-OCR ONNX 文件。检测、识别与字典必须有，方向分类模型可选
+// （没有时用内置的那一份）。文件名不要求固定，按关键字识别，方便直接放入
+// 官方导出的模型或其他 PP-OCR 系列模型。
+struct OcrModelFiles {
+    std::string det;
+    std::string rec;
+    std::string dict;
+    std::string cls;
+
+    bool Complete() const {
+        return !det.empty() && !rec.empty() && !dict.empty();
+    }
 };
 
-constexpr int kOcrModelVariantCount = 2;
+// 从目录里的文件名挑出一套模型。纯逻辑，不访问文件系统，便于单测。
+// 规则（不区分大小写）：*.onnx 里含 det / rec / cls（或 textline）分别作为
+// 检测 / 识别 / 分类模型；*.txt 里含 dict 的作为字典（没有则取第一个 txt）。
+OcrModelFiles DetectOcrModelFiles(const std::vector<std::string>& fileNames);
 
-struct OcrModelInfo {
-    OcrModelVariant variant;
-    const char* id;       // 稳定短名（设置文件里也用它）
-    const char* title;    // 「极速」「高精度」
-    const char* detail;   // 一行说明
-    bool bundled;         // true = 随程序提供，不需要下载
-};
-
-const OcrModelInfo* OcrModelCatalog();
-const OcrModelInfo& OcrModelInfoFor(OcrModelVariant variant);
-
-// 设置里存的是下标（0/1）；越界退回 Tiny。
-OcrModelVariant OcrModelVariantFromIndex(std::int32_t index);
-std::int32_t OcrModelVariantIndex(OcrModelVariant variant);
-
-// 下载源（托管在本仓 GitHub 的 models 发布里）与落盘文件名。
-// 落盘名沿用引擎的默认名，这样 OCR worker 不需要知道变体、只认目录即可。
+// 官方托管的可下载模型。下载到 %LOCALAPPDATA%\HaloCap2\models\<folder>\。
 struct OcrModelDownload {
+    const char* id;
+    const char* folder;
+    const char* title;
     const char* detUrl;
     const char* recUrl;
     const char* dictUrl;
     long long detBytes;
     long long recBytes;
     long long dictBytes;
+
     long long TotalBytes() const { return detBytes + recBytes + dictBytes; }
 };
 
-OcrModelDownload OcrModelDownloadFor(OcrModelVariant variant);
+const OcrModelDownload& OcrModelSmallDownload();
 
-// 变体在模型目录里必须存在的文件（相对名）。Tiny 用 1.x 的内置名；
-// Small 下载后同样按这些名字落盘（cls 从内置目录复制）。
-inline constexpr const char* kOcrModelDetName = "ppocrv6_tiny_det.onnx";
-inline constexpr const char* kOcrModelRecName = "ppocrv6_tiny_rec.onnx";
+// 随包内置的模型目录名（models\<folder>）。
+inline constexpr const char* kOcrModelBuiltInFolder = "ppocrv6-tiny-1";
+inline constexpr const char* kOcrModelSmallFolder = "ppocrv6-small";
 inline constexpr const char* kOcrModelClsName = "ppocrv5_textline_cls.onnx";
-inline constexpr const char* kOcrModelDictName = "ppocrv6_tiny_dict.txt";
 
 }

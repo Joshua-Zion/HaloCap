@@ -39,6 +39,10 @@ HaloCap 的模型识别引擎使用以下开源组件与模型。极速模型随
 | `PP-OCRv6_rec_small.onnx` | 21,234,383 字节 |
 | `ppocrv6_dict.txt` | 74,947 字节 |
 
+## 用户自行放入的模型
+
+「设置 → 文字识别 → 模型」也会列出 `%LOCALAPPDATA%\HaloCap2\models\` 下的其他模型目录。用户可以放入任意 PP-OCR 系列的 ONNX 模型（检测、识别、字典），这些文件的来源与许可证由用户自行负责，HaloCap 不再分发或校验其内容。
+
 ## 运行时依赖
 
 - Microsoft.ML.OnnxRuntime 1.29.0 — MIT License

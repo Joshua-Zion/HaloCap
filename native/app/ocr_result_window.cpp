@@ -684,26 +684,17 @@ void OcrResultWindow::Layout() {
                       width_ - pad + ScaleInt(6.0f), ScaleInt(43.0f) };
     int y = ScaleInt(kTitleDip);
 
-    const int chipHeight = ScaleInt(24.0f);
-    chipRect_ = RECT{ pad, y, pad + ScaleInt(160.0f), y + chipHeight };
-    y += chipHeight + ScaleInt(9.0f);
-
-    const int groupHeight = ScaleInt(30.0f) + 2 * ScaleInt(2.0f);
-    engineGroup_ = RECT{ pad, y, pad + ScaleInt(160.0f) + 2 * ScaleInt(2.0f),
-                         y + groupHeight };
-    engineNative_ = RECT{ pad + ScaleInt(2.0f), y + ScaleInt(2.0f),
-                          pad + ScaleInt(2.0f) + ScaleInt(80.0f),
-                          y + ScaleInt(2.0f) + ScaleInt(30.0f) };
-    engineModel_ = RECT{ engineNative_.right, engineNative_.top,
-                         engineNative_.right + ScaleInt(80.0f), engineNative_.bottom };
+    // 顶部只保留识别统计与搜索/视图按钮：识别方式在设置里选，结果窗口不再切换。
+    const int rowHeight = ScaleInt(30.0f);
+    chipRect_ = RECT{ pad, y, width_ - pad, y + rowHeight };
     const int smallWidth = ScaleInt(62.0f);
     const int smallHeight = ScaleInt(28.0f);
-    const int smallTop = y + (groupHeight - smallHeight) / 2;
+    const int smallTop = y + (rowHeight - smallHeight) / 2;
     searchButton_ = RECT{ width_ - pad - smallWidth * 2 - ScaleInt(6.0f), smallTop,
                           width_ - pad - smallWidth - ScaleInt(6.0f), smallTop + smallHeight };
     viewButton_ = RECT{ width_ - pad - smallWidth, smallTop, width_ - pad,
                         smallTop + smallHeight };
-    y += groupHeight + ScaleInt(10.0f);
+    y += rowHeight + ScaleInt(10.0f);
 
     if (searchOpen_) {
         const int searchHeight = ScaleInt(46.0f);
@@ -923,14 +914,6 @@ OcrResultWindow::Hit OcrResultWindow::HitTest(POINT client) const {
             return Hit::TextScrollTrack;
         }
     }
-    if (stage_ != Stage::Loading) {
-        if (PointIn(engineNative_, client)) {
-            return Hit::EngineNative;
-        }
-        if (PointIn(engineModel_, client)) {
-            return Hit::EngineModel;
-        }
-    }
     if (stage_ == Stage::Success) {
         if (PointIn(searchButton_, client)) {
             return Hit::SearchButton;
@@ -994,18 +977,6 @@ void OcrResultWindow::HandleClick(Hit hit) {
     case Hit::CloseFooter:
         Close();
         return;
-    case Hit::EngineNative:
-        if (engine_ != core::OcrEngine::Native) {
-            engine_ = core::OcrEngine::Native;
-            StartRecognition();
-        }
-        return;
-    case Hit::EngineModel:
-        if (engine_ != core::OcrEngine::Model) {
-            engine_ = core::OcrEngine::Model;
-            StartRecognition();
-        }
-        return;
     case Hit::SearchButton:
         if (searchOpen_) {
             CloseSearch(true);
@@ -1039,9 +1010,7 @@ void OcrResultWindow::HandleClick(Hit hit) {
         CopyAll();
         return;
     case Hit::EmptyRetry:
-        // 1.x：失败/空结果时用另一个引擎再试一次。
-        engine_ = engine_ == core::OcrEngine::Native ? core::OcrEngine::Model
-                                                     : core::OcrEngine::Native;
+        // 识别方式在设置里选，这里只用同一引擎重试。
         StartRecognition();
         return;
     case Hit::TextScrollThumb: {
@@ -1351,20 +1320,6 @@ void OcrResultWindow::DrawSmallButton(HDC dc, const RECT& rect, const std::wstri
                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 }
 
-void OcrResultWindow::DrawSegment(HDC dc, const RECT& rect, const std::wstring& text,
-                                  bool active, bool hover) {
-    if (active) {
-        FillRounded(dc, rect, ScaleInt(6.0f), RGB(255, 255, 255), kSegmentActiveBorder, 1);
-    } else if (hover) {
-        FillRounded(dc, rect, ScaleInt(6.0f), RGB(235, 235, 239), RGB(235, 235, 239), 0);
-    } else {
-        FillRounded(dc, rect, ScaleInt(6.0f), kSegmentBg, kSegmentBg, 0);
-    }
-    DrawTextIn(dc, text, active ? fontButton_ : fontSmall_,
-               active ? kTextPrimary : kTextSecondary, rect,
-               DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-}
-
 void OcrResultWindow::DrawPreview(HDC dc) {
     FillRounded(dc, previewCard_, ScaleInt(10.0f), kCardBg, kCardBorder, 1);
     if (image_.empty() || previewImage_.right <= previewImage_.left) {
@@ -1583,7 +1538,7 @@ void OcrResultWindow::DrawLoading(HDC dc) {
     DrawTextIn(dc, L"正在识别文字…", fontButton_, kTextSecondary, titleRect,
                DT_CENTER | DT_BOTTOM | DT_SINGLELINE);
     const std::wstring hint = engine_ == core::OcrEngine::Model
-                                  ? L"PP-OCRv6 tiny · 首次使用会准备本地模型"
+                                  ? L"本地模型识别 · 完全离线"
                                   : L"Windows 原生 · 系统离线引擎";
     RECT hintRect{ contentRect_.left, centerY, contentRect_.right,
                    centerY + ScaleInt(18.0f) };
@@ -1698,18 +1653,7 @@ void OcrResultWindow::PaintContent(HDC dc) {
         DeleteObject(pen);
     }
 
-    // 引擎标记 + 计数。
-    if (stage_ != Stage::Loading) {
-        const std::wstring chip =
-            stage_ == Stage::Failed
-                ? L"识别不可用"
-                : (engine_ == core::OcrEngine::Model ? L"PP-OCRv6 tiny" : L"Windows 原生");
-        const bool warning = stage_ == Stage::Failed;
-        FillRounded(dc, chipRect_, ScaleInt(6.0f), warning ? kWarningBg : kChipBg,
-                    warning ? kWarningBorder : kChipBorder, 1);
-        DrawTextIn(dc, chip, fontSmall_, warning ? kWarningText : kChipText, chipRect_,
-                   DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-    }
+    // 识别统计（不再显示引擎/模型名，也不在这里切换识别方式）。
     std::wstring count;
     if (stage_ == Stage::Loading) {
         count = L"识别中…";
@@ -1728,18 +1672,12 @@ void OcrResultWindow::PaintContent(HDC dc) {
     } else {
         count = L"识别失败";
     }
-    RECT countRect{ width_ / 2, chipRect_.top, width_ - pad, chipRect_.bottom };
-    DrawTextIn(dc, count, fontSmall_, kTextTertiary, countRect,
-               DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+    RECT countRect{ pad, chipRect_.top, searchButton_.left - ScaleInt(8.0f), chipRect_.bottom };
+    DrawTextIn(dc, count, fontSmall_,
+               stage_ == Stage::Failed ? kWarningText : kTextTertiary, countRect,
+               DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
-    // 引擎分段控件。
-    FillRounded(dc, engineGroup_, ScaleInt(8.0f), kSegmentBg, kSegmentBorder, 1);
-    DrawSegment(dc, engineNative_, L"原生识别", engine_ == core::OcrEngine::Native,
-                hoveredHit_ == Hit::EngineNative);
-    DrawSegment(dc, engineModel_, L"模型识别", engine_ == core::OcrEngine::Model,
-                hoveredHit_ == Hit::EngineModel);
-
-    // 搜索 / 逐行。
+    // 搜索 / 视图。
     const bool success = stage_ == Stage::Success;
     DrawSmallButton(dc, searchButton_, searchOpen_ ? L"收起" : L"搜索",
                     success && hoveredHit_ == Hit::SearchButton);

@@ -1,11 +1,13 @@
 ﻿#include "ocr_worker.h"
 
 #include "ocr_engine.h"
+#include "ocr_model.h"
 #include "ort_ocr_engine.h"
 #include "winrt_ocr_engine.h"
 
 #include <windows.h>
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <cstdlib>
@@ -13,6 +15,7 @@
 #include <fstream>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace halocap::app {
 
@@ -105,6 +108,29 @@ bool InvertIfDark(std::vector<std::uint8_t>& pixels, int width, int height, int 
         }
     }
     return true;
+}
+
+std::vector<std::string> ListModelFiles(const std::string& directory) {
+    std::vector<std::string> names;
+    if (directory.empty()) {
+        return names;
+    }
+    std::error_code error;
+    for (const auto& entry :
+         std::filesystem::directory_iterator(Utf8ToWide(directory), error)) {
+        if (entry.is_regular_file(error)) {
+            names.push_back(WideToUtf8(entry.path().filename().wstring()));
+        }
+    }
+    std::sort(names.begin(), names.end());
+    return names;
+}
+
+std::string ClsDirectoryFromWorker() {
+    if (const char* environment = std::getenv("HALOCAP_OCR_CLS_DIR")) {
+        return environment;
+    }
+    return {};
 }
 
 std::string ModelDirectoryFromWorker() {
@@ -208,6 +234,18 @@ int RunOcrWorker(const std::string& inputPath, const std::string& outputPath,
     std::string error;
     core::OcrEngineConfig config;
     config.modelDirectory = ModelDirectoryFromWorker();
+    // 模型目录里的文件名不固定：按关键字挑出 det/rec/字典；没有分类模型时用内置目录的那份。
+    const core::OcrModelFiles files = core::DetectOcrModelFiles(ListModelFiles(config.modelDirectory));
+    if (files.Complete()) {
+        config.detModel = files.det;
+        config.recModel = files.rec;
+        config.dictionary = files.dict;
+    }
+    config.clsDirectory = ClsDirectoryFromWorker();
+    if (!files.cls.empty()) {
+        config.clsModel = files.cls;
+        config.clsDirectory.clear();
+    }
 
     if (engineName == "winrt") {
         engine = std::make_unique<halocap::platform::win32::WinrtOcrEngine>();

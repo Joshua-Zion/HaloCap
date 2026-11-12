@@ -106,11 +106,33 @@ void TestHexColors() {
     }
 }
 
+void TestAlphaColors() {
+    struct Case {
+        const char* text;
+        clip::Color expected;
+    } cases[] = {
+        { "rgba(14, 165, 233, 0.5)", { 14, 165, 233, 128 } },
+        { "RGBA(14,165,233,128)", { 14, 165, 233, 128 } },
+        { "rgba(14 165 233 / 0.5)", { 14, 165, 233, 128 } },
+        { "rgb(14,165,233,0.25)", { 14, 165, 233, 64 } },
+        { "14 165 233 0.5", { 14, 165, 233, 128 } },
+        { "rgba(14,165,233,1)", { 14, 165, 233, 255 } },
+        { "rgba(14,165,233,0)", { 14, 165, 233, 0 } },
+        { "rgba(14,165,233,255)", { 14, 165, 233, 255 } },
+    };
+    for (const Case& test : cases) {
+        clip::Color color;
+        CheckTrue(clip::ParseColor(test.text, &color), "RGB/RGBA alpha parses");
+        CheckColor(color, test.expected, "alpha is the fourth component");
+    }
+}
+
 void TestInvalidColors() {
     const char* invalid[] = { "#12", "#12345", "#1234567", "#123456789", "#GG0000", "red",
                               "普通文字", "256 0 0", "0 256 0", "0 0 256", "-1 0 0",
                               "0.5 1.01 0", "0.5 128 0", "NaN 0 0", "Infinity 0 0", "1e2 0 0",
-                              "RGB(1,2)", "RGB(1,2,3", "1,2,3,4", "rgba(1,2,3,0.5)" };
+                              "RGB(1,2)", "RGB(1,2,3", "rgba(1,2,3,1.5)", "rgba(1,2,3,256)",
+                              "rgba(1,2,3,4,5)" };
     for (const char* text : invalid) {
         clip::Color color;
         CheckTrue(!clip::ParseColor(text, &color), "invalid color is rejected");
@@ -335,6 +357,7 @@ int main() {
 
     TestIntegerColors();
     TestFractionalColors();
+    TestAlphaColors();
     TestHexColors();
     TestInvalidColors();
     TestHtmlText();

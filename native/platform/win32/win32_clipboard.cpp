@@ -377,11 +377,7 @@ bool RenderWithGdi(int width, int height, const std::function<void(HDC, HDC)>& d
     image->bgra.assign(static_cast<std::uint8_t*>(bits),
                        static_cast<std::uint8_t*>(bits) +
                            static_cast<std::size_t>(width) * height * 4);
-    // GDI 只写 RGB，DIB 的 alpha 字节保持 0；这些卡片本身是不透明的，必须补成 255，
-    // 否则贴图窗口按 ARGB 渲染时会整张透明（文字/颜色贴图看不见）。
-    for (std::size_t i = 3; i < image->bgra.size(); i += 4) {
-        image->bgra[i] = 255;
-    }
+    // GDI 不写 alpha（保持 0）；不透明的卡片由各自调用方补 255，颜色卡片的色块保留 alpha。
 
     SelectObject(memory, old);
     DeleteObject(bitmap);
@@ -404,20 +400,28 @@ bool RenderTextCard(const std::string& utf8Text, double scale, ClipboardImage* i
 
     const core::clipboard::TextCardMetrics metrics =
         core::clipboard::TextCardBounds(visible, scale);
-    return RenderWithGdi(metrics.width, metrics.height,
-                         [&](HDC, HDC memory) {
-                             RECT full{ 0, 0, metrics.width, metrics.height };
-                             FillRect(memory, &full,
-                                      static_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
-                             const RECT bounds{ static_cast<int>(16 * scale),
-                                                static_cast<int>(16 * scale),
-                                                metrics.width - static_cast<int>(16 * scale),
-                                                metrics.height - static_cast<int>(16 * scale) };
-                             DrawTextOnDib(memory, metrics.width, metrics.height,
-                                           Utf8ToWide(visible), scale, bounds, RGB(35, 41, 51),
-                                           17);
-                         },
-                         image);
+    const bool rendered =
+        RenderWithGdi(metrics.width, metrics.height,
+                      [&](HDC, HDC memory) {
+                          RECT full{ 0, 0, metrics.width, metrics.height };
+                          FillRect(memory, &full,
+                                   static_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
+                          const RECT bounds{ static_cast<int>(16 * scale),
+                                             static_cast<int>(16 * scale),
+                                             metrics.width - static_cast<int>(16 * scale),
+                                             metrics.height - static_cast<int>(16 * scale) };
+                          DrawTextOnDib(memory, metrics.width, metrics.height,
+                                        Utf8ToWide(visible), scale, bounds, RGB(35, 41, 51),
+                                        17);
+                      },
+                      image);
+    if (rendered) {
+        // 文字卡片整张不透明：GDI 不写 alpha，必须补 255。
+        for (std::size_t i = 3; i < image->bgra.size(); i += 4) {
+            image->bgra[i] = 255;
+        }
+    }
+    return rendered;
 }
 
 bool RenderColorCard(core::clipboard::Color color, double scale, ClipboardImage* image) {
@@ -437,35 +441,45 @@ bool RenderColorCard(core::clipboard::Color color, double scale, ClipboardImage*
     wchar_t rgb[64] = {};
     std::swprintf(rgb, 64, L"RGB  %d, %d, %d", color.r, color.g, color.b);
 
-    return RenderWithGdi(width, height,
-                         [&](HDC, HDC memory) {
-                             RECT full{ 0, 0, width, height };
-                             FillRect(memory, &full,
-                                      static_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
-                             // 半透明颜色预览按白底混合，和 1.x 的 SolidColorBrush 观感一致。
-                             const auto overWhite = [&](std::uint8_t channel) {
-                                 return static_cast<std::uint8_t>(
-                                     (channel * color.a + 255 * (255 - color.a)) / 255);
-                             };
-                             HBRUSH brush = CreateSolidBrush(RGB(overWhite(color.r),
-                                                                overWhite(color.g),
-                                                                overWhite(color.b)));
-                             RECT swatch{ 0, 0, width, swatchHeight };
-                             FillRect(memory, &swatch, brush);
-                             DeleteObject(brush);
+    const bool rendered =
+        RenderWithGdi(width, height,
+                      [&](HDC, HDC memory) {
+                          // 上半部色块由后面的像素填充写入（保留 alpha）；下半部信息条白底。
+                          RECT panel{ 0, swatchHeight, width, height };
+                          FillRect(memory, &panel,
+                                   static_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
 
-                             const RECT hexBounds{ static_cast<int>(16 * scale),
-                                                   static_cast<int>(132 * scale),
-                                                   width, static_cast<int>(162 * scale) };
-                             DrawTextOnDib(memory, width, height, hex, scale, hexBounds,
-                                           RGB(0, 0, 0), 18);
-                             const RECT rgbBounds{ static_cast<int>(16 * scale),
-                                                   static_cast<int>(160 * scale), width,
-                                                   static_cast<int>(186 * scale) };
-                             DrawTextOnDib(memory, width, height, rgb, scale, rgbBounds,
-                                           RGB(90, 90, 90), 13);
-                         },
-                         image);
+                          const RECT hexBounds{ static_cast<int>(16 * scale),
+                                                static_cast<int>(132 * scale), width,
+                                                static_cast<int>(162 * scale) };
+                          DrawTextOnDib(memory, width, height, hex, scale, hexBounds,
+                                        RGB(0, 0, 0), 18);
+                          const RECT rgbBounds{ static_cast<int>(16 * scale),
+                                                static_cast<int>(160 * scale), width,
+                                                static_cast<int>(186 * scale) };
+                          DrawTextOnDib(memory, width, height, rgb, scale, rgbBounds,
+                                        RGB(90, 90, 90), 13);
+                      },
+                      image);
+    if (!rendered) {
+        return false;
+    }
+    // 1.x 的颜色贴图上半部是真正半透明的色块：alpha < 255 时透出桌面。
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            std::uint8_t* pixel = image->bgra.data() +
+                                  (static_cast<std::size_t>(y) * width + x) * 4;
+            if (y < swatchHeight) {
+                pixel[0] = color.b;
+                pixel[1] = color.g;
+                pixel[2] = color.r;
+                pixel[3] = color.a;
+            } else {
+                pixel[3] = 255;
+            }
+        }
+    }
+    return true;
 }
 
 bool WriteUnicodeTextToClipboard(const std::string& utf8Text) {

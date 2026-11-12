@@ -266,8 +266,14 @@ bool ParseColor(std::string_view text, Color* color) {
     }
 
     // RGB / RGBA 前缀，大小写不敏感；后面可跟冒号与括号。
-    if (value.size() >= 3 && (value[0] == 'r' || value[0] == 'R') &&
-        (value[1] == 'g' || value[1] == 'G') && (value[2] == 'b' || value[2] == 'B')) {
+    bool alphaAllowed = false;
+    if (value.size() >= 4 && (value[0] == 'r' || value[0] == 'R') &&
+        (value[1] == 'g' || value[1] == 'G') && (value[2] == 'b' || value[2] == 'B') &&
+        (value[3] == 'a' || value[3] == 'A')) {
+        value = value.substr(4);
+        alphaAllowed = true;
+    } else if (value.size() >= 3 && (value[0] == 'r' || value[0] == 'R') &&
+               (value[1] == 'g' || value[1] == 'G') && (value[2] == 'b' || value[2] == 'B')) {
         value = value.substr(3);
     }
 
@@ -345,7 +351,9 @@ bool ParseColor(std::string_view text, Color* color) {
                !(static_cast<unsigned char>(value[position]) == 0xEF)) {
             ++position;
         }
-        tokens.push_back(value.substr(start, position - start));
+        if (value.substr(start, position - start) != "/") {
+            tokens.push_back(value.substr(start, position - start));
+        }
 
         while (position < value.size() && IsSpace(value[position])) {
             ++position;
@@ -362,8 +370,12 @@ bool ParseColor(std::string_view text, Color* color) {
         }
     }
 
-    if (tokens.size() != 3) {
+    if (tokens.size() != 3 && tokens.size() != 4) {
         return false;
+    }
+    if (tokens.size() == 4 && !alphaAllowed) {
+        // 只有 RGBA 前缀或四分量写法允许 alpha。
+        alphaAllowed = true;
     }
 
     bool anyDot = false;
@@ -396,6 +408,26 @@ bool ParseColor(std::string_view text, Color* color) {
     color->g = bytes[1];
     color->b = bytes[2];
     color->a = 255;
+
+    if (tokens.size() == 4) {
+        bool alphaDot = false;
+        double alpha = 0.0;
+        if (!ParseChannelToken(tokens[3], &alphaDot, &alpha)) {
+            return false;
+        }
+        // CSS 习惯：0~1 的小数（或 0/1）是百分比，其余按 0~255 整数。
+        if (alphaDot || alpha <= 1.0) {
+            if (alpha < 0.0 || alpha > 1.0) {
+                return false;
+            }
+            color->a = static_cast<std::uint8_t>(std::lround(alpha * 255.0));
+        } else {
+            if (alpha > 255.0) {
+                return false;
+            }
+            color->a = static_cast<std::uint8_t>(std::lround(alpha));
+        }
+    }
     return true;
 }
 

@@ -3189,7 +3189,7 @@ int Run(const Options& options) {
         pinClipboard();
         const std::size_t afterCurrent = pins.size();
         const bool wrote =
-            halocap::platform::win32::WriteUnicodeTextToClipboard("#1234");
+            halocap::platform::win32::WriteUnicodeTextToClipboard("#123456");
         if (wrote) {
             pinClipboard();
         }
@@ -3200,6 +3200,22 @@ int Run(const Options& options) {
             pinOpaqueOk = static_cast<int>(pixel >> 24) == 255;
         }
         AddFlag(report, "APP_PIN_OPAQUE", pinOpaqueOk);
+
+        // 半透明颜色：色块本身要透出桌面（alpha=128），信息条仍不透明。
+        bool pinColorAlphaOk = false;
+        if (halocap::platform::win32::WriteUnicodeTextToClipboard("#0EA5E980")) {
+            const std::size_t beforeAlphaColor = pins.size();
+            pinClipboard();
+            Sleep(120);
+            if (pins.size() > beforeAlphaColor) {
+                const std::uint32_t swatch =
+                    pins.back()->CompositedPixelForTest(10, 10);
+                pinColorAlphaOk = static_cast<int>(swatch >> 24) == 128;
+                AddInt(report, "APP_PIN_COLOR_SWATCH_ALPHA",
+                       static_cast<int>(swatch >> 24));
+            }
+        }
+        AddFlag(report, "APP_PIN_COLOR_ALPHA", pinColorAlphaOk);
         // 透明 PNG/DIB：贴图内容必须保留 alpha（1.x 用 Pbgra32 渲染）。
         bool pinAlphaOk = false;
         bool pinAlphaSkipped = false;
@@ -3330,7 +3346,7 @@ int Run(const Options& options) {
         AddInt(report, "APP_PIN_COUNT", static_cast<long long>(pins.size() - before));
 
         pinSelftestOk = wrote && pinned && proof && pinAnnotateOk && pinMenuOk && pinPlainOk &&
-                        pinAlphaOk && pinOpaqueOk && pinOptionSlack >= 0 &&
+                        pinAlphaOk && pinOpaqueOk && pinColorAlphaOk && pinOptionSlack >= 0 &&
                         pinOptionSlack <= 20;
         log.Info(pinSelftestOk ? "pin selftest: ok" : "pin selftest: failed");
         running = false;

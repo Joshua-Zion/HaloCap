@@ -1603,6 +1603,8 @@ int Run(const Options& options) {
     };
 
     // 剪贴板贴图：读取 → core 决策 → 图片/卡片 → 分层贴图窗口。
+    // planner 要跨多次粘贴保留：同一批文件图像贴出一次后，再贴应回退成文件路径文本。
+    core::clipboard::PinPlanner pinPlanner;
     const auto pinClipboard = [&]() {
         halocap::platform::win32::ClipboardReadResult data;
         if (!halocap::platform::win32::ReadClipboard(&data)) {
@@ -1631,6 +1633,8 @@ int Run(const Options& options) {
         };
         std::vector<Item> items;
 
+        core::clipboard::PinOptions filePinOptions;
+        filePinOptions.convertFilePathsToImages = settings.convertFilePathsToImages;
         if (!snapshot.filePaths.empty()) {
             std::unordered_map<std::string, halocap::platform::win32::ClipboardImage> loaded;
             const auto loader = [&](const std::string& path) {
@@ -1641,11 +1645,11 @@ int Run(const Options& options) {
                 loaded[path] = std::move(image);
                 return true;
             };
-            const auto plans = planner.PlanFiles(snapshot, {}, loader);
+            const auto plans = pinPlanner.PlanFiles(snapshot, filePinOptions, loader);
             for (const auto& plan : plans) {
                 if (plan.kind == core::clipboard::PinKind::FileImage) {
                     items.push_back(Item{ std::move(loaded[plan.text]) });
-                    planner.MarkPasted(plan);
+                    pinPlanner.MarkPasted(plan);
                 } else {
                     halocap::platform::win32::ClipboardImage card;
                     if (halocap::platform::win32::RenderTextCard(plan.text, 1.0, &card)) {
@@ -1654,7 +1658,7 @@ int Run(const Options& options) {
                 }
             }
         } else {
-            const auto plans = planner.PlanContent(snapshot);
+            const auto plans = pinPlanner.PlanContent(snapshot);
             for (const auto& plan : plans) {
                 if (plan.kind == core::clipboard::PinKind::Image) {
                     items.push_back(Item{ data.image });

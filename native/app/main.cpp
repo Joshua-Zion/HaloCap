@@ -3193,6 +3193,13 @@ int Run(const Options& options) {
         if (wrote) {
             pinClipboard();
         }
+        // 文字/颜色卡片是不透明的：合成后的 alpha 必须是 255，不能整张贴图变透明。
+        bool pinOpaqueOk = true;
+        if (wrote && pins.size() > afterCurrent) {
+            const std::uint32_t pixel = pins.back()->CompositedPixelForTest(10, 10);
+            pinOpaqueOk = static_cast<int>(pixel >> 24) == 255;
+        }
+        AddFlag(report, "APP_PIN_OPAQUE", pinOpaqueOk);
         // 透明 PNG/DIB：贴图内容必须保留 alpha（1.x 用 Pbgra32 渲染）。
         bool pinAlphaOk = false;
         bool pinAlphaSkipped = false;
@@ -3323,7 +3330,8 @@ int Run(const Options& options) {
         AddInt(report, "APP_PIN_COUNT", static_cast<long long>(pins.size() - before));
 
         pinSelftestOk = wrote && pinned && proof && pinAnnotateOk && pinMenuOk && pinPlainOk &&
-                        pinAlphaOk && pinOptionSlack >= 0 && pinOptionSlack <= 20;
+                        pinAlphaOk && pinOpaqueOk && pinOptionSlack >= 0 &&
+                        pinOptionSlack <= 20;
         log.Info(pinSelftestOk ? "pin selftest: ok" : "pin selftest: failed");
         running = false;
     }

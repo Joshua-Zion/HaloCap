@@ -377,6 +377,11 @@ bool RenderWithGdi(int width, int height, const std::function<void(HDC, HDC)>& d
     image->bgra.assign(static_cast<std::uint8_t*>(bits),
                        static_cast<std::uint8_t*>(bits) +
                            static_cast<std::size_t>(width) * height * 4);
+    // GDI 只写 RGB，DIB 的 alpha 字节保持 0；这些卡片本身是不透明的，必须补成 255，
+    // 否则贴图窗口按 ARGB 渲染时会整张透明（文字/颜色贴图看不见）。
+    for (std::size_t i = 3; i < image->bgra.size(); i += 4) {
+        image->bgra[i] = 255;
+    }
 
     SelectObject(memory, old);
     DeleteObject(bitmap);

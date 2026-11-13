@@ -1,12 +1,14 @@
-bin/
-obj/
-.vs/
-*.user
-*.suo
-publish/
+# 构建产物
 artifacts/
 native/build/
 native/build-release/
 native/build.log
-
 native/dist/
+
+# 本地自检/测试产物（截图等，不进仓库）
+docs/images/
+
+# 编辑器
+.vs/
+*.user
+*.suo

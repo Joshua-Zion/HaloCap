@@ -1738,8 +1738,11 @@ int Run(const Options& options) {
             // 一次性提权重启：runas 拉起新实例后本实例退出。用户拒绝 UAC 则保持现状。
             wchar_t executable[MAX_PATH] = {};
             if (GetModuleFileNameW(nullptr, executable, MAX_PATH) != 0) {
-                const HINSTANCE launched =
-                    ShellExecuteW(nullptr, L"runas", executable, nullptr, nullptr, SW_SHOWNORMAL);
+                // 带 --elevated-relaunch：新实例据此在互斥仍被本实例占用时稍等它退出
+                // （见下方单实例逻辑），否则新实例会被旧实例的互斥挡掉而「没起来」。
+                const HINSTANCE launched = ShellExecuteW(nullptr, L"runas", executable,
+                                                          L"--elevated-relaunch", nullptr,
+                                                          SW_SHOWNORMAL);
                 if (reinterpret_cast<INT_PTR>(launched) > 32) {
                     log.Info("action: RestartElevated");
                     running = false;
@@ -4324,12 +4327,40 @@ int main(int argc, char** argv) {
     }
 
     // 正常启动只允许一份；selftest 可能被连跑多次，跳过这条。
+    //
+    // 提权重启（托盘「以管理员身份重启」）时旧实例拉起新实例后才退出，它的单实例互斥
+    // 可能还没 CloseHandle 新实例就到了这里。若直接判「已在运行」退出，表现为「点了
+    // 没起来」。带 --elevated-relaunch 的新实例因此先等旧实例释放互斥（最多 4 秒），
+    // 超时仍被占用则继续运行（此刻旧实例已在退出收尾）。
     HANDLE instance = nullptr;
     if (!options.selftest) {
-        instance = CreateMutexW(nullptr, FALSE, L"HaloCap2.SingleInstance");
-        if (instance != nullptr && GetLastError() == ERROR_ALREADY_EXISTS) {
-            std::printf("HaloCap is already running.\n");
+        bool elevatedRelaunch = false;
+        for (int i = 1; i < argc; ++i) {
+            if (std::string_view(argv[i]) == "--elevated-relaunch") {
+                elevatedRelaunch = true;
+                break;
+            }
+        }
+        const ULONGLONG deadline = GetTickCount64() + 4000;
+        bool nameTaken = false;
+        for (;;) {
+            instance = CreateMutexW(nullptr, FALSE, L"HaloCap2.SingleInstance");
+            nameTaken = instance != nullptr && GetLastError() == ERROR_ALREADY_EXISTS;
+            if (!nameTaken) {
+                break;
+            }
+            if (!elevatedRelaunch || GetTickCount64() >= deadline) {
+                break;
+            }
             CloseHandle(instance);
+            instance = nullptr;
+            Sleep(50);
+        }
+        if (nameTaken && !elevatedRelaunch) {
+            std::printf("HaloCap is already running.\n");
+            if (instance != nullptr) {
+                CloseHandle(instance);
+            }
             return 0;
         }
     }

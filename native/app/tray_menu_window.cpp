@@ -209,6 +209,9 @@ void DrawTrayIcon(Graphics& g, core::TrayCommand command, bool recording, bool p
     case core::TrayCommand::Exit:
         bx = 3; by = 4; bw = 16; bh = 16;
         break;
+    case core::TrayCommand::RestartElevated:
+        bx = 4; by = 3; bw = 16; bh = 18;
+        break;
     default:
         return;
     }
@@ -338,6 +341,18 @@ void DrawTrayIcon(Graphics& g, core::TrayCommand command, bool recording, bool p
         path.StartFigure();
         path.AddLine(15.0f, 12.0f, 3.0f, 12.0f);
         g.DrawPath(&pen, &path);
+        break;
+    }
+    case core::TrayCommand::RestartElevated: {
+        // 盾牌：表示管理员权限。
+        GraphicsPath shield;
+        shield.AddLine(12.0f, 3.0f, 20.0f, 6.0f);
+        shield.AddLine(20.0f, 6.0f, 20.0f, 11.0f);
+        shield.AddLine(20.0f, 11.0f, 12.0f, 21.0f);
+        shield.AddLine(12.0f, 21.0f, 4.0f, 11.0f);
+        shield.AddLine(4.0f, 11.0f, 4.0f, 6.0f);
+        shield.CloseFigure();
+        g.DrawPath(&pen, &shield);
         break;
     }
     default:

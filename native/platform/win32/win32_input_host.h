@@ -55,6 +55,10 @@ public:
     // 钩子回调里的驻留时间：超过系统的 LowLevelHooksTimeout 之后钩子会被直接跳过，
     // 表现出来就是「偶尔拦不住」，所以这个数要能打印出来。
     std::int64_t HookMaxUsPerEvent() const { return hookMaxUsPerEvent_; }
+    bool RawRegisteredForTest() const { return rawRegistered_; }
+    std::int64_t RawKeyboardEventsForTest() const { return rawKeyboardEvents_; }
+    std::int64_t RawMessagesForTest() const { return rawMessages_; }
+    std::int64_t RawHotkeyDeliveriesForTest() const { return rawHotkeys_; }
 
 private:
     static bool EnsureClassRegistered();
@@ -63,6 +67,14 @@ private:
     static LRESULT CALLBACK WindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam);
 
     LRESULT HandleHook(int code, WPARAM wParam, LPARAM lParam);
+    // 前台是提权窗口时低级钩子拿不到按键（UIPI），改用 Raw Input 兜底。
+    void HandleRawKeyboard(const RAWKEYBOARD& keyboard);
+    // Raw Input 只在提权前台时注册：普通前台不注册，避免影响低级钩子/注入输入。
+    void UpdateRawRegistration();
+    bool ForegroundIsElevated() const;
+    // 三条投递路径（钩子 / WM_HOTKEY / Raw Input）共用同一个去重窗口：
+    // 钩子每一次匹配都算真实按键；后两条只是在钩子拿不到时兜底，要和刚投递过的去重。
+    void QueueToken(int token, bool fromHook);
 
     // 只按精确匹配决定吞不吞，跳过「注入一律放过」那一条——仅服务量测。
     core::SwallowDecision MatchOnly(const core::KeyEvent& event);
@@ -72,8 +84,14 @@ private:
     std::vector<std::pair<int, core::HotkeySpec>> registered_;
 
     // 被钩子吞掉的键由这里补发；记下最近一次，防止个别系统版本同时又给一条 WM_HOTKEY。
+    // Raw Input 兜底也会投递同一个 token，所以三条路径共用一个去重窗口。
     int lastHookedToken_ = 0;
     std::uint64_t lastHookedMs_ = 0;
+    bool rawRegistered_ = false;
+    std::int64_t rawKeyboardEvents_ = 0;
+    std::int64_t rawMessages_ = 0;
+    std::int64_t rawHotkeys_ = 0;
+    std::vector<bool> rawKeysDown_;
 
     void* window_ = nullptr;
     void* hook_ = nullptr;

@@ -2,6 +2,25 @@
 
 本文件记录 HaloCap 的版本变化，按版本从新到旧排列。安装与使用说明见 [README](README.md)，发布包见 [Releases](https://github.com/Joshua-Zion/HaloCap/releases)。
 
+## 2.4.6
+
+修复前台是管理员权限窗口（如任务管理器）时全局快捷键无响应的问题。
+
+### 修复
+
+- 低级键盘钩子在提权窗口占前台时会被 UIPI 挡住，`RegisterHotKey` 也可能收不到；新增 Raw Input（`RIDEV_INPUTSINK`）兜底：只有检测到前台窗口属于提权进程时才启用，普通前台仍走原来的钩子。
+- 三条投递路径（低级钩子 / `WM_HOTKEY` / Raw Input）共用去重：钩子每次匹配都投递，另外两条 50ms 内同一动作不重复，避免一次按键触发两次。
+- 注入的输入仍不会被当成热键；Raw Input 兜底只在提权前台启用，自检注入不会误触发。
+
+### 说明
+
+- Raw Input 无法拦截按键，所以在提权窗口前台时，单键热键（如 F7）不再独占该键：动作会执行，按键也会传给前台程序。普通窗口前台不受影响。
+
+### 验证
+
+- 18/18 单元测试通过；热键自检 `APP_HOTKEY_LIVE_SELFTEST=1`（含钩子吞键后投递）。
+- 自检新增 `APP_INPUT_RAW_REGISTERED=1`、`APP_INPUT_RAW_EVENTS>0`，确认 Raw Input 注册与解析生效；普通前台 `APP_INPUT_RAW_HOTKEYS=0`，兜底不会重复触发。
+
 ## 2.4.5
 
 贴图能力对齐 1.x：按剪贴板内容决定贴什么，图片文件只自动转图一次，之后回退为文件路径文本；「图片文件转为图像」设置真正生效。

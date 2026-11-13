@@ -4131,6 +4131,10 @@ int Run(const Options& options) {
     AddFlag(report, "APP_RADIAL_CLICK_SELFTEST", radialClickOk);
     AddFlag(report, "APP_RECORDING_UI_SELFTEST", recordingUiSelftestOk);
     AddFlag(report, "APP_TRAY_MENU_SELFTEST", trayMenuSelftestOk);
+    AddFlag(report, "APP_INPUT_RAW_REGISTERED", input.RawRegisteredForTest());
+    AddInt(report, "APP_INPUT_RAW_EVENTS", input.RawKeyboardEventsForTest());
+    AddInt(report, "APP_INPUT_RAW_MESSAGES", input.RawMessagesForTest());
+    AddInt(report, "APP_INPUT_RAW_HOTKEYS", input.RawHotkeyDeliveriesForTest());
     ok = ok && screenshotSelftestOk && ocrSelftestOk && settingsSelftestOk && pinSelftestOk &&
          radialSelftestOk && windowPickerSelftestOk && hotkeySelftestOk && ocrSearchSelftestOk &&
          hotkeyLiveOk && recordingUiSelftestOk && trayMenuSelftestOk;

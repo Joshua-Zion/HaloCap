@@ -158,17 +158,25 @@ bool Win32InputHost::Start() {
 
     EnsureClassRegistered();
 
-    HWND window = CreateWindowExW(0, kWindowClassName, L"HaloCap input host", 0, 0, 0, 0, 0,
-                                  HWND_MESSAGE, nullptr, GetModuleHandleW(nullptr), this);
+    // 不显示、不激活的顶层窗口：WM_HOTKEY 与 Raw Input（message-only 收不到 WM_INPUT）
+    // 都靠它；Raw Input 仅在提权前台时临时注册。
+    HWND window = CreateWindowExW(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, kWindowClassName,
+                                  L"HaloCap input host", WS_POPUP, 0, 0, 0, 0, nullptr,
+                                  nullptr, GetModuleHandleW(nullptr), this);
     if (window == nullptr) {
         lastError_ = HRESULT_FROM_WIN32(GetLastError());
         errorKind_ = "hr";
         return false;
     }
 
-    // HWND_MESSAGE 父：这个窗口从不在桌面上出现，也不会被激活——后台验证的硬要求。
+    // 不显示、不激活的顶层窗口：既能收 WM_HOTKEY，也能作为 Raw Input 的目标
+    // （message-only 窗口收不到 WM_INPUT）。Raw Input 用来兜底「前台是提权窗口」。
     window_ = window;
     g_host = this;
+    rawKeysDown_.assign(256, false);
+    UpdateRawRegistration();
+    // 前台在普通/提权窗口之间切换时，按需注册或注销 Raw Input。
+    SetTimer(window, 1, 250, nullptr);
     errorKind_ = "ok";
     return true;
 }
@@ -185,6 +193,18 @@ void Win32InputHost::Close() {
     }
     registered_.clear();
     firedTokens_.clear();
+
+    KillTimer(window, 1);
+
+    if (rawRegistered_) {
+        RAWINPUTDEVICE keyboard{};
+        keyboard.usUsagePage = 0x01;
+        keyboard.usUsage = 0x06;
+        keyboard.dwFlags = RIDEV_REMOVE;
+        keyboard.hwndTarget = nullptr;
+        RegisterRawInputDevices(&keyboard, 1, sizeof(keyboard));
+        rawRegistered_ = false;
+    }
 
     if (hook_ != nullptr) {
         UnhookWindowsHookEx(static_cast<HHOOK>(hook_));
@@ -324,10 +344,7 @@ LRESULT Win32InputHost::HandleHook(int code, WPARAM wParam, LPARAM lParam) {
         // 否则就是「注册成功、按了没反应」。
         for (const auto& entry : registered_) {
             if (core::MatchesHotkey(event, entry.second)) {
-                firedTokens_.push_back(entry.first);
-                ++hotkeyDeliveries_;
-                lastHookedToken_ = entry.first;
-                lastHookedMs_ = GetTickCount64();
+                QueueToken(entry.first, true);
                 break;
             }
         }
@@ -335,6 +352,103 @@ LRESULT Win32InputHost::HandleHook(int code, WPARAM wParam, LPARAM lParam) {
     }
 
     return CallNextHookEx(static_cast<HHOOK>(hook_), code, wParam, lParam);
+}
+
+void Win32InputHost::QueueToken(int token, bool fromHook) {
+    const std::uint64_t now = GetTickCount64();
+    // 钩子每次匹配都是真实按键，必须投递；WM_HOTKEY / Raw Input 是同一次按键的
+    // 另一条路径，50ms 内同一 token 不重复投递。
+    if (!fromHook && token == lastHookedToken_ && now - lastHookedMs_ < 50) {
+        return;
+    }
+    lastHookedToken_ = token;
+    lastHookedMs_ = now;
+    firedTokens_.push_back(token);
+    ++hotkeyDeliveries_;
+}
+
+void Win32InputHost::UpdateRawRegistration() {
+    if (window_ == nullptr) {
+        return;
+    }
+    const bool want = ForegroundIsElevated();
+    if (want == rawRegistered_) {
+        return;
+    }
+    RAWINPUTDEVICE keyboard{};
+    keyboard.usUsagePage = 0x01;   // Generic Desktop
+    keyboard.usUsage = 0x06;       // Keyboard
+    keyboard.dwFlags = want ? RIDEV_INPUTSINK : RIDEV_REMOVE;
+    keyboard.hwndTarget = want ? static_cast<HWND>(window_) : nullptr;
+    if (RegisterRawInputDevices(&keyboard, 1, sizeof(keyboard))) {
+        rawRegistered_ = want;
+        if (want) {
+            rawKeysDown_.assign(256, false);
+        }
+    }
+}
+
+bool Win32InputHost::ForegroundIsElevated() const {    const HWND foreground = GetForegroundWindow();
+    if (foreground == nullptr) {
+        return false;
+    }
+    DWORD processId = 0;
+    GetWindowThreadProcessId(foreground, &processId);
+    if (processId == 0) {
+        return false;
+    }
+    HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, processId);
+    if (process == nullptr) {
+        // 查不到（受保护进程等）时按提权处理：宁可多走一条兜底，也不要漏掉动作。
+        return true;
+    }
+    bool elevated = false;
+    HANDLE token = nullptr;
+    if (OpenProcessToken(process, TOKEN_QUERY, &token)) {
+        TOKEN_ELEVATION info{};
+        DWORD size = 0;
+        if (GetTokenInformation(token, TokenElevation, &info, sizeof(info), &size)) {
+            elevated = info.TokenIsElevated != 0;
+        }
+        CloseHandle(token);
+    }
+    CloseHandle(process);
+    return elevated;
+}
+
+void Win32InputHost::HandleRawKeyboard(const RAWKEYBOARD& keyboard) {
+    ++rawKeyboardEvents_;
+    const int virtualKey = keyboard.VKey;
+    if (virtualKey < 0 || virtualKey >= static_cast<int>(rawKeysDown_.size())) {
+        return;
+    }
+    const bool down = (keyboard.Flags & RI_KEY_BREAK) == 0;
+    const bool repeat = down && rawKeysDown_[static_cast<std::size_t>(virtualKey)];
+    rawKeysDown_[static_cast<std::size_t>(virtualKey)] = down;
+    if (!down || repeat) {
+        return;
+    }
+
+    core::KeyEvent event{};
+    event.key = FromNativeVirtualKey(static_cast<DWORD>(virtualKey));
+    if (event.key == core::KeySymbol::None) {
+        return;
+    }
+    event.heldModifiers = CurrentModifierState();
+    event.isKeyDown = true;
+    event.isRepeat = false;
+    event.injected = false;
+    for (const auto& entry : registered_) {
+        if (!core::MatchesHotkey(event, entry.second)) {
+            continue;
+        }
+        // 只在提权窗口占前台时兜底：普通前台继续由低级钩子负责，避免重复/注入输入被当成热键。
+        if (ForegroundIsElevated()) {
+            QueueToken(entry.first, false);
+            ++rawHotkeys_;
+        }
+        break;
+    }
 }
 
 core::SwallowDecision Win32InputHost::MatchOnly(const core::KeyEvent& event) {
@@ -357,15 +471,32 @@ LRESULT CALLBACK Win32InputHost::WindowProc(HWND window, UINT message, WPARAM wP
 
     auto* self = reinterpret_cast<Win32InputHost*>(GetWindowLongPtrW(window, GWLP_USERDATA));
 
+    if (message == WM_TIMER && self != nullptr && wParam == 1) {
+        self->UpdateRawRegistration();
+        return 0;
+    }
+
     if (message == WM_HOTKEY && self != nullptr) {
-        const int token = static_cast<int>(wParam);
-        // 刚由钩子补发过的同一把就别再来一次。
-        if (token == self->lastHookedToken_ &&
-            GetTickCount64() - self->lastHookedMs_ < 200) {
-            return 0;
+        self->QueueToken(static_cast<int>(wParam), false);
+        return 0;
+    }
+
+    if (message == WM_INPUT && self != nullptr) {
+        ++self->rawMessages_;
+        UINT size = 0;
+        if (GetRawInputData(reinterpret_cast<HRAWINPUT>(lParam), RID_INPUT, nullptr, &size,
+                            sizeof(RAWINPUTHEADER)) == 0 &&
+            size >= sizeof(RAWINPUTHEADER)) {
+            std::vector<std::uint8_t> buffer(size);
+            if (GetRawInputData(reinterpret_cast<HRAWINPUT>(lParam), RID_INPUT, buffer.data(),
+                                &size, sizeof(RAWINPUTHEADER)) == size) {
+                const auto* raw = reinterpret_cast<const RAWINPUT*>(buffer.data());
+                if (raw->header.dwType == RIM_TYPEKEYBOARD &&
+                    size >= sizeof(RAWINPUTHEADER) + sizeof(RAWKEYBOARD)) {
+                    self->HandleRawKeyboard(raw->data.keyboard);
+                }
+            }
         }
-        self->firedTokens_.push_back(token);
-        ++self->hotkeyDeliveries_;
         return 0;
     }
 

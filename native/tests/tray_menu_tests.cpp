@@ -84,8 +84,9 @@ void TestActionTable() {
     CheckFalse(core::IsTrayCommand(0), "0 is not a command");
     CheckFalse(core::IsTrayCommand(1000), "1000 is not a command");
     CheckTrue(core::IsTrayCommand(1001), "the first command is in range");
-    CheckTrue(core::IsTrayCommand(1009), "the last command is in range");
-    CheckFalse(core::IsTrayCommand(1010), "1010 is out of range");
+    CheckTrue(core::IsTrayCommand(1009), "the exit command is in range");
+    CheckTrue(core::IsTrayCommand(1010), "the restart-elevated command is in range");
+    CheckFalse(core::IsTrayCommand(1011), "1011 is out of range");
 
     // 命令名是日志与诊断的稳定词，不能空、也不能是数字。
     CheckText(core::TrayCommandName(core::TrayCommand::None), "None", "none name");
@@ -100,6 +101,8 @@ void TestActionTable() {
     CheckText(core::TrayCommandName(core::TrayCommand::ToggleAutoStart), "ToggleAutoStart",
               "autostart name");
     CheckText(core::TrayCommandName(core::TrayCommand::Exit), "Exit", "exit name");
+    CheckText(core::TrayCommandName(core::TrayCommand::RestartElevated), "RestartElevated",
+              "restart elevated name");
     CheckText(core::TrayCommandName(static_cast<core::TrayCommand>(1234)), "",
               "an unknown command has no name");
 }
@@ -108,7 +111,7 @@ void TestIdleMenu() {
     const core::TrayMenuState state = IdleState();
     const std::vector<core::TrayMenuItem> items = core::BuildTrayMenu(state);
 
-    CheckEqual(static_cast<long long>(items.size()), 11, "idle menu has eleven rows");
+    CheckEqual(static_cast<long long>(items.size()), 12, "idle menu has twelve rows");
 
     CheckItem(items[0], core::TrayCommand::Screenshot, "截图", "row 0 is screenshot");
     CheckText(items[0].shortcut, "Ctrl+Alt+A", "screenshot shortcut");
@@ -142,14 +145,18 @@ void TestIdleMenu() {
 
     CheckTrue(items[9].separator, "row 9 is a separator");
 
-    CheckItem(items[10], core::TrayCommand::Exit, "退出 HaloCap", "row 10 exits");
-    CheckTrue(items[10].enabled, "exit is always enabled");
+    CheckItem(items[10], core::TrayCommand::RestartElevated, "以管理员身份重启",
+              "row 10 restarts elevated");
+    CheckTrue(items[10].enabled, "restart elevated is enabled while idle and not elevated");
+
+    CheckItem(items[11], core::TrayCommand::Exit, "退出 HaloCap", "row 11 exits");
+    CheckTrue(items[11].enabled, "exit is always enabled");
 
     // 没有可用剪贴板内容时只灰掉贴图，其余不动。
     core::TrayMenuState noPin = state;
     noPin.pinAvailable = false;
     const std::vector<core::TrayMenuItem> noPinItems = core::BuildTrayMenu(noPin);
-    CheckEqual(static_cast<long long>(noPinItems.size()), 11, "menu with no clipboard content has the same rows");
+    CheckEqual(static_cast<long long>(noPinItems.size()), 12, "menu with no clipboard content has the same rows");
     CheckFalse(noPinItems[3].enabled, "pin is disabled without clipboard content");
     CheckTrue(noPinItems[0].enabled, "screenshot stays enabled without clipboard content");
 
@@ -157,6 +164,14 @@ void TestIdleMenu() {
     core::TrayMenuState noAutoStart = state;
     noAutoStart.autoStart = false;
     CheckFalse(core::BuildTrayMenu(noAutoStart)[8].checked, "autostart is unchecked when disabled");
+
+    // 已经是管理员就不再显示「以管理员身份重启」，菜单少一行，退出顶到 [10]。
+    core::TrayMenuState elevated = state;
+    elevated.elevated = true;
+    const std::vector<core::TrayMenuItem> elevatedItems = core::BuildTrayMenu(elevated);
+    CheckEqual(static_cast<long long>(elevatedItems.size()), 11, "elevated menu drops the restart row");
+    CheckItem(elevatedItems[10], core::TrayCommand::Exit, "退出 HaloCap", "elevated row 10 exits");
+    CheckTrue(elevatedItems[9].separator, "elevated menu keeps the separator before exit");
 }
 
 void TestRecordingMenu() {
@@ -164,7 +179,7 @@ void TestRecordingMenu() {
     state.recording = true;
 
     const std::vector<core::TrayMenuItem> items = core::BuildTrayMenu(state);
-    CheckEqual(static_cast<long long>(items.size()), 12, "recording menu has twelve rows");
+    CheckEqual(static_cast<long long>(items.size()), 13, "recording menu has thirteen rows");
 
     // 录制中只有「停止录制」与「暂停录制」是亮的，其余全灰——1.x 的原规则。
     CheckFalse(items[0].enabled, "screenshot is disabled while recording");
@@ -186,14 +201,18 @@ void TestRecordingMenu() {
 
     CheckTrue(items[8].separator, "recording menu separator before autostart");
     CheckFalse(items[9].enabled, "autostart is disabled while recording");
-    CheckTrue(items[11].enabled, "exit stays enabled while recording");
+    CheckTrue(items[10].separator, "recording menu separator before restart/exit");
+    CheckItem(items[11], core::TrayCommand::RestartElevated, "以管理员身份重启",
+              "recording row 11 restarts elevated");
+    CheckFalse(items[11].enabled, "restart elevated is disabled while recording");
+    CheckTrue(items[12].enabled, "exit stays enabled while recording");
 
     // 暂停之后同一项变成「继续录制」，编号不变。
     core::TrayMenuState paused = state;
     paused.recordingPaused = true;
     const std::vector<core::TrayMenuItem> pausedItems = core::BuildTrayMenu(paused);
     CheckItem(pausedItems[3], core::TrayCommand::PauseRecording, "继续录制", "pause becomes resume");
-    CheckEqual(static_cast<long long>(pausedItems.size()), 12, "paused menu keeps its rows");
+    CheckEqual(static_cast<long long>(pausedItems.size()), 13, "paused menu keeps its rows");
 }
 
 void TestTooltip() {

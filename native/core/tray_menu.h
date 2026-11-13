@@ -40,6 +40,7 @@ enum class TrayCommand : std::int32_t {
     Settings = 1007,
     ToggleAutoStart = 1008,
     Exit = 1009,
+    RestartElevated = 1010,
 };
 
 bool IsTrayCommand(std::int32_t id);
@@ -54,6 +55,7 @@ struct TrayMenuState {
     bool recordingPaused = false;
     bool pinAvailable = true;   // 剪贴板里有没有能贴的内容
     bool autoStart = false;     // 开机自启当前开着没有
+    bool elevated = false;      // 当前进程是否已提权（提权后不再显示「以管理员身份重启」）
 
     // 显示文本（"Ctrl+Alt+D"）。空串表示这一项不显示快捷键那一列。
     std::string radialHotkey;

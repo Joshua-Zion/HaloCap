@@ -83,6 +83,22 @@ std::int64_t PrivateMemoryBytes() {
     return static_cast<std::int64_t>(counters.PrivateUsage);
 }
 
+// 问某个进程令牌是否提权。拿不到令牌（权限不足/进程已退）按「未提权」处理，
+// 诊断宁可少报也不误报「已是管理员」。
+bool TokenElevated(HANDLE process) {
+    HANDLE token = nullptr;
+    if (!OpenProcessToken(process, TOKEN_QUERY, &token)) {
+        return false;
+    }
+    TOKEN_ELEVATION info{};
+    DWORD size = 0;
+    const bool elevated =
+        GetTokenInformation(token, TokenElevation, &info, sizeof(info), &size) &&
+        info.TokenIsElevated != 0;
+    CloseHandle(token);
+    return elevated;
+}
+
 // 路径可能还没创建（第一次录制前保存目录不存在），GetDiskFreeSpaceEx 对不存在的目录会失败，
 // 所以退到卷根再问一次。
 bool QueryFreeBytes(const std::wstring& path, ULARGE_INTEGER& out) {
@@ -114,7 +130,32 @@ core::PlatformFacts Win32Capability::Probe() {
     facts.osBuild = CurrentOsBuild();
     facts.graphicsCaptureSupported = GraphicsCaptureSupported();
     facts.privateMemoryBytes = PrivateMemoryBytes();
+    facts.processElevated = IsProcessElevated();
     return facts;
+}
+
+bool IsProcessElevated() {
+    return TokenElevated(GetCurrentProcess());
+}
+
+bool IsForegroundElevated() {
+    const HWND foreground = GetForegroundWindow();
+    if (foreground == nullptr) {
+        return false;
+    }
+    DWORD processId = 0;
+    GetWindowThreadProcessId(foreground, &processId);
+    if (processId == 0) {
+        return false;
+    }
+    // PROCESS_QUERY_LIMITED_INFORMATION 足以开令牌问提权，且对受保护进程也更可能成功。
+    HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, processId);
+    if (process == nullptr) {
+        return false;
+    }
+    const bool elevated = TokenElevated(process);
+    CloseHandle(process);
+    return elevated;
 }
 
 std::int64_t Win32Capability::AvailableBytes(const char* utf8Path) {

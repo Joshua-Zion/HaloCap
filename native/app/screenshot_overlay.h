@@ -313,6 +313,9 @@ private:
     POINT lastMouse_{};
     bool mouseInside_ = false;
     int hoveredToolbar_ = -1;
+    // 工具栏/选项栏按钮按下时记下的下标：松手仍在同一按钮才触发。
+    int pressedToolbarIndex_ = -1;
+    int pressedOptionIndex_ = -1;
     std::uint64_t hoverSinceMs_ = 0;
     float hoverAlpha_[32] = {};
     bool hoverAnimating_ = false;

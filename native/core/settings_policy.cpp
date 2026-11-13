@@ -567,7 +567,7 @@ constexpr std::size_t EntryCount(const EnumEntry (&)[N]) {
 const char* const kKnownLeafPaths[] = {
     "schemaVersion",   "hotkey",            "screenshotHotkey", "ocrHotkey",     "recordHotkey",
     "pinHotkey",       "screenshotFormat",  "menuSize",         "recordingDirectory",
-    "convertFilePathsToImages", "pinGlowEnabled", "autoStart",
+    "convertFilePathsToImages", "pinGlowEnabled", "autoStart", "elevateOnStart",
     "ocr.engine",      "ocr.autoCopy",      "ocr.autoStart",
     "ocr.model",       "ocr.modelVariant",
     "recording.resolution", "recording.frameRate", "recording.quality", "recording.recordCursor",
@@ -1068,6 +1068,7 @@ void ParseSettings(std::string_view utf8, AppSettings& settings, SettingsReadRep
     ReadBoolField(tree, "convertFilePathsToImages", settings.convertFilePathsToImages, report);
     ReadBoolField(tree, "pinGlowEnabled", settings.pinGlowEnabled, report);
     ReadBoolField(tree, "autoStart", settings.autoStart, report);
+    ReadBoolField(tree, "elevateOnStart", settings.elevateOnStart, report);
 
     ReadEnumField(tree, "ocr.engine", kOcrEngineEntries, EntryCount(kOcrEngineEntries), settings.ocr.engine,
                   report);
@@ -1122,6 +1123,7 @@ std::string SerializeSettings(const AppSettings& settings) {
     AddBoolean(tree, root, "convertFilePathsToImages", settings.convertFilePathsToImages);
     AddBoolean(tree, root, "pinGlowEnabled", settings.pinGlowEnabled);
     AddBoolean(tree, root, "autoStart", settings.autoStart);
+    AddBoolean(tree, root, "elevateOnStart", settings.elevateOnStart);
 
     const std::size_t ocr = AddObject(tree, root, "ocr");
     AddText(tree, ocr, "engine", OcrEngineName(settings.ocr.engine));

@@ -152,6 +152,9 @@ struct AppSettings {
     bool convertFilePathsToImages = true;
     bool pinGlowEnabled = true;
     bool autoStart = false;
+    // 启动时请求管理员权限。默认关：普通双击启动不提权；开了才在启动时 runas。
+    // 提权后全局热键能覆盖任务管理器等提权窗口（UIPI），代价是每次启动弹 UAC。
+    bool elevateOnStart = false;
 
     OcrSettings ocr;
     RecordingSettings recording;
@@ -162,7 +165,8 @@ struct AppSettings {
                pinHotkey == other.pinHotkey && screenshotFormat == other.screenshotFormat &&
                menuSize == other.menuSize && recordingDirectory == other.recordingDirectory &&
                convertFilePathsToImages == other.convertFilePathsToImages &&
-               pinGlowEnabled == other.pinGlowEnabled && autoStart == other.autoStart && ocr.engine == other.ocr.engine &&
+               pinGlowEnabled == other.pinGlowEnabled && autoStart == other.autoStart &&
+               elevateOnStart == other.elevateOnStart && ocr.engine == other.ocr.engine &&
                ocr.autoCopy == other.ocr.autoCopy &&
                ocr.autoStart == other.ocr.autoStart && ocr.model == other.ocr.model &&
                recording == other.recording;

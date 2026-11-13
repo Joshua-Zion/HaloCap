@@ -27,6 +27,7 @@
 #include "win32_tray.h"
 #include "win32_update_fetch.h"
 #include "win32_autostart.h"
+#include "win32_capability.h"
 
 namespace halocap::app {
 
@@ -103,6 +104,7 @@ enum : int {
     kIdToggleConvertFiles = 31,
     kIdTogglePinGlow = 32,
     kIdToggleAutoCopy = 33,
+    kIdToggleElevate = 34,
     kIdToggleSystemAudio = 35,
     kIdToggleMicrophone = 36,
     kIdToggleRecordCursor = 37,
@@ -785,6 +787,9 @@ std::wstring SettingsWindow::SummaryText() const {
     std::wostringstream stream;
     stream << L"HaloCap " << Utf8ToWide(halocap::app::kHaloCapVersion) << L"\n";
     stream << L"OS build: " << facts_.osBuild << L"\n";
+    stream << L"运行权限: " << (facts_.processElevated ? L"管理员" : L"标准用户") << L"\n";
+    stream << L"前台窗口提权: "
+           << (halocap::platform::win32::IsForegroundElevated() ? L"是" : L"否") << L"\n";
 
     stream << L"Models: " << Utf8ToWide(modelsDirectory_) << L"\n";
     return stream.str();
@@ -1217,6 +1222,7 @@ void SettingsWindow::Click(int id) {
     }
     switch (id) {
     case kIdToggleAutoStart: settings_.autoStart = !settings_.autoStart; break;
+    case kIdToggleElevate: settings_.elevateOnStart = !settings_.elevateOnStart; break;
     case kIdToggleConvertFiles:
         settings_.convertFilePathsToImages = !settings_.convertFilePathsToImages;
         break;
@@ -1483,12 +1489,19 @@ void SettingsWindow::Render() {
     switch (page_) {
     case Page::General: {
         groupLabel(L"启动");
-        cardStart(62.0f);
+        cardStart(124.0f);
         switchAt(scrollX, scrollW, y, 62.0f, kIdToggleAutoStart, settings_.autoStart);
         DrawText(g, L"开机自启", &fonts->setting, RectF(scrollX + 16.0f, y + 12.0f, 300, rowTitle),
                  textPrimary);
         DrawText(g, L"进入桌面后静默运行，仅驻留托盘", &fonts->desc,
                  RectF(scrollX + 16.0f, y + 32.0f, 320, 16), textSecondary);
+        y += 62.0f;
+        divider(scrollX, scrollW);
+        switchAt(scrollX, scrollW, y, 62.0f, kIdToggleElevate, settings_.elevateOnStart);
+        DrawText(g, L"以管理员身份启动", &fonts->setting,
+                 RectF(scrollX + 16.0f, y + 12.0f, 300, rowTitle), textPrimary);
+        DrawText(g, L"启动时请求提权，热键可覆盖任务管理器等窗口", &fonts->desc,
+                 RectF(scrollX + 16.0f, y + 32.0f, 340, 16), textSecondary);
         y += 62.0f;
 
         y += 20.0f;
@@ -1913,21 +1926,26 @@ void SettingsWindow::Render() {
 
         y += 20.0f;
         groupLabel(L"诊断");
-        cardStart(150.0f);
+        cardStart(172.0f);
         DrawText(g, L"环境摘要", &fonts->setting,
                  RectF(scrollX + 16.0f, y + 14.0f, 240, 18), textPrimary);
         DrawText(g, L"OS build " + std::to_wstring(facts_.osBuild) + L" · WGC " +
                      (facts_.graphicsCaptureSupported ? L"可用" : L"不可用"),
                  &fonts->desc, RectF(scrollX + 16.0f, y + 36.0f, scrollW - 32.0f, 16),
                  textSecondary);
+        DrawText(g, L"运行权限：" + std::wstring(facts_.processElevated ? L"管理员" : L"标准用户") +
+                     L" · 前台窗口：" +
+                     (halocap::platform::win32::IsForegroundElevated() ? L"提权" : L"普通"),
+                 &fonts->desc, RectF(scrollX + 16.0f, y + 58.0f, scrollW - 32.0f, 16),
+                 textSecondary);
         DrawText(g, L"模型目录：" + Utf8ToWide(modelsDirectory_), &fonts->desc,
-                 RectF(scrollX + 16.0f, y + 58.0f, scrollW - 32.0f, 16), textSecondary);
+                 RectF(scrollX + 16.0f, y + 80.0f, scrollW - 32.0f, 16), textSecondary);
         DrawText(g, L"更新来源：GitHub Releases（可在 %LOCALAPPDATA%\\HaloCap2\\update.url 覆盖镜像）",
-                 &fonts->desc, RectF(scrollX + 16.0f, y + 80.0f, scrollW - 32.0f, 16),
+                 &fonts->desc, RectF(scrollX + 16.0f, y + 102.0f, scrollW - 32.0f, 16),
                  textSecondary);
         DrawText(g, L"识别完全在本机完成，图片不会上传网络。", &fonts->desc,
-                 RectF(scrollX + 16.0f, y + 102.0f, scrollW - 32.0f, 16), textSecondary);
-        y += 150.0f;
+                 RectF(scrollX + 16.0f, y + 124.0f, scrollW - 32.0f, 16), textSecondary);
+        y += 172.0f;
         break;
     }
     }

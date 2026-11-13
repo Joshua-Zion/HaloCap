@@ -225,6 +225,10 @@ private:
     // 逐行/版面视图里用 ↑↓ 选中的行；Enter 复制。
     int selectedLine_ = -1;
     Hit hoveredHit_ = Hit::None;
+    // 按钮按下时记下的命中：松手仍在同一控件才触发（与设置窗口一致）。
+    Hit pressedHit_ = Hit::None;
+    // 行右端复制图标按下时记下的行号；松手仍在该行复制区才复制。
+    int pressedCopyLine_ = -1;
 
     RECT textScrollTrack_{};
     RECT textScrollThumb_{};

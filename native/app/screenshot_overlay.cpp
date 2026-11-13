@@ -560,6 +560,11 @@ LRESULT ScreenshotOverlay::HandleMessage(HWND window, UINT message, WPARAM wPara
         return 0;
     }
 
+    case WM_CAPTURECHANGED:
+        pressedToolbarIndex_ = -1;
+        pressedOptionIndex_ = -1;
+        return 0;
+
     case WM_PAINT: {
         ValidateRect(window, nullptr);
         return 0;
@@ -1032,11 +1037,13 @@ void ScreenshotOverlay::OnLeftButtonDown(POINT point) {
     if (optionBounds_.right > optionBounds_.left && client.x >= optionBounds_.left &&
         client.x < optionBounds_.right && client.y >= optionBounds_.top &&
         client.y < optionBounds_.bottom) {
-        for (const OptionButton& option : optionButtons_) {
+        for (std::size_t index = 0; index < optionButtons_.size(); ++index) {
+            const OptionButton& option = optionButtons_[index];
             if (client.x >= option.rect.left && client.x < option.rect.right &&
                 client.y >= option.rect.top && client.y < option.rect.bottom) {
-                HandleOption(option.action);
-                return;
+                pressedOptionIndex_ = static_cast<int>(index);
+                SetCapture(static_cast<HWND>(window_->Handle()));
+                break;
             }
         }
         return;
@@ -1045,13 +1052,15 @@ void ScreenshotOverlay::OnLeftButtonDown(POINT point) {
     // 工具栏优先：它在选区之上，点按钮不能落成标注。
     if (toolbarVisible_ && client.x >= toolbarBounds_.left && client.x < toolbarBounds_.right &&
         client.y >= toolbarBounds_.top && client.y < toolbarBounds_.bottom) {
-        for (const ToolbarButton& button : toolbar_) {
+        for (std::size_t index = 0; index < toolbar_.size(); ++index) {
+            const ToolbarButton& button = toolbar_[index];
             if (client.x >= button.rect.left && client.x < button.rect.right &&
                 client.y >= button.rect.top && client.y < button.rect.bottom) {
                 if (button.enabled) {
-                    HandleToolbar(button);
+                    pressedToolbarIndex_ = static_cast<int>(index);
+                    SetCapture(static_cast<HWND>(window_->Handle()));
                 }
-                return;
+                break;
             }
         }
         return;
@@ -1186,6 +1195,36 @@ void ScreenshotOverlay::OnLeftButtonDown(POINT point) {
 }
 
 void ScreenshotOverlay::OnLeftButtonUp(POINT point) {
+    // 工具栏/选项栏按钮：松手仍按在同一按钮上才触发（按下只记录，不执行）。
+    const HWND window = window_ != nullptr ? static_cast<HWND>(window_->Handle()) : nullptr;
+    const POINT client{ point.x - windowX_, point.y - windowY_ };
+    if (pressedOptionIndex_ >= 0) {
+        const int pressed = pressedOptionIndex_;
+        pressedOptionIndex_ = -1;
+        if (window != nullptr && GetCapture() == window) {
+            ReleaseCapture();
+        }
+        const OptionButton& button = optionButtons_[static_cast<std::size_t>(pressed)];
+        if (client.x >= button.rect.left && client.x < button.rect.right &&
+            client.y >= button.rect.top && client.y < button.rect.bottom) {
+            HandleOption(button.action);
+        }
+        return;
+    }
+    if (pressedToolbarIndex_ >= 0) {
+        const int pressed = pressedToolbarIndex_;
+        pressedToolbarIndex_ = -1;
+        if (window != nullptr && GetCapture() == window) {
+            ReleaseCapture();
+        }
+        const ToolbarButton& button = toolbar_[static_cast<std::size_t>(pressed)];
+        if (button.enabled && client.x >= button.rect.left && client.x < button.rect.right &&
+            client.y >= button.rect.top && client.y < button.rect.bottom) {
+            HandleToolbar(button);
+        }
+        return;
+    }
+
     if (selecting_) {
         selection_.Commit();
         selecting_ = false;

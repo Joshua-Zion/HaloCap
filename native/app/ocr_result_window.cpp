@@ -1345,21 +1345,71 @@ LRESULT OcrResultWindow::Handle(HWND window, UINT message, WPARAM wParam, LPARAM
     case WM_LBUTTONDOWN: {
         const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
         const Hit hit = HitTest(point);
-        if (hit != Hit::None) {
+        // 滚动条滑块是拖动，不是按钮：按下即开始拖。
+        if (hit == Hit::TextScrollThumb) {
             HandleClick(hit);
+            return 0;
+        }
+        if (hit != Hit::None) {
+            pressedHit_ = hit;
+            SetCapture(window_);
             return 0;
         }
         const int line = LineAt(point);
         if (line >= 0) {
             selectedLine_ = line;
-            // 行右端的复制图标：单击就复制；其余区域只选中，双击或 Enter 才复制。
+            // 行右端的复制图标：按下记下，松手仍在复制区才复制；其余区域只选中。
             if (point.x >= contentBodyRect_.right - ScaleInt(46.0f)) {
-                CopyLine(static_cast<std::size_t>(line));
+                pressedCopyLine_ = line;
+                SetCapture(window_);
             }
             InvalidateRect(window_, &contentRect_, FALSE);
         }
         return 0;
     }
+
+    case WM_LBUTTONUP: {
+        const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        if (textScrollDragging_) {
+            textScrollDragging_ = false;
+            if (GetCapture() == window_) {
+                ReleaseCapture();
+            }
+            return 0;
+        }
+        if (pressedHit_ != Hit::None) {
+            const Hit hit = HitTest(point);
+            const Hit pressed = pressedHit_;
+            pressedHit_ = Hit::None;
+            if (GetCapture() == window_) {
+                ReleaseCapture();
+            }
+            if (hit == pressed) {
+                HandleClick(pressed);
+            }
+            return 0;
+        }
+        if (pressedCopyLine_ >= 0) {
+            const int line = LineAt(point);
+            const int pressed = pressedCopyLine_;
+            pressedCopyLine_ = -1;
+            if (GetCapture() == window_) {
+                ReleaseCapture();
+            }
+            if (line == pressed && point.x >= contentBodyRect_.right - ScaleInt(46.0f)) {
+                CopyLine(static_cast<std::size_t>(pressed));
+            }
+            InvalidateRect(window_, &contentRect_, FALSE);
+            return 0;
+        }
+        return 0;
+    }
+
+    case WM_CAPTURECHANGED:
+        pressedHit_ = Hit::None;
+        pressedCopyLine_ = -1;
+        textScrollDragging_ = false;
+        return 0;
 
     case WM_LBUTTONDBLCLK: {
         const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };

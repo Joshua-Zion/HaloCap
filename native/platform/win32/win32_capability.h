@@ -15,4 +15,11 @@ public:
     std::int64_t AvailableBytes(const char* utf8Path) override;
 };
 
+// 当前进程是否以管理员权限运行（TokenElevation）。诊断与启动提权判断都用它。
+bool IsProcessElevated();
+
+// 前台窗口所属进程是否提权。提权窗口在前台时，普通权限进程的全局热键会被 UIPI 挡住，
+// 诊断页据此给出「开启管理员模式」的提示。读不到前台窗口时按「未提权」处理。
+bool IsForegroundElevated();
+
 }

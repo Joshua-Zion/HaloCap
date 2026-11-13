@@ -1502,20 +1502,15 @@ void PinWindow::OnLeftButtonDown(HWND window, POINT client) {
         const int toolbar = ToolbarButtonAt(client);
         if (toolbar >= 0) {
             if (toolbar_[static_cast<std::size_t>(toolbar)].enabled) {
-                HandleToolbar(toolbar_[static_cast<std::size_t>(toolbar)]);
+                pressedToolbarIndex_ = toolbar;
+                SetCapture(window);
             }
             return;
         }
         const int option = OptionButtonAt(client);
         if (option >= 0) {
-            const PinButton& button = optionButtons_[static_cast<std::size_t>(option)];
-            if (button.action == PinAction::Color) {
-                style_.color = core::annotation_defaults::PaletteColor(button.payload);
-                UpdateLayout();
-                Render();
-            } else if (button.enabled) {
-                HandleOption(button.action);
-            }
+            pressedOptionIndex_ = option;
+            SetCapture(window);
             return;
         }
         const core::Point local{ (static_cast<float>(client.x) - contentLeft_) / zoom_,
@@ -1566,7 +1561,40 @@ void PinWindow::OnLeftButtonDown(HWND window, POINT client) {
     StartWindowDrag(window);
 }
 
-void PinWindow::OnLeftButtonUp(HWND window) {
+void PinWindow::OnLeftButtonUp(HWND window, POINT client) {
+    // 工具栏/选项栏按钮：松手仍按在同一按钮上才触发（按下只记录，不执行）。
+    if (pressedToolbarIndex_ >= 0) {
+        const int pressed = pressedToolbarIndex_;
+        pressedToolbarIndex_ = -1;
+        if (GetCapture() == window) {
+            ReleaseCapture();
+        }
+        if (ToolbarButtonAt(client) == pressed) {
+            const PinButton& button = toolbar_[static_cast<std::size_t>(pressed)];
+            if (button.enabled) {
+                HandleToolbar(button);
+            }
+        }
+        return;
+    }
+    if (pressedOptionIndex_ >= 0) {
+        const int pressed = pressedOptionIndex_;
+        pressedOptionIndex_ = -1;
+        if (GetCapture() == window) {
+            ReleaseCapture();
+        }
+        if (OptionButtonAt(client) == pressed) {
+            const PinButton& button = optionButtons_[static_cast<std::size_t>(pressed)];
+            if (button.action == PinAction::Color) {
+                style_.color = core::annotation_defaults::PaletteColor(button.payload);
+                UpdateLayout();
+                Render();
+            } else if (button.enabled) {
+                HandleOption(button.action);
+            }
+        }
+        return;
+    }
     if (dragging_) {
         EndWindowDrag(window);
         return;
@@ -2349,12 +2377,37 @@ LRESULT PinWindow::HandleMenu(HWND window, UINT message, WPARAM wParam, LPARAM l
                 break;
             }
         }
-        HideMenu();
         if (chosen != 0) {
-            ExecuteMenu(chosen);
+            pressedMenuId_ = chosen;
+            return 0;
+        }
+        // 点在菜单项外（分隔/禁用/留白）：与托盘菜单一致，点别处就收起。
+        HideMenu();
+        return 0;
+    }
+    case WM_LBUTTONUP: {
+        const POINT point{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) };
+        const int pressed = pressedMenuId_;
+        pressedMenuId_ = 0;
+        int chosen = 0;
+        for (const MenuItem& item : menuItems_) {
+            if (!item.separator && item.enabled && point.x >= item.rect.left &&
+                point.x < item.rect.right && point.y >= item.rect.top &&
+                point.y < item.rect.bottom) {
+                chosen = item.id;
+                break;
+            }
+        }
+        // 先取走按下态再 HideMenu：HideMenu 释放捕获会同步发 WM_CAPTURECHANGED。
+        if (pressed != 0 && chosen == pressed) {
+            HideMenu();
+            ExecuteMenu(pressed);
         }
         return 0;
     }
+    case WM_CAPTURECHANGED:
+        pressedMenuId_ = 0;
+        return 0;
     case WM_RBUTTONDOWN:
         HideMenu();
         return 0;
@@ -2438,7 +2491,11 @@ LRESULT PinWindow::Handle(HWND window, UINT message, WPARAM wParam, LPARAM lPara
         Close();
         return 0;
     case WM_LBUTTONUP:
-        OnLeftButtonUp(window);
+        OnLeftButtonUp(window, POINT{ GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam) });
+        return 0;
+    case WM_CAPTURECHANGED:
+        pressedToolbarIndex_ = -1;
+        pressedOptionIndex_ = -1;
         return 0;
     case WM_RBUTTONDOWN: {
         // 鼠标消息给的是客户区坐标，菜单要贴光标放，先换成屏幕坐标。

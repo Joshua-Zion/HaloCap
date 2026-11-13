@@ -75,7 +75,7 @@ bool AppActionFromIndex(std::int32_t index, AppAction& out) {
 
 bool IsTrayCommand(std::int32_t id) {
     return id >= static_cast<std::int32_t>(TrayCommand::Screenshot) &&
-           id <= static_cast<std::int32_t>(TrayCommand::Exit);
+           id <= static_cast<std::int32_t>(TrayCommand::RestartElevated);
 }
 
 const char* TrayCommandName(TrayCommand command) {
@@ -90,6 +90,7 @@ const char* TrayCommandName(TrayCommand command) {
     case TrayCommand::Settings: return "Settings";
     case TrayCommand::ToggleAutoStart: return "ToggleAutoStart";
     case TrayCommand::Exit: return "Exit";
+    case TrayCommand::RestartElevated: return "RestartElevated";
     }
     return "";
 }
@@ -125,6 +126,11 @@ std::vector<TrayMenuItem> BuildTrayMenu(const TrayMenuState& state) {
         MakeItem(TrayCommand::ToggleAutoStart, "开机自启", "", !state.recording, state.autoStart));
 
     items.push_back(MakeSeparator());
+    // 已经是管理员就不必再「以管理员身份重启」；录制中重启会丢掉录屏，所以灰掉。
+    if (!state.elevated) {
+        items.push_back(MakeItem(TrayCommand::RestartElevated, "以管理员身份重启", "",
+                                 !state.recording));
+    }
     items.push_back(MakeItem(TrayCommand::Exit, "退出 HaloCap", "", true));
 
     return items;

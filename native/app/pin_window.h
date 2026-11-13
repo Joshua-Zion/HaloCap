@@ -160,7 +160,7 @@ private:
 
     void OnMouseMove(HWND window, POINT client);
     void OnLeftButtonDown(HWND window, POINT client);
-    void OnLeftButtonUp(HWND window);
+    void OnLeftButtonUp(HWND window, POINT client);
     void OnMouseWheel(int delta);
     void OnKeyDown(WPARAM key);
     void OnSetCursor();
@@ -255,10 +255,15 @@ private:
     int optionHeight_ = 0;
     int hoveredToolbar_ = -1;
     int hoveredOption_ = -1;
+    // 工具栏/选项栏按钮按下时记下的下标：松手仍在同一按钮才触发。
+    int pressedToolbarIndex_ = -1;
+    int pressedOptionIndex_ = -1;
 
     bool menuOpen_ = false;
     std::vector<MenuItem> menuItems_;
     int hoveredMenuIndex_ = -1;
+    // 右键菜单按下时记下的项 id：松手仍在同一项才执行。
+    int pressedMenuId_ = 0;
     int menuWidth_ = 0;
     int menuHeight_ = 0;
     int menuScreenX_ = 0;

@@ -940,6 +940,7 @@ int Run(const Options& options) {
         }
     }
     trayState.autoStart = halocap::platform::win32::IsAutoStartEnabled(selfPath);
+    trayState.elevated = CurrentProcessElevated();
 
     Win32Tray tray;
     bool trayIcon = false;
@@ -1025,6 +1026,7 @@ int Run(const Options& options) {
     AddFlag(report, "APP_INPUT_HOST", inputStarted);
     AddInt(report, "APP_HOTKEYS_REGISTERED", hotkeysRegistered);
     AddFlag(report, "APP_ELEVATED", CurrentProcessElevated());
+    AddFlag(report, "APP_FOREGROUND_ELEVATED", halocap::platform::win32::IsForegroundElevated());
 
     // ---- 3) 覆盖层：按需 ----
     const int screenWidth = GetSystemMetrics(SM_CXSCREEN);
@@ -1730,6 +1732,22 @@ int Run(const Options& options) {
         if (command == core::TrayCommand::Exit) {
             log.Info("action: Exit");
             running = false;
+            return;
+        }
+        if (command == core::TrayCommand::RestartElevated) {
+            // 一次性提权重启：runas 拉起新实例后本实例退出。用户拒绝 UAC 则保持现状。
+            wchar_t executable[MAX_PATH] = {};
+            if (GetModuleFileNameW(nullptr, executable, MAX_PATH) != 0) {
+                const HINSTANCE launched =
+                    ShellExecuteW(nullptr, L"runas", executable, nullptr, nullptr, SW_SHOWNORMAL);
+                if (reinterpret_cast<INT_PTR>(launched) > 32) {
+                    log.Info("action: RestartElevated");
+                    running = false;
+                } else {
+                    log.Error("action: RestartElevated cancelled");
+                    notify("已取消提权，保持当前权限运行");
+                }
+            }
             return;
         }
         if (command == core::TrayCommand::Record) {
@@ -4187,10 +4205,13 @@ int main(int argc, char** argv) {
         return halocap::app::RunOcrWorker(argv[2], argv[3], argv[4]);
     }
 
-    // 提权窗口（任务管理器等）在前台时，普通权限进程收不到全局热键（UIPI）。
-    // 正常双击启动（无参数、非自启）时请求管理员权限重启；用户拒绝则继续普通权限运行。
+    // 默认不以管理员身份启动。只有设置里开了「以管理员身份启动」，正常双击启动
+    // （无参数、非自启）时才请求提权；用户拒绝则继续普通权限运行。提权后全局热键
+    // 才能覆盖任务管理器等提权窗口（UIPI）。自启带 --no-elevate（argc>1）天然跳过。
     if (argc == 1 && std::getenv("HALOCAP_NO_ELEVATE") == nullptr) {
-        if (!CurrentProcessElevated()) {
+        Win32Store earlyStore;
+        const core::SettingsLoadResult early = core::LoadSettingsFrom(earlyStore);
+        if (early.settings.elevateOnStart && !CurrentProcessElevated()) {
             wchar_t executable[MAX_PATH] = {};
             if (GetModuleFileNameW(nullptr, executable, MAX_PATH) != 0) {
                 const HINSTANCE launched =

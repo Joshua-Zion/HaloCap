@@ -44,6 +44,9 @@ struct PlatformFacts {
 
     // 进程当前私有内存，供空闲回收判断。
     std::int64_t privateMemoryBytes = 0;
+
+    // 当前进程是否以管理员权限运行。诊断页据此提示「提权窗口前台时热键可能无响应」。
+    bool processElevated = false;
 };
 
 struct FeatureFlags {

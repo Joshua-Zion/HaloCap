@@ -4,6 +4,10 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
+#include <string>
 
 namespace halocap::platform::win32 {
 
@@ -30,8 +34,20 @@ std::int64_t QpcNowUs() {
 
 // 修饰键状态从系统读，而不是自己攒一份：钩子看到的顺序与真实按下顺序并不总是一致，
 // 自己记账迟早会在「按住 Alt 再按 Ctrl」这类组合上错一位。
-std::uint32_t CurrentModifierState() {
-    std::uint32_t state = 0;
+void DiagLog(const std::string& text) {
+    if (std::getenv("HALOCAP_INPUT_DIAG") == nullptr) {
+        return;
+    }
+    wchar_t temporary[MAX_PATH] = {};
+    if (GetTempPathW(MAX_PATH, temporary) == 0) {
+        return;
+    }
+    std::ofstream stream(std::filesystem::path(temporary) / "halocap-input-diag.txt",
+                         std::ios::app);
+    stream << text << "\n";
+}
+
+std::uint32_t CurrentModifierState() {    std::uint32_t state = 0;
     if ((GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0) {
         state |= core::kModControl;
     }
@@ -371,7 +387,8 @@ void Win32InputHost::UpdateRawRegistration() {
     if (window_ == nullptr) {
         return;
     }
-    const bool want = ForegroundIsElevated();
+    // 本进程已经提权时钩子对所有窗口都有效，不需要 Raw Input 兜底。
+    const bool want = !SelfIsElevated() && ForegroundIsElevated();
     if (want == rawRegistered_) {
         return;
     }
@@ -380,12 +397,29 @@ void Win32InputHost::UpdateRawRegistration() {
     keyboard.usUsage = 0x06;       // Keyboard
     keyboard.dwFlags = want ? RIDEV_INPUTSINK : RIDEV_REMOVE;
     keyboard.hwndTarget = want ? static_cast<HWND>(window_) : nullptr;
-    if (RegisterRawInputDevices(&keyboard, 1, sizeof(keyboard))) {
+    const BOOL ok = RegisterRawInputDevices(&keyboard, 1, sizeof(keyboard));
+    DiagLog("raw toggle want=" + std::to_string(want) + " ok=" + std::to_string(ok) +
+            " err=" + std::to_string(GetLastError()));
+    if (ok) {
         rawRegistered_ = want;
         if (want) {
             rawKeysDown_.assign(256, false);
         }
     }
+}
+
+bool Win32InputHost::SelfIsElevated() const {
+    HANDLE token = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
+        return false;
+    }
+    TOKEN_ELEVATION info{};
+    DWORD size = 0;
+    const bool elevated =
+        GetTokenInformation(token, TokenElevation, &info, sizeof(info), &size) &&
+        info.TokenIsElevated != 0;
+    CloseHandle(token);
+    return elevated;
 }
 
 bool Win32InputHost::ForegroundIsElevated() const {    const HWND foreground = GetForegroundWindow();
@@ -443,7 +477,10 @@ void Win32InputHost::HandleRawKeyboard(const RAWKEYBOARD& keyboard) {
             continue;
         }
         // 只在提权窗口占前台时兜底：普通前台继续由低级钩子负责，避免重复/注入输入被当成热键。
-        if (ForegroundIsElevated()) {
+        const bool elevated = ForegroundIsElevated();
+        DiagLog("raw hotkey match vk=" + std::to_string(virtualKey) +
+                " elevated=" + std::to_string(elevated));
+        if (elevated) {
             QueueToken(entry.first, false);
             ++rawHotkeys_;
         }

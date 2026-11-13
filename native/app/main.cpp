@@ -789,6 +789,20 @@ std::string ReadTextFileUtf8(const std::wstring& path) {
                        std::istreambuf_iterator<char>());
 }
 
+bool CurrentProcessElevated() {
+    HANDLE token = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
+        return false;
+    }
+    TOKEN_ELEVATION info{};
+    DWORD size = 0;
+    const bool elevated =
+        GetTokenInformation(token, TokenElevation, &info, sizeof(info), &size) &&
+        info.TokenIsElevated != 0;
+    CloseHandle(token);
+    return elevated;
+}
+
 std::string ResolveOcrModelDirectory() {    if (const char* environment = std::getenv("HALOCAP_OCR_MODELS")) {
         return environment;
     }
@@ -1010,6 +1024,7 @@ int Run(const Options& options) {
     AddFlag(report, "APP_TRAY_BALLOON_CLICK", balloonClick);
     AddFlag(report, "APP_INPUT_HOST", inputStarted);
     AddInt(report, "APP_HOTKEYS_REGISTERED", hotkeysRegistered);
+    AddFlag(report, "APP_ELEVATED", CurrentProcessElevated());
 
     // ---- 3) 覆盖层：按需 ----
     const int screenWidth = GetSystemMetrics(SM_CXSCREEN);
@@ -4170,6 +4185,21 @@ int main(int argc, char** argv) {
     // OCR worker 子进程：跑完就退，不碰单实例、托盘与任何 UI。
     if (argc >= 5 && std::string_view(argv[1]) == "--ocr-worker") {
         return halocap::app::RunOcrWorker(argv[2], argv[3], argv[4]);
+    }
+
+    // 提权窗口（任务管理器等）在前台时，普通权限进程收不到全局热键（UIPI）。
+    // 正常双击启动（无参数、非自启）时请求管理员权限重启；用户拒绝则继续普通权限运行。
+    if (argc == 1 && std::getenv("HALOCAP_NO_ELEVATE") == nullptr) {
+        if (!CurrentProcessElevated()) {
+            wchar_t executable[MAX_PATH] = {};
+            if (GetModuleFileNameW(nullptr, executable, MAX_PATH) != 0) {
+                const HINSTANCE launched =
+                    ShellExecuteW(nullptr, L"runas", executable, nullptr, nullptr, SW_SHOWNORMAL);
+                if (reinterpret_cast<INT_PTR>(launched) > 32) {
+                    return 0;   // 提权实例已接管
+                }
+            }
+        }
     }
 
     const Options options = ParseOptions(argc, argv);

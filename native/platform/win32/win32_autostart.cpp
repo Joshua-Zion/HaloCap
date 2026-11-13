@@ -23,7 +23,7 @@ bool SetAutoStart(bool enabled, const std::wstring& executablePath, std::string*
 
     bool ok = false;
     if (enabled) {
-        const std::wstring quoted = L"\"" + executablePath + L"\"";
+        const std::wstring quoted = L"\"" + executablePath + L"\" --no-elevate";
         ok = RegSetValueExW(key, kValueName, 0, REG_SZ,
                             reinterpret_cast<const BYTE*>(quoted.c_str()),
                             static_cast<DWORD>((quoted.size() + 1) * sizeof(wchar_t))) ==
@@ -57,7 +57,9 @@ bool IsAutoStartEnabled(const std::wstring& executablePath) {
     }
 
     const std::wstring expected = L"\"" + executablePath + L"\"";
-    return expected == buffer;
+    const std::wstring value = buffer;
+    // 旧版本只写路径；新版本追加 --no-elevate（自启时不弹 UAC）。
+    return value == expected || value == expected + L" --no-elevate";
 }
 
 }

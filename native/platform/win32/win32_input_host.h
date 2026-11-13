@@ -71,6 +71,7 @@ private:
     void HandleRawKeyboard(const RAWKEYBOARD& keyboard);
     // Raw Input 只在提权前台时注册：普通前台不注册，避免影响低级钩子/注入输入。
     void UpdateRawRegistration();
+    bool SelfIsElevated() const;
     bool ForegroundIsElevated() const;
     // 三条投递路径（钩子 / WM_HOTKEY / Raw Input）共用同一个去重窗口：
     // 钩子每一次匹配都算真实按键；后两条只是在钩子拿不到时兜底，要和刚投递过的去重。

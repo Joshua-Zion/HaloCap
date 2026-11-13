@@ -200,7 +200,7 @@ HaloCap 2.0 是原生实现：选区与标注由 Direct2D / DirectComposition �
 
 ## 从源码开发
 
-2.0 是 C++20 / Win32 原生实现，源码在 `native/`；`src/HaloCap/` 是 1.x 的 WPF 实现，保留作行为参照，不参与 2.0 的构建。
+2.0 是 C++20 / Win32 原生实现，源码在 `native/`。1.x 的 WPF 实现已停止维护，归档在 `legacy/1.x` 分支；本分支只保留 2.x 原生实现。
 
 ### 环境
 
@@ -242,7 +242,7 @@ cd native
 build-release.cmd
 ```
 
-把 `native/build-release/app/HaloCap.exe`、`onnxruntime.dll`、VS 的四个运行库（`msvcp140.dll`、`msvcp140_1.dll`、`vcruntime140.dll`、`vcruntime140_1.dll`）、`models\ppocrv6-tiny-1`（来自 `src/HaloCap/Assets/OcrModel`）与 `README.txt`、`CHANGELOG.md`、`THIRD-PARTY-NOTICES.md` 一起打包为 ZIP。`tools/logo_icon` 可从同一套渲染重新生成 `app.ico`。
+把 `native/build-release/app/HaloCap.exe`、`onnxruntime.dll`、VS 的四个运行库（`msvcp140.dll`、`msvcp140_1.dll`、`vcruntime140.dll`、`vcruntime140_1.dll`）、`models\ppocrv6-tiny-1`（来自 `native/models/ppocrv6-tiny-1`）与 `README.txt`、`CHANGELOG.md`、`THIRD-PARTY-NOTICES.md` 一起打包为 ZIP。`tools/logo_icon` 可从同一套渲染重新生成 `app.ico`。
 
 ### 项目结构
 
@@ -253,7 +253,7 @@ native/
   app/          UI 与组装：选区覆盖层、贴图、OCR 窗口、光圈、录制浮层、托盘菜单、设置窗
   tests/        CTest 单元测试
   tools/        探针与自检小工具（含 logo_icon）
-src/HaloCap/    1.x 的 WPF 实现（main 分支发布线，保留作行为参照）
+  models/       内置 OCR 模型（PP-OCRv6 tiny：ppocrv6-tiny-1）
 ```
 
 ## 使用限制

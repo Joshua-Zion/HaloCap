@@ -24,6 +24,10 @@
 - 后台自检报告含 `APP_ELEVATED`、`APP_FOREGROUND_ELEVATED` 权限标志。
 - 单实例重试验证：先起一份实例占用互斥，再以 `--elevated-relaunch` 启动，新实例等待旧实例退出后成功接管（不再立即退出）。
 
+### 维护
+
+- 1.x 停止维护。仓库整理：`2.0` 合入 `main` 成为唯一维护线，1.x 归档到 `legacy/1.x`；`src/HaloCap/`、`HaloCap.sln`、`global.json`、`spikes/`、1.x 单元测试从主线移除，内置 OCR 模型迁到 `native/models/ppocrv6-tiny-1`。
+
 ## 2.4.6
 
 修复前台是管理员权限窗口（如任务管理器）时全局快捷键无响应的问题。

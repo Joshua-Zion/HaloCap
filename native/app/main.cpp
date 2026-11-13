@@ -812,8 +812,7 @@ std::string ResolveOcrModelDirectory() {    if (const char* environment = std::g
     if (GetModuleFileNameW(nullptr, executable, MAX_PATH) != 0) {
         const std::filesystem::path directory = std::filesystem::path(executable).parent_path();
         candidates.push_back(directory / "models" / "ppocrv6-tiny-1");
-        candidates.push_back(directory / ".." / ".." / ".." / "src" / "HaloCap" / "Assets" /
-                             "OcrModel");
+        candidates.push_back(directory / ".." / ".." / "models" / "ppocrv6-tiny-1");
     }
     wchar_t localAppData[MAX_PATH] = {};
     if (GetEnvironmentVariableW(L"LOCALAPPDATA", localAppData, MAX_PATH) != 0) {

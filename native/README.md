@@ -337,7 +337,7 @@ native> build\tools\screenshot_probe\screenshot_probe.exe out.png 1280x720@0,0
 - **放大镜换成 1.x 的深色款**：136×136 取景框（17×17 设备像素约 8 倍）+ 间隔 5 px 的信息面板（色块 + `#RRGGBB` + 屏幕坐标），光标右下 24 px，靠边翻到左上。
 - 工具栏出现时有 6 px 的上滑入场；光标按命中对象变形（把手方向 / 选区内 SizeAll / 工具栏箭头）。
 
-**选区交互按 1.x 对齐过（2026-11-09）**，逐条对着 `src/HaloCap/UI/ScreenshotOverlayWindow.xaml(.cs)` 改的：
+**选区交互按 1.x 对齐过（2026-11-09）**，逐条对着 1.x 的 `ScreenshotOverlayWindow.xaml(.cs)`（已归档到 `legacy/1.x`）改的：
 
 - **松手之后不是标注态**：在里面拖是整体平移，按空格/工具键/工具按钮才落笔；在选区外按下是重新框选并丢掉已有标注（1.x 同语义）。
 - **单击 = 选窗口**：短于 8 px 的一拖按单击处理，选光标下的窗口，没有窗口就选整块屏。窗口判定在 `app/window_at_point.*`：DWM 可见边框、跳过 shell/IME/tooltip/cloaked/`WS_EX_TRANSPARENT`、小于 32×32 的，窗口拾取与选区共用一份。
@@ -381,7 +381,7 @@ native> build\tools\ocr_probe\ocr_probe.exe --png ocr-input.png
 native> build\app\HaloCap.exe --ocr-selftest ocr-selftest.png
 ```
 
-模型就是 1.x 的 `Assets/OcrModel`（PP-OCRv6 tiny：det 1.8 MB、rec 4.5 MB、cls 1.0 MB、dict 6904 字），ORT 1.20.1 的 win-x64 二进制 vendored 在 `third_party/onnxruntime`。app 侧模型目录按 `HALOCAP_OCR_MODELS` → `exe\models\ppocrv6-tiny-1` → 开发树 `src/HaloCap/Assets/OcrModel` → `%LOCALAPPDATA%\HaloCap2\models\ppocrv6-tiny-1` 的顺序找。
+模型放在 `native/models/ppocrv6-tiny-1`（沿用 1.x 的官方 tiny 模型：det 1.8 MB、rec 4.5 MB、cls 1.0 MB、dict 6904 字），ORT 1.20.1 的 win-x64 二进制 vendored 在 `third_party/onnxruntime`。app 侧模型目录按 `HALOCAP_OCR_MODELS` → `exe\models\ppocrv6-tiny-1` → 开发树 `native/models/ppocrv6-tiny-1` → `%LOCALAPPDATA%\HaloCap2\models\ppocrv6-tiny-1` 的顺序找。
 
 `ocr_probe` 用 GDI 画三行已知文字（英文/中文/数字），跑完整链路并断言每一行都出现在结果里：
 

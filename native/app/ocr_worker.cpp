@@ -145,7 +145,7 @@ std::string ModelDirectoryFromWorker() {
     const std::filesystem::path directory = std::filesystem::path(executable).parent_path();
     const std::filesystem::path candidates[] = {
         directory / "models" / "ppocrv6-tiny-1",
-        directory / ".." / ".." / ".." / "src" / "HaloCap" / "Assets" / "OcrModel",
+        directory / ".." / ".." / "models" / "ppocrv6-tiny-1",
     };
     for (const std::filesystem::path& candidate : candidates) {
         std::error_code error;

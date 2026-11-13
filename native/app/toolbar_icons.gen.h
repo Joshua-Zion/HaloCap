@@ -1,4 +1,4 @@
-// 由 src/HaloCap/App.xaml 的 Toolbar*Geometry 生成，勿手改。
+// 由 1.x App.xaml 的 Toolbar*Geometry 生成（1.x 源码已归档到 legacy/1.x），勿手改。
 // 1.x 的图标是 160×160 的填充路径；CombinedGeometry(Union) 拆成两条，同色画两遍。
 #pragma once
 

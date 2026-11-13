@@ -12,7 +12,7 @@ $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $appDir = Join-Path $root "build\app"
 $exe = Join-Path $appDir "HaloCap.exe"
 $ort = Join-Path $appDir "onnxruntime.dll"
-$models = Join-Path $root "..\src\HaloCap\Assets\OcrModel"
+$models = Join-Path $root "models\ppocrv6-tiny-1"
 
 foreach ($required in @($exe, $ort, (Join-Path $models "ppocrv6_tiny_det.onnx"))) {
     if (-not (Test-Path $required)) {

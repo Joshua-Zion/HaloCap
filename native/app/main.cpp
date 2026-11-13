@@ -3859,6 +3859,14 @@ int Run(const Options& options) {
         int token = 0;
         while (input.PollHotkey(token)) {
             ++actions;
+            // 圆盘开着时按动作快捷键：先收起圆盘再执行。圆盘打开期间装了全局鼠标钩子
+            // （点击一律吞掉），不收掉的话新开的覆盖层（截图/识别/录制选区）第一次拖选
+            // 会被圆盘吃掉，表现为「第一次选不生效」。呼出光圈的 token 交给 openRadial
+            // 自己关旧再开新，这里跳过。
+            if (radialMenu != nullptr && token != kTokenRadial) {
+                radialMenu->Close();
+                radialMenu.reset();
+            }
             if (token == kTokenRecord) {
                 toggleRecording();
                 continue;

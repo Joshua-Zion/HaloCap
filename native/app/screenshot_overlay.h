@@ -196,6 +196,8 @@ private:
     void RenderMagnifier(core::FramePlan& plan);
     void RenderSizeBadge(core::FramePlan& plan);
     void Render();
+    // 覆盖层是全屏单窗口，只有一份 DPI；多屏不同缩放时按给定点所在显示器同步 uiScale_。
+    void SyncUiScale(POINT screenPoint);
     void RenderToolbar(core::FramePlan& plan);
     void RenderToolbarIcon(core::FramePlan& plan, const core::Rect& rect, ToolbarIcon icon,
                            bool active, bool enabled);

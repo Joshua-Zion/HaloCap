@@ -13,6 +13,8 @@
 
 #include <shlobj.h>
 
+#include <shellscalingapi.h>
+
 #include <algorithm>
 #include <filesystem>
 #include <cmath>
@@ -2529,9 +2531,33 @@ void ScreenshotOverlay::RenderHint(core::FramePlan& plan) {
     }
 }
 
+void ScreenshotOverlay::SyncUiScale(POINT screenPoint) {
+    const HMONITOR monitor = MonitorFromPoint(screenPoint, MONITOR_DEFAULTTONEAREST);
+    UINT dpiX = 96;
+    UINT dpiY = 96;
+    if (SUCCEEDED(GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &dpiX, &dpiY)) && dpiX >= 48) {
+        float scale = static_cast<float>(dpiX) / 96.0f;
+        if (scale < 1.0f) {
+            scale = 1.0f;
+        }
+        uiScale_ = scale;
+    }
+}
+
 void ScreenshotOverlay::Render() {
     if (!active_ || backend_ == nullptr || window_ == nullptr) {
         return;
+    }
+
+    // 覆盖层是全屏一个窗口，GetDpiForWindow 只给一份 DPI。多屏缩放不同时，工具栏/放大镜/
+    // 把手若沿用那一份，就会在更高 DPI 的副屏上偏小。这里按选区（无选区按光标）所在显示器
+    // 重新取缩放，保证覆盖层 UI 跟随它实际显示的那块屏。
+    if (!selection_.Bounds().IsEmpty()) {
+        const core::Rect bounds = selection_.Bounds();
+        SyncUiScale(POINT{ static_cast<LONG>((bounds.left + bounds.right) * 0.5f),
+                           static_cast<LONG>((bounds.top + bounds.bottom) * 0.5f) });
+    } else if (mouseInside_) {
+        SyncUiScale(lastMouse_);
     }
 
     LayoutToolbar();

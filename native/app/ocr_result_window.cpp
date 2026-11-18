@@ -2,6 +2,7 @@
 
 #include <dwmapi.h>
 #include <windowsx.h>
+#include <shellscalingapi.h>
 
 #include <algorithm>
 #include <cstring>
@@ -161,7 +162,20 @@ bool OcrResultWindow::Create(void* owner, const std::uint8_t* bgra, int width, i
         return false;
     }
 
-    const UINT dpi = GetDpiForWindow(window_);
+    // 结果窗先在 (0,0) 建好、再按 anchor 挪到选区旁；GetDpiForWindow 在 (0,0) 读到的是主屏 DPI，
+    // 副屏（尤其更高 DPI 的副屏）上就会偏小。这里按 anchor 所在显示器取 DPI。
+    UINT dpi = GetDpiForWindow(window_);
+    const core::IntRect& anchor = options_.anchor;
+    if (anchor.right > anchor.left && anchor.bottom > anchor.top) {
+        RECT anchorRect{ anchor.left, anchor.top, anchor.right, anchor.bottom };
+        UINT anchorDpiX = dpi;
+        UINT anchorDpiY = dpi;
+        const HMONITOR anchorMonitor = MonitorFromRect(&anchorRect, MONITOR_DEFAULTTONEAREST);
+        if (SUCCEEDED(GetDpiForMonitor(anchorMonitor, MDT_EFFECTIVE_DPI, &anchorDpiX, &anchorDpiY)) &&
+            anchorDpiX >= 48) {
+            dpi = anchorDpiX;
+        }
+    }
     uiScale_ = dpi >= 48 ? static_cast<float>(dpi) / 96.0f : 1.0f;
     if (uiScale_ < 1.0f) {
         uiScale_ = 1.0f;

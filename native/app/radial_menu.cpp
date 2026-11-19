@@ -730,6 +730,11 @@ LRESULT CALLBACK RadialMenu::MouseHook(int code, WPARAM wParam, LPARAM lParam) {
         return CallNextHookEx(nullptr, code, wParam, lParam);
     }
     const auto* mouse = reinterpret_cast<const MSLLHOOKSTRUCT*>(lParam);
+    // 淡出中的光圈已经「不存在」了：这一帧里既不处理点击，也不许吞消息——否则它会
+    // 把紧接着打开的覆盖层的第一次框选吃掉（看起来就是「第一下没反应」）。
+    if (g_active->closing_) {
+        return CallNextHookEx(nullptr, code, wParam, lParam);
+    }
     switch (wParam) {
     case WM_MOUSEMOVE:
         SetCursor(LoadCursorW(nullptr, IDC_ARROW));
@@ -760,6 +765,11 @@ LRESULT CALLBACK RadialMenu::KeyHook(int code, WPARAM wParam, LPARAM lParam) {
         return CallNextHookEx(nullptr, code, wParam, lParam);
     }
     if (wParam != WM_KEYDOWN && wParam != WM_SYSKEYDOWN) {
+        return CallNextHookEx(nullptr, code, wParam, lParam);
+    }
+    // 淡出中同样一律放过：ESC/快捷键要立刻回到屏幕上真正在跑的那个窗口
+    // （否则覆盖层刚出来时按 ESC 会被正在淡出的光圈吞掉，得按好几次才退）。
+    if (g_active->closing_) {
         return CallNextHookEx(nullptr, code, wParam, lParam);
     }
     const DWORD key = reinterpret_cast<const KBDLLHOOKSTRUCT*>(lParam)->vkCode;

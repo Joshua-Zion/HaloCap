@@ -21,9 +21,10 @@ struct PinWindowOptions {
     bool ocrEnabled = true;
     bool jpeg = false;
     std::string fontFamily = "Microsoft YaHei UI";
-    // 剪贴板贴图（长文本、大图）用：内容比显示器工作区大时按比例缩到放得下，
-    // 并把窗口挪回工作区内。截图贴图不走这条：它必须和屏幕上的原内容严丝合缝。
-    bool fitToWorkArea = false;
+    // 剪贴板贴图（长文本、大图）用：只把内容左上角挪回显示器工作区，绝不缩放——
+    // 内容一律按实际大小完整贴出，超长就让它超长（靠拖动/滚轮去看）。
+    // 截图贴图不走这条：它必须和屏幕上的原内容严丝合缝。
+    bool clampToWorkArea = false;
 };
 
 // 贴图窗口：无边框、置顶、分层窗口（UpdateLayeredWindow），内容是截图 + 描边/光晕。

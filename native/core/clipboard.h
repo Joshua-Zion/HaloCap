@@ -102,8 +102,10 @@ private:
 // 否则卡片按「没折行」的高度开画布，多出来的行会被画布裁掉。
 constexpr int kTextCardPadding = 16;
 constexpr int kTextCardLineHeight = 24;
-// 高度上限：一篇几万字的长文本仍要完整贴出，但不能为它开一张无限高的位图。
-constexpr int kTextCardMaxHeight = 4096;
+// 高度上限：内容一律完整贴出，所以这个上限只用来挡「病态输入」（几十万字符的剪贴板）。
+// 26000 px 约合 1000 行、4 万汉字，日常的长文档都在里面；再高就顶到 Win32 的 32767
+// 窗口上限了（平台侧还会按缩放把物理高度再夹一次）。
+constexpr int kTextCardMaxHeight = 26000;
 constexpr double kTextCardFontSize = 17.0;
 
 // 渲染卡片的尺寸规则（与 1.x 的 RenderText 同口径，平台按这个开画布）。

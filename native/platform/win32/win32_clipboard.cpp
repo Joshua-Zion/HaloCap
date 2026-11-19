@@ -427,8 +427,9 @@ bool RenderTextCard(const std::string& utf8Text, double scale, ClipboardImage* i
         scale = 1.0;
     }
     std::string visible = utf8Text;
-    if (visible.size() > 32768) {
-        visible.resize(32768);
+    // 只为挡病态输入：正常的长文档/整段代码都要完整贴出（高度上限已经抬到 26000 px）。
+    if (visible.size() > 262144) {
+        visible.resize(262144);
         visible += "…";
     }
     const std::wstring wide = Utf8ToWide(visible);
@@ -441,7 +442,9 @@ bool RenderTextCard(const std::string& utf8Text, double scale, ClipboardImage* i
     // 卡片高度按真实折行量一次：core 只按 '\n' 估算，长段落自动折行后会多出很多行，
     // 照估算开画布就会把后面的行裁掉（长文本贴图「只贴出一行」的来源）。
     const int measured = MeasureCardTextHeight(wide, scale, textWidth);
-    const int maxHeight = static_cast<int>(core::clipboard::kTextCardMaxHeight * scale);
+    // 物理高度上限：Win32 的窗口/位图尺寸在 32767 就到顶了，高 DPI 下 26000 DIP 会超过去。
+    const int maxHeight =
+        std::min(32000, static_cast<int>(core::clipboard::kTextCardMaxHeight * scale));
     const int minHeight = std::max(56, static_cast<int>(56 * scale));
     const int height = std::clamp(std::max(metrics.height, measured + 2 * padding), minHeight,
                                   std::max(minHeight, maxHeight));

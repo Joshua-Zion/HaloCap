@@ -573,12 +573,13 @@ LRESULT ScreenshotOverlay::HandleMessage(HWND window, UINT message, WPARAM wPara
     }
 
     case kMsgEscape:
-        if (selectedAnnotation_ >= 0) {
-            selectedAnnotation_ = -1;
-            dirty_ = true;
-        } else {
-            Close();
-        }
+        // ESC 只做一件事：退出选区。以前「先取消选中、再按一次才退」的两级做法，
+        // 加上有时候鼠标刚好点中过一条标注，表现就成了「按 ESC 没反应，要按好几次」。
+        // 取消选中改用点击空白处 / Delete。
+        // 关窗不能在这个窗口过程里做——DestroyWindow 会重入自己的 WndProc，
+        // 交给 Pump 统一处理。
+        pendingClose_ = true;
+        dirty_ = true;
         return 0;
 
     case kMsgDelete:
@@ -645,16 +646,19 @@ LRESULT ScreenshotOverlay::HandleMessage(HWND window, UINT message, WPARAM wPara
             DeliverRecordRegionAndClose();
         } else if (options_.mode == OverlayMode::Ocr) {
             if (RunOcr()) {
-                Close();
+                pendingClose_ = true;
+                dirty_ = true;
             }
         } else if (CopySelection()) {
-            Close();
+            pendingClose_ = true;
+            dirty_ = true;
         }
         return 0;
 
     case kMsgSave:
         if (SaveSelection(nullptr)) {
-            Close();
+            pendingClose_ = true;
+            dirty_ = true;
         }
         return 0;
 

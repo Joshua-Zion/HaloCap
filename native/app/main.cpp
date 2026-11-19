@@ -1504,10 +1504,33 @@ int Run(const Options& options) {
         });
     };
 
+    // 覆盖层（截图 / 识别 / 录制选区）出现前必须做的清理：托盘菜单和光圈都是置顶窗口，
+    // 菜单还握着鼠标捕获——不先收掉的话，它们既挡住选区、又被一起抓进底图，第一下框选
+    // 还会被菜单当成「点菜单外面」吃掉。关窗之后要等一帧 DWM 合成，否则残影仍在屏幕上。
+    const auto dismissFloatingMenus = [&]() {
+        // 光圈从选中扇区进来时，窗口已经被 Select() 关掉了（对象还在），这时同样要等
+        // 一帧再抓屏，否则抓进去的是光圈残影。所以「有没有这两块窗口」而不是「刚关掉没」。
+        const bool hadFloating = trayMenu != nullptr || radialMenu != nullptr;
+        if (trayMenu != nullptr) {
+            trayMenu->Close();
+            trayMenu.reset();
+        }
+        // 光圈可能还在 120 ms 的淡出里：窗口活着、全局键盘/鼠标钩子也还挂着，必须真关掉。
+        // 这里不 reset——可能是从光圈自己的选中回调里进来的，对象还在它的方法栈上。
+        if (radialMenu != nullptr && radialMenu->Active()) {
+            radialMenu->Close();
+        }
+        if (hadFloating) {
+            // DWM 是异步合成的：销毁窗口后立刻 BitBlt 抓屏，大概率抓到的是窗口残影。
+            Sleep(120);
+        }
+    };
+
     const auto openScreenshot = [&]() {
         if (screenshotOverlay != nullptr && screenshotOverlay->Active()) {
             return;
         }
+        dismissFloatingMenus();
         // 上一次的结果窗口保持常显（不关也不隐藏），用户可以对照着继续截下一张。
         pruneOcrWindows();
         screenshotOverlay = std::make_unique<halocap::app::ScreenshotOverlay>();
@@ -1542,6 +1565,7 @@ int Run(const Options& options) {
         if (screenshotOverlay != nullptr && screenshotOverlay->Active()) {
             return;
         }
+        dismissFloatingMenus();
         pruneOcrWindows();
         screenshotOverlay = std::make_unique<halocap::app::ScreenshotOverlay>();
         halocap::app::ScreenshotOverlayOptions overlayOptions;
@@ -1700,10 +1724,11 @@ int Run(const Options& options) {
             if (item.image.width <= 0 || item.image.height <= 0) {
                 continue;
             }
-            // 剪贴板贴图带 fitToWorkArea：长文本卡片 / 大图可能比屏幕还高，先缩到放得下，
-            // 不然只露出上半截。截图贴图仍然按选区原位贴合，不走这条。
+            // 剪贴板贴图带 clampToWorkArea：只把内容左上角挪回工作区，不缩放——长文本
+            // 一律按实际大小完整贴出，超长就让它超出屏幕（拖动/滚轮去看）。截图贴图仍然
+            // 按选区原位贴合，不走这条。
             halocap::app::PinWindowOptions itemOptions = pinOptions();
-            itemOptions.fitToWorkArea = true;
+            itemOptions.clampToWorkArea = true;
             auto pin = std::make_unique<halocap::app::PinWindow>();
             if (pin->Create(item.image.bgra.data(), item.image.width, item.image.height,
                             180 + offset, 160 + offset, itemOptions)) {
@@ -1785,6 +1810,18 @@ int Run(const Options& options) {
     };
 
     const auto openRadial = [&]() {
+        // 覆盖层（截图 / 识别 / 录制选区）开着时不呼出光圈：光圈会装上自己的全局键盘与
+        // 鼠标钩子，而低级钩子是「后装先调」，它一旦压在覆盖层上面，就会把 ESC、字母
+        // 快捷键和第一次拖选全部吃掉——现象正是「选区后按 ESC 没反应，要按好几次才退」。
+        if (screenshotOverlay != nullptr && screenshotOverlay->Active()) {
+            log.Info("radial: ignored while an overlay is open");
+            return;
+        }
+        // 托盘菜单同理：先收掉，免得菜单窗口握着的捕获吃掉光圈的第一次点击。
+        if (trayMenu != nullptr) {
+            trayMenu->Close();
+            trayMenu.reset();
+        }
         // 光圈已经开着时再按快捷键：先关掉旧的，再按当前光标位置重新呼出。
         if (radialMenu != nullptr) {
             radialMenu->Close();
@@ -1815,6 +1852,8 @@ int Run(const Options& options) {
         }
     };
     bool screenshotSelftestOk = true;
+    bool dismissMenusOk = false;
+    bool escOnceOk = false;
     if (!options.screenshotSelftestPath.empty()) {
         const std::int64_t openStartUs = QpcNowUs();
         openScreenshot();
@@ -2133,6 +2172,59 @@ int Run(const Options& options) {
             const bool overlayMemoryOk = screenshotMb <= overlayBudgetMb;
             const bool afterCloseOk = afterCloseMb > 0.0 && afterCloseMb <= 120.0;
 
+            // 覆盖层与浮动窗口的互斥：托盘菜单、光圈都开着时开截图，两者必须立刻被收掉
+            // （菜单握着鼠标捕获、光圈的全局钩子是「后装先调」，不收掉的话第一次框选和
+            // ESC 都会被它们吃掉），而且这时**只按一次 ESC** 就要整个退掉。
+            // 放在所有耗时/内存采样之后：这里会多开一次覆盖层，不能算进预算。
+            {
+                POINT cursor{};
+                GetCursorPos(&cursor);
+                trayMenu = std::make_unique<halocap::app::TrayMenuWindow>();
+                const bool menuOpenForDismiss =
+                    trayMenu->Open(trayState,
+                                   std::wstring(L"v") +
+                                       Utf8ToWide(halocap::app::kHaloCapVersion),
+                                   cursor);
+                radialMenu = std::make_unique<halocap::app::RadialMenu>();
+                const bool radialOpenForDismiss =
+                    radialMenu->Open([](core::AppAction) {}, settings.menuSize);
+                openScreenshot();
+                dismissMenusOk =
+                    menuOpenForDismiss && radialOpenForDismiss && trayMenu == nullptr &&
+                    (radialMenu == nullptr || !radialMenu->Active()) &&
+                    screenshotOverlay != nullptr && screenshotOverlay->Active();
+                if (radialMenu != nullptr && !radialMenu->Active()) {
+                    radialMenu.reset();
+                }
+                if (dismissMenusOk) {
+                    // 真输入：全局键盘钩子 → PostMessage(kMsgEscape) → Pump → Close。
+                    INPUT inputs[2]{};
+                    for (int i = 0; i < 2; ++i) {
+                        inputs[i].type = INPUT_KEYBOARD;
+                        inputs[i].ki.wVk = VK_ESCAPE;
+                        inputs[i].ki.dwFlags = i == 0 ? 0 : KEYEVENTF_KEYUP;
+                    }
+                    SendInput(2, inputs, sizeof(INPUT));
+                    const ULONGLONG deadline = GetTickCount64() + 2000;
+                    while (GetTickCount64() < deadline && screenshotOverlay != nullptr &&
+                           screenshotOverlay->Active()) {
+                        MSG message{};
+                        while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+                            TranslateMessage(&message);
+                            DispatchMessageW(&message);
+                        }
+                        if (screenshotOverlay != nullptr) {
+                            screenshotOverlay->Pump();
+                        }
+                        Sleep(10);
+                    }
+                    escOnceOk = screenshotOverlay != nullptr && !screenshotOverlay->Active();
+                }
+                if (screenshotOverlay != nullptr && screenshotOverlay->Active()) {
+                    screenshotOverlay->Close();
+                }
+            }
+
             AddFlag(report, "APP_SCREENSHOT_OVERLAY", true);
             AddFlag(report, "APP_SCREENSHOT_PROOF", proof);
             AddFlag(report, "APP_SCREENSHOT_PIN_PROOF", pinProof);
@@ -2184,6 +2276,8 @@ int Run(const Options& options) {
                           overlayBudgetMb);
             AddText(report, "APP_SCREENSHOT_MEMORY_BUDGET_MB", budgetBuffer);
 
+            AddFlag(report, "APP_SCREENSHOT_DISMISS_MENUS", dismissMenusOk);
+            AddFlag(report, "APP_SCREENSHOT_ESC_ONCE", escOnceOk);
             screenshotSelftestOk = proof && pinProof && saved && pinned && !pins.empty() &&
                                    latencyOk && overlayMemoryOk && afterCloseOk && dragOk &&
                                    moveOk && resizeOk && nudgeOk && rightClickOk && clickSelectOk &&
@@ -2191,7 +2285,8 @@ int Run(const Options& options) {
                                    optionsFitOk && wheelOk && mosaicComposeOk &&
                                    mosaicOverAnnotationOk && exportAnnotated && hoverDetectOk &&
                                    hoverUnderCursor && outsideGuardOk && ocrButtonOk &&
-                                   restoreEntryOk && restoreAnnotatedOk;
+                                   restoreEntryOk && restoreAnnotatedOk && dismissMenusOk &&
+                                   escOnceOk;
             log.Info(screenshotSelftestOk ? "screenshot selftest: ok"
                                           : "screenshot selftest: failed");
         }
@@ -3405,13 +3500,14 @@ int Run(const Options& options) {
             pins.back()->SetOutline(true);
         }
 
-        // 长文本贴图：一个不带换行的长段落会被折成很多行，卡片必须按折行后的行数排；
-        // 内容比工作区大时要缩到放得下，窗口不能跑到屏幕外（否则下半截被裁掉）。
+        // 长文本贴图：一个不带换行的长段落会被折成很多行，卡片必须按折行后的行数排，
+        // 而且要**完整**贴出——既不裁、也不为了放得下而缩放。
         bool pinLongTextOk = false;
         bool pinFitOk = false;
+        bool pinUnscaledOk = false;
         {
             std::string paragraph;
-            for (int line = 0; line < 200; ++line) {
+            for (int line = 0; line < 400; ++line) {
                 paragraph += "贴图内容过多时应当完整贴出，而不是只露一行。";
             }
             if (halocap::platform::win32::WriteUnicodeTextToClipboard(paragraph)) {
@@ -3419,23 +3515,26 @@ int Run(const Options& options) {
                 pinClipboard();
                 if (pins.size() > beforeLongText) {
                     halocap::app::PinWindow& last = *pins.back();
-                    pinLongTextOk = last.ContentHeightForTest() > 400;
+                    // 400 行 ≈ 5800 px，超过旧的 4096 上限：还能有这么高就说明没被裁。
+                    pinLongTextOk = last.ContentHeightForTest() > 5000;
+                    pinUnscaledOk = last.ZoomForTest() == 1.0f;
                     const core::IntRect rect = last.ContentScreenRectForTest();
                     MONITORINFO info{};
                     info.cbSize = sizeof(info);
                     if (last.Handle() != nullptr &&
                         GetMonitorInfoW(
                             MonitorFromWindow(last.Handle(), MONITOR_DEFAULTTONEAREST), &info)) {
+                        // 只要求左上角在工作区内（内容开头看得见）：内容比屏幕高时，
+                        // 允许它超出下边/右边——这正是「超长就让它超长」。
                         pinFitOk = rect.left >= static_cast<int>(info.rcWork.left) &&
-                                   rect.top >= static_cast<int>(info.rcWork.top) &&
-                                   rect.right <= static_cast<int>(info.rcWork.right) &&
-                                   rect.bottom <= static_cast<int>(info.rcWork.bottom);
+                                   rect.top >= static_cast<int>(info.rcWork.top);
                     }
                 }
             }
         }
         AddFlag(report, "APP_PIN_LONG_TEXT", pinLongTextOk);
         AddFlag(report, "APP_PIN_FIT", pinFitOk);
+        AddFlag(report, "APP_PIN_UNSCALED", pinUnscaledOk);
 
         AddFlag(report, "APP_PIN_CLIPBOARD", wrote);
         AddFlag(report, "APP_PIN_WINDOW", pinned);
@@ -3449,7 +3548,7 @@ int Run(const Options& options) {
 
         pinSelftestOk = wrote && pinned && proof && pinAnnotateOk && pinMenuOk && pinPlainOk &&
                         pinAlphaOk && pinOpaqueOk && pinColorAlphaOk && pinLongTextOk &&
-                        pinFitOk && pinOptionSlack >= 0 && pinOptionSlack <= 20;
+                        pinFitOk && pinUnscaledOk && pinOptionSlack >= 0 && pinOptionSlack <= 20;
         log.Info(pinSelftestOk ? "pin selftest: ok" : "pin selftest: failed");
         running = false;
     }
@@ -3984,6 +4083,10 @@ int Run(const Options& options) {
 
         switch (tray.PollClick()) {
         case Win32Tray::Click::Right: {
+            // 覆盖层开着时不弹托盘菜单：它一出来就抓走捕获，覆盖层的选区会被打断。
+            if (screenshotOverlay != nullptr && screenshotOverlay->Active()) {
+                break;
+            }
             // 1.x：右键先收掉旧菜单，再在光标处开一份新的自绘菜单。
             if (trayMenu != nullptr) {
                 trayMenu->Close();

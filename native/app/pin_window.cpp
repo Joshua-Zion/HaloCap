@@ -434,10 +434,11 @@ bool PinWindow::Create(const std::uint8_t* bgra, int width, int height, int scre
     }
 
     UpdateLayout();
-    // 剪贴板贴图：长文本卡片、大图都可能比屏幕还高，先缩到放得下再显示。
-    // 截图贴图不缩也不挪：它必须和屏幕上的原内容严丝合缝。
-    if (options_.fitToWorkArea) {
-        EnsureContentVisible(true);
+    // 剪贴板贴图：只把内容左上角挪回工作区（保证开头看得见），不做任何缩放——
+    // 内容一律按实际大小完整贴出，超长的部分就让它超出屏幕，靠拖动/滚轮去看。
+    // 截图贴图不挪也不缩：它必须和屏幕上的原内容严丝合缝。
+    if (options_.clampToWorkArea) {
+        EnsureContentVisible(false);
     }
     Render();
     ShowWindow(static_cast<HWND>(window_), SW_SHOW);
@@ -567,8 +568,9 @@ float PinWindow::MinZoom() const {
     return std::max(0.05f, std::max(40.0f / width, 40.0f / height));
 }
 
-// 内容比显示器工作区还大时：先把内容缩到「整个窗口放得下」，再把窗口挪回工作区。
-// 不做这一步的话，窗口下半截（以及标注工具栏）会落到屏幕外，贴图看起来就是被裁掉了一半。
+// 把内容挪回显示器工作区。shrink=true 只给「进标注模式」用（工具栏必须留在屏幕上）；
+// 创建剪贴板贴图时一律 shrink=false：内容按实际大小完整贴出，超长就让它超出屏幕。
+// 不做夹位的话，窗口上半截（以及标注工具栏）会落在屏幕外，贴图看起来就是被裁掉了一半。
 void PinWindow::EnsureContentVisible(bool shrink) {
     if (window_ == nullptr || contentWidth_ <= 0 || contentHeight_ <= 0) {
         return;

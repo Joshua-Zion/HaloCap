@@ -324,10 +324,52 @@ void RadialMenu::Close() {
     bits_ = nullptr;
     dragging_ = false;
     hovered_ = -1;
+    suspended_ = false;
 }
 
-struct RadialMenuFrameCache {
-    int size = 0;
+void RadialMenu::Suspend() {
+    if (window_ == nullptr) {
+        return;
+    }
+    suspended_ = true;
+    // 低级钩子是「后装先调」：光圈一挂上就压在覆盖层上面，把 Esc、字母快捷键和第一次
+    // 拖选全吞掉。挂起时不关窗口（用户要把它一起框进截图），只把钩子摘掉让输入回给
+    // 覆盖层；窗口留着，于是 BitBlt(CAPTUREBLT) 照样把它截进底图。
+    if (mouseHook_ != nullptr) {
+        UnhookWindowsHookEx(mouseHook_);
+        mouseHook_ = nullptr;
+    }
+    if (keyHook_ != nullptr) {
+        UnhookWindowsHookEx(keyHook_);
+        keyHook_ = nullptr;
+    }
+    if (g_active == this) {
+        g_active = nullptr;
+    }
+    dragging_ = false;
+}
+
+void RadialMenu::Resume() {
+    if (window_ == nullptr || !suspended_) {
+        return;
+    }
+    suspended_ = false;
+    // 淡出中的光圈已经「不存在」了，别再把钩子装回去。
+    if (closing_) {
+        return;
+    }
+    g_active = this;
+    if (mouseHook_ == nullptr) {
+        mouseHook_ = SetWindowsHookExW(WH_MOUSE_LL, &RadialMenu::MouseHook,
+                                       GetModuleHandleW(nullptr), 0);
+    }
+    if (keyHook_ == nullptr) {
+        keyHook_ = SetWindowsHookExW(WH_KEYBOARD_LL, &RadialMenu::KeyHook,
+                                     GetModuleHandleW(nullptr), 0);
+    }
+}
+
+struct RadialMenuFrameCache {    int size = 0;
     std::unique_ptr<Gdiplus::Bitmap> frames[5];
 };
 

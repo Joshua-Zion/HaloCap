@@ -487,10 +487,40 @@ void TrayMenuWindow::Close() {
     highlight_ = -1;
     pressed_ = -1;
     trackingMouse_ = false;
+    suspended_ = false;
 }
 
-core::TrayCommand TrayMenuWindow::PollCommand() {
-    const core::TrayCommand command = pending_;
+void TrayMenuWindow::Suspend() {
+    if (window_ == nullptr || suspended_) {
+        return;
+    }
+    suspended_ = true;
+    // SetCapture 是「菜单开着时第一次框选没反应」的根因：消息全被菜单截走，落点又被
+    // 判成「点菜单外面」直接收起。挂起时不关窗口，只把捕获还给系统——键鼠归覆盖层，
+    // 菜单本身留在屏幕上、原样被截进底图。
+    if (GetCapture() == window_) {
+        ReleaseCapture();
+    }
+}
+
+void TrayMenuWindow::Resume() {
+    if (window_ == nullptr || !suspended_) {
+        return;
+    }
+    suspended_ = false;
+    // 挂起期间按下的那一下不会有 WM_LBUTTONUP，这里把按下态清掉再重画。
+    if (pressed_ != -1) {
+        pressed_ = -1;
+        Render();
+        Present();
+    }
+    // 恢复成「刚打开」的交互态：前台 + 捕获，点条目生效、点外面收起的语义不变。
+    SetForegroundWindow(window_);
+    SetFocus(window_);
+    SetCapture(window_);
+}
+
+core::TrayCommand TrayMenuWindow::PollCommand() {    const core::TrayCommand command = pending_;
     pending_ = core::TrayCommand::None;
     return command;
 }
@@ -748,6 +778,22 @@ LRESULT CALLBACK TrayMenuWindow::WndProc(HWND window, UINT message, WPARAM wPara
 }
 
 LRESULT TrayMenuWindow::Handle(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
+    // 挂起期间（截图/识别覆盖层开着）只是一张留在屏幕上的图：不响应键鼠、不因为丢焦点
+    // 自己关掉。覆盖层的全局键盘钩子会吃掉按键，这里的守卫只防万一。
+    if (suspended_) {
+        switch (message) {
+        case WM_MOUSEMOVE:
+        case WM_MOUSELEAVE:
+        case WM_LBUTTONDOWN:
+        case WM_LBUTTONUP:
+        case WM_RBUTTONDOWN:
+        case WM_KEYDOWN:
+        case WM_KILLFOCUS:
+            return 0;
+        default:
+            break;
+        }
+    }
     switch (message) {
     case WM_SETCURSOR:
         // 菜单里永远是箭头：类光标在某些时序下会被系统换成「启动中」的转圈光标。
@@ -839,7 +885,10 @@ LRESULT TrayMenuWindow::Handle(HWND window, UINT message, WPARAM wParam, LPARAM 
         }
         break;
     case WM_KILLFOCUS:
-        Close();
+        // 挂起中丢焦点不能关（覆盖层出现、别的窗口被激活时菜单要留在屏幕上）。
+        if (!suspended_) {
+            Close();
+        }
         return 0;
     case WM_CAPTURECHANGED:
         if (pressed_ != -1) {

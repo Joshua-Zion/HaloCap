@@ -19,6 +19,12 @@ public:
     void Close();
     bool Active() const { return window_ != nullptr; }
 
+    // 截图/识别覆盖层打开期间把菜单「挂起」而不是关掉：窗口留在屏幕上（于是会被一起
+    // 截进底图），只交出鼠标捕获、不再响应键鼠，覆盖层关掉后 Resume() 恢复原样。
+    void Suspend();
+    void Resume();
+    bool Suspended() const { return suspended_; }
+
     // 读取并清空选中的命令（None = 没有选择，只是收起）。
     core::TrayCommand PollCommand();
 
@@ -58,6 +64,7 @@ private:
     int highlight_ = -1;
     int pressed_ = -1;
     bool trackingMouse_ = false;
+    bool suspended_ = false;
     core::TrayCommand pending_ = core::TrayCommand::None;
 };
 

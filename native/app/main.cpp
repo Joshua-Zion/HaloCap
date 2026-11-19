@@ -1504,25 +1504,58 @@ int Run(const Options& options) {
         });
     };
 
-    // 覆盖层（截图 / 识别 / 录制选区）出现前必须做的清理：托盘菜单和光圈都是置顶窗口，
-    // 菜单还握着鼠标捕获——不先收掉的话，它们既挡住选区、又被一起抓进底图，第一下框选
-    // 还会被菜单当成「点菜单外面」吃掉。关窗之后要等一帧 DWM 合成，否则残影仍在屏幕上。
-    const auto dismissFloatingMenus = [&]() {
-        // 光圈从选中扇区进来时，窗口已经被 Select() 关掉了（对象还在），这时同样要等
-        // 一帧再抓屏，否则抓进去的是光圈残影。所以「有没有这两块窗口」而不是「刚关掉没」。
-        const bool hadFloating = trayMenu != nullptr || radialMenu != nullptr;
+    // 覆盖层（截图 / 识别）出现前的处理：托盘菜单和光圈**都不收起来**——用户要能把它们
+    // 连同画面一起框进截图。但两者都会抢输入：菜单一开就 SetCapture，光圈挂着全局键鼠
+    // 钩子（低级钩子「后装先调」，压在覆盖层上面）。不收起来就等于第一次框选被菜单当成
+    // 「点菜单外面」吃掉、Esc 被光圈吞掉。所以这里只「挂起」：菜单交出捕获、光圈摘掉
+    // 钩子，窗口留在屏幕上，于是 BitBlt(CAPTUREBLT) 会把它们原样截进底图；覆盖层关掉后
+    // resumeFloatingMenus() 再把交互还回去。
+    const auto suspendFloatingMenus = [&]() {
+        bool retired = false;
         if (trayMenu != nullptr) {
-            trayMenu->Close();
-            trayMenu.reset();
+            if (trayMenu->Active()) {
+                trayMenu->Suspend();
+            } else {
+                // 菜单里点了「截图」：Activate() 已经关掉自己，等一帧 DWM 合成再抓。
+                trayMenu.reset();
+                retired = true;
+            }
         }
-        // 光圈可能还在 120 ms 的淡出里：窗口活着、全局键盘/鼠标钩子也还挂着，必须真关掉。
-        // 这里不 reset——可能是从光圈自己的选中回调里进来的，对象还在它的方法栈上。
-        if (radialMenu != nullptr && radialMenu->Active()) {
-            radialMenu->Close();
+        // 光圈不 reset：可能是从它自己的选中回调里进来的，对象还在它的方法栈上。
+        if (radialMenu != nullptr) {
+            if (radialMenu->Active() && !radialMenu->Closing()) {
+                radialMenu->Suspend();
+            } else if (radialMenu->Active()) {
+                // 正在 120 ms 淡出：窗口还活着、画面已经半透明，等它自己收完再抓。
+                const ULONGLONG deadline = GetTickCount64() + 400;
+                while (radialMenu != nullptr && radialMenu->Active() &&
+                       GetTickCount64() < deadline) {
+                    MSG message{};
+                    while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+                        TranslateMessage(&message);
+                        DispatchMessageW(&message);
+                    }
+                    Sleep(5);
+                }
+                retired = true;
+            } else {
+                // 从扇区选中进来：Select() 已经把窗口关了，同样只等合成。
+                retired = true;
+            }
         }
-        if (hadFloating) {
-            // DWM 是异步合成的：销毁窗口后立刻 BitBlt 抓屏，大概率抓到的是窗口残影。
+        if (retired) {
+            // DWM 是异步合成的：销毁窗口后立刻 BitBlt 抓屏，大概率抓到窗口残影。
             Sleep(120);
+        }
+    };
+
+    // 覆盖层关掉之后把托盘菜单 / 光圈的交互还回去（窗口一直没关，只是被挂起了）。
+    const auto resumeFloatingMenus = [&]() {
+        if (trayMenu != nullptr && trayMenu->Active()) {
+            trayMenu->Resume();
+        }
+        if (radialMenu != nullptr && radialMenu->Active()) {
+            radialMenu->Resume();
         }
     };
 
@@ -1530,7 +1563,7 @@ int Run(const Options& options) {
         if (screenshotOverlay != nullptr && screenshotOverlay->Active()) {
             return;
         }
-        dismissFloatingMenus();
+        suspendFloatingMenus();
         // 上一次的结果窗口保持常显（不关也不隐藏），用户可以对照着继续截下一张。
         pruneOcrWindows();
         screenshotOverlay = std::make_unique<halocap::app::ScreenshotOverlay>();
@@ -1554,6 +1587,7 @@ int Run(const Options& options) {
             log.Error(std::string("screenshot: overlay failed (") +
                       screenshotOverlay->LastErrorKind() + ")");
             screenshotOverlay.reset();
+            resumeFloatingMenus();
             notify("截图失败：无法获取屏幕");
             return;
         }
@@ -1565,7 +1599,7 @@ int Run(const Options& options) {
         if (screenshotOverlay != nullptr && screenshotOverlay->Active()) {
             return;
         }
-        dismissFloatingMenus();
+        suspendFloatingMenus();
         pruneOcrWindows();
         screenshotOverlay = std::make_unique<halocap::app::ScreenshotOverlay>();
         halocap::app::ScreenshotOverlayOptions overlayOptions;
@@ -1581,6 +1615,7 @@ int Run(const Options& options) {
             log.Error(std::string("ocr: overlay failed (") +
                       screenshotOverlay->LastErrorKind() + ")");
             screenshotOverlay.reset();
+            resumeFloatingMenus();
             notify("OCR 无法获取屏幕");
             return;
         }
@@ -1852,7 +1887,8 @@ int Run(const Options& options) {
         }
     };
     bool screenshotSelftestOk = true;
-    bool dismissMenusOk = false;
+    bool keepMenusOk = false;
+    bool keepRadialOk = false;
     bool escOnceOk = false;
     if (!options.screenshotSelftestPath.empty()) {
         const std::int64_t openStartUs = QpcNowUs();
@@ -2151,6 +2187,8 @@ int Run(const Options& options) {
                 window->Close();
             }
             ocrWindows.clear();
+            // 覆盖层一关，document 的引用就跟着失效（后面还要 reset），先把条数记下来。
+            const std::size_t annotatedItemCount = document.Items().size();
             screenshotOverlay->Close();
             // 贴图证明图：覆盖层关掉之后再抓，窗口与光晕才是可见的。
             Sleep(150);
@@ -2172,32 +2210,14 @@ int Run(const Options& options) {
             const bool overlayMemoryOk = screenshotMb <= overlayBudgetMb;
             const bool afterCloseOk = afterCloseMb > 0.0 && afterCloseMb <= 120.0;
 
-            // 覆盖层与浮动窗口的互斥：托盘菜单、光圈都开着时开截图，两者必须立刻被收掉
-            // （菜单握着鼠标捕获、光圈的全局钩子是「后装先调」，不收掉的话第一次框选和
-            // ESC 都会被它们吃掉），而且这时**只按一次 ESC** 就要整个退掉。
-            // 放在所有耗时/内存采样之后：这里会多开一次覆盖层，不能算进预算。
+            // 覆盖层开着时托盘菜单 / 光圈**不能收起来**（用户要能把它们连同画面一起框进
+            // 截图），但要交出输入：菜单松开鼠标捕获、光圈摘掉全局钩子，否则第一次框选会
+            // 被菜单当成「点菜单外面」吃掉、ESC 会被光圈吞掉。覆盖层关掉后两者恢复交互。
+            // 放在所有耗时/内存采样之后：这里会多开覆盖层，不能算进预算。
             {
-                POINT cursor{};
-                GetCursorPos(&cursor);
-                trayMenu = std::make_unique<halocap::app::TrayMenuWindow>();
-                const bool menuOpenForDismiss =
-                    trayMenu->Open(trayState,
-                                   std::wstring(L"v") +
-                                       Utf8ToWide(halocap::app::kHaloCapVersion),
-                                   cursor);
-                radialMenu = std::make_unique<halocap::app::RadialMenu>();
-                const bool radialOpenForDismiss =
-                    radialMenu->Open([](core::AppAction) {}, settings.menuSize);
-                openScreenshot();
-                dismissMenusOk =
-                    menuOpenForDismiss && radialOpenForDismiss && trayMenu == nullptr &&
-                    (radialMenu == nullptr || !radialMenu->Active()) &&
-                    screenshotOverlay != nullptr && screenshotOverlay->Active();
-                if (radialMenu != nullptr && !radialMenu->Active()) {
-                    radialMenu.reset();
-                }
-                if (dismissMenusOk) {
-                    // 真输入：全局键盘钩子 → PostMessage(kMsgEscape) → Pump → Close。
+                // 真输入：全局键盘钩子 → PostMessage(kMsgEscape) → Pump → Close。
+                // 再走一遍主循环里「覆盖层结束 → 恢复浮动菜单」的那一步。
+                const auto pressEscapeOnce = [&]() {
                     INPUT inputs[2]{};
                     for (int i = 0; i < 2; ++i) {
                         inputs[i].type = INPUT_KEYBOARD;
@@ -2218,11 +2238,65 @@ int Run(const Options& options) {
                         }
                         Sleep(10);
                     }
-                    escOnceOk = screenshotOverlay != nullptr && !screenshotOverlay->Active();
+                    const bool closed =
+                        screenshotOverlay != nullptr && !screenshotOverlay->Active();
+                    if (screenshotOverlay != nullptr) {
+                        screenshotOverlay->Close();
+                        screenshotOverlay.reset();
+                    }
+                    resumeFloatingMenus();
+                    return closed;
+                };
+
+                POINT cursor{};
+                GetCursorPos(&cursor);
+                trayMenu = std::make_unique<halocap::app::TrayMenuWindow>();
+                const bool menuOpened = trayMenu->Open(
+                    trayState,
+                    std::wstring(L"v") + Utf8ToWide(halocap::app::kHaloCapVersion), cursor);
+                const HWND menuHandle = static_cast<HWND>(trayMenu->HandleForTest());
+                openScreenshot();
+                const bool overlayUp =
+                    screenshotOverlay != nullptr && screenshotOverlay->Active();
+                // 菜单原样留在屏幕上：句柄没换、还可见、还挂着——但捕获交出去了。
+                const bool menuKept =
+                    menuOpened && trayMenu != nullptr && trayMenu->Active() &&
+                    trayMenu->HandleForTest() == menuHandle &&
+                    IsWindowVisible(menuHandle) != FALSE && trayMenu->Suspended() &&
+                    GetCapture() != menuHandle;
+                // 证明图：覆盖层开着时抓一张桌面——菜单应该被截进那层冻结的底图里。
+                const bool menuProof =
+                    overlayUp && screenshotOverlay->GrabDesktopToPng(
+                                     options.screenshotSelftestPath + L".keepmenu.png");
+                const bool escClosed = overlayUp && pressEscapeOnce();
+                // 覆盖层退掉之后菜单回到「刚打开」的交互态。
+                const bool menuResumed = trayMenu != nullptr && trayMenu->Active() &&
+                                         !trayMenu->Suspended() && GetCapture() == menuHandle;
+                keepMenusOk = menuKept && escClosed && menuResumed;
+                AddFlag(report, "APP_SCREENSHOT_KEEP_MENU_PROOF", menuProof);
+                if (trayMenu != nullptr) {
+                    trayMenu->Close();
+                    trayMenu.reset();
                 }
-                if (screenshotOverlay != nullptr && screenshotOverlay->Active()) {
-                    screenshotOverlay->Close();
+
+                // 光圈同理：窗口留着，全局钩子摘掉；覆盖层退掉后钩子装回来。
+                radialMenu = std::make_unique<halocap::app::RadialMenu>();
+                const bool radialOpened =
+                    radialMenu->Open([](core::AppAction) {}, settings.menuSize);
+                openScreenshot();
+                const bool radialKept = radialOpened &&
+                                        screenshotOverlay != nullptr &&
+                                        screenshotOverlay->Active() && radialMenu->Active() &&
+                                        radialMenu->Suspended();
+                const bool radialEscClosed = radialKept && pressEscapeOnce();
+                const bool radialResumed =
+                    radialMenu != nullptr && radialMenu->Active() && !radialMenu->Suspended();
+                keepRadialOk = radialKept && radialEscClosed && radialResumed;
+                if (radialMenu != nullptr) {
+                    radialMenu->Close();
+                    radialMenu.reset();
                 }
+                escOnceOk = escClosed && radialEscClosed;
             }
 
             AddFlag(report, "APP_SCREENSHOT_OVERLAY", true);
@@ -2237,7 +2311,7 @@ int Run(const Options& options) {
             AddText(report, "APP_SCREENSHOT_OPEN_MS", openBuffer);
             AddMb(report, "APP_SCREENSHOT_PRIVATE_MB", screenshotMb);
             AddInt(report, "APP_SCREENSHOT_ITEMS",
-                   static_cast<long long>(document.Items().size()));
+                   static_cast<long long>(annotatedItemCount));
             AddFlag(report, "APP_SCREENSHOT_SELECT_DRAG", dragOk);
             AddFlag(report, "APP_SCREENSHOT_SELECT_MOVE", moveOk);
             AddFlag(report, "APP_SCREENSHOT_SELECT_RESIZE", resizeOk);
@@ -2276,7 +2350,8 @@ int Run(const Options& options) {
                           overlayBudgetMb);
             AddText(report, "APP_SCREENSHOT_MEMORY_BUDGET_MB", budgetBuffer);
 
-            AddFlag(report, "APP_SCREENSHOT_DISMISS_MENUS", dismissMenusOk);
+            AddFlag(report, "APP_SCREENSHOT_KEEP_MENUS", keepMenusOk);
+            AddFlag(report, "APP_SCREENSHOT_KEEP_RADIAL", keepRadialOk);
             AddFlag(report, "APP_SCREENSHOT_ESC_ONCE", escOnceOk);
             screenshotSelftestOk = proof && pinProof && saved && pinned && !pins.empty() &&
                                    latencyOk && overlayMemoryOk && afterCloseOk && dragOk &&
@@ -2285,8 +2360,8 @@ int Run(const Options& options) {
                                    optionsFitOk && wheelOk && mosaicComposeOk &&
                                    mosaicOverAnnotationOk && exportAnnotated && hoverDetectOk &&
                                    hoverUnderCursor && outsideGuardOk && ocrButtonOk &&
-                                   restoreEntryOk && restoreAnnotatedOk && dismissMenusOk &&
-                                   escOnceOk;
+                                   restoreEntryOk && restoreAnnotatedOk && keepMenusOk &&
+                                   keepRadialOk && escOnceOk;
             log.Info(screenshotSelftestOk ? "screenshot selftest: ok"
                                           : "screenshot selftest: failed");
         }
@@ -3572,7 +3647,15 @@ int Run(const Options& options) {
                 Sleep(10);
             }
             const HWND handle = static_cast<HWND>(menu.HandleForTest());
-            SendMessageW(handle, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(320, 210));
+            // 点击点按窗口实际尺寸算：窗口像素 = 菜单尺寸(DIP) × 缩放，本机 150% 下写死
+            // 420 DIP 的坐标会落到上面的「截图」扇区里去（之前就是这么误判成失败的）。
+            RECT client{};
+            GetClientRect(handle, &client);
+            const int centerX = (client.right - client.left) / 2;
+            const int centerY = (client.bottom - client.top) / 2;
+            const int reach = (client.right - client.left) * 30 / 100;   // 右边扇区 = 文字识别
+            SendMessageW(handle, WM_LBUTTONDOWN, MK_LBUTTON,
+                         MAKELPARAM(centerX + reach, centerY));
             Sleep(100);
             halocap::platform::win32::DesktopImage desktop;
             const bool proof =
@@ -4114,9 +4197,11 @@ int Run(const Options& options) {
         if (trayMenu != nullptr) {
             if (const core::TrayCommand command = trayMenu->PollCommand();
                 command != core::TrayCommand::None) {
+                // onAction 里可能把菜单关掉并 reset（点「截图」就是这么走的），之后再解
+                // 引用就是空指针。
                 onAction(command);
             }
-            if (!trayMenu->Active()) {
+            if (trayMenu != nullptr && !trayMenu->Active()) {
                 trayMenu.reset();
             }
         }
@@ -4157,6 +4242,8 @@ int Run(const Options& options) {
             screenshotOverlay->Pump();
             if (!screenshotOverlay->Active()) {
                 screenshotOverlay.reset();
+                // 覆盖层结束了：把被挂起的托盘菜单 / 光圈恢复成交互态（它们一直没关）。
+                resumeFloatingMenus();
             }
         }
 

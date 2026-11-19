@@ -33,6 +33,13 @@ public:
     bool Open(SelectHandler onSelect, core::MenuSize size);
     void Close();
     bool Active() const { return window_ != nullptr; }
+    bool Closing() const { return closing_; }
+
+    // 截图/识别覆盖层打开期间把光圈挂起：窗口留在屏幕上（会被一起截进底图），
+    // 只摘掉全局键鼠钩子把输入让给覆盖层；覆盖层关掉后 Resume() 重新装上。
+    void Suspend();
+    void Resume();
+    bool Suspended() const { return suspended_; }
 
     // 自检用：窗口句柄（发 WM_MOUSEMOVE 触发悬停）。
     void* HandleForTest() const { return window_; }
@@ -71,6 +78,7 @@ private:
     POINT dragOffset_{};
     unsigned long long showStartMs_ = 0;
     bool closing_ = false;
+    bool suspended_ = false;
     unsigned long long closeStartMs_ = 0;
     int pendingAction_ = -1;
     SelectHandler onSelect_;

@@ -1035,6 +1035,43 @@ int FindHotkeyConflict(const AppSettings& settings, int slot) {
 
 // ---- 读取与写出 ----
 
+// 2.0 早期版本把五个动作快捷键的默认值换成了 Ctrl+Alt+字母；2.4.9 起改回 1.x 的裸功能键
+// （光圈 F6 / 截图 F1 / 识别 F7 / 录屏 F8 / 贴图 F3）。
+//
+// 只迁移「文件里原样写着旧默认值」的字段：用户自己改过的一律不动。1.x 写的文件没有
+// schemaVersion（0），而 1.x 的默认值本来就是这批功能键，所以 1.x 用户即使真的手选了
+// Ctrl+Alt+A 也不会被覆盖。
+void MigrateDefaultHotkeys(AppSettings& settings, SettingsReadReport& report) {
+    // 只处理 2.0 早期写出的文件（schemaVersion = 2）。
+    if (report.schemaVersion != 2) {
+        return;
+    }
+    struct Migration {
+        const char* key;
+        HotkeySpec from;   // 2.0 早期默认值
+        HotkeySpec to;     // 现在的默认值
+        HotkeySpec* field;
+    };
+    const Migration migrations[] = {
+        { "hotkey", { KeySymbol::D, kModControl | kModAlt }, { KeySymbol::F6, 0 },
+          &settings.radialHotkey },
+        { "screenshotHotkey", { KeySymbol::A, kModControl | kModAlt }, { KeySymbol::F1, 0 },
+          &settings.screenshotHotkey },
+        { "ocrHotkey", { KeySymbol::O, kModControl | kModAlt }, { KeySymbol::F7, 0 },
+          &settings.ocrHotkey },
+        { "recordHotkey", { KeySymbol::R, kModControl | kModAlt }, { KeySymbol::F8, 0 },
+          &settings.recordHotkey },
+        { "pinHotkey", { KeySymbol::P, kModControl | kModAlt }, { KeySymbol::F3, 0 },
+          &settings.pinHotkey },
+    };
+    for (const Migration& migration : migrations) {
+        if (*migration.field == migration.from) {
+            *migration.field = migration.to;
+            report.migratedKeys.emplace_back(migration.key);
+        }
+    }
+}
+
 void ParseSettings(std::string_view utf8, AppSettings& settings, SettingsReadReport& report) {
     settings = AppSettings{};
     report = SettingsReadReport{};
@@ -1060,6 +1097,7 @@ void ParseSettings(std::string_view utf8, AppSettings& settings, SettingsReadRep
     ReadHotkeyField(tree, "ocrHotkey", settings.ocrHotkey, report);
     ReadHotkeyField(tree, "recordHotkey", settings.recordHotkey, report);
     ReadHotkeyField(tree, "pinHotkey", settings.pinHotkey, report);
+    MigrateDefaultHotkeys(settings, report);
 
     ReadEnumField(tree, "screenshotFormat", kScreenshotFormatEntries, EntryCount(kScreenshotFormatEntries),
                   settings.screenshotFormat, report);

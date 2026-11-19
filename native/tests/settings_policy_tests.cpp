@@ -287,12 +287,12 @@ void TestStringEscapes() {
 void TestDefaults() {
     const AppSettings settings;
 
-    CheckHotkey(settings.radialHotkey, KeySymbol::D, core::kModControl | core::kModAlt, "radial default");
-    CheckHotkey(settings.screenshotHotkey, KeySymbol::A, core::kModControl | core::kModAlt,
-                "screenshot default");
-    CheckHotkey(settings.ocrHotkey, KeySymbol::O, core::kModControl | core::kModAlt, "ocr default");
-    CheckHotkey(settings.recordHotkey, KeySymbol::R, core::kModControl | core::kModAlt, "record default");
-    CheckHotkey(settings.pinHotkey, KeySymbol::P, core::kModControl | core::kModAlt, "pin default");
+    // 默认值与 1.x 对齐：裸功能键，光圈 F6 / 截图 F1 / 识别 F7 / 录屏 F8 / 贴图 F3。
+    CheckHotkey(settings.radialHotkey, KeySymbol::F6, 0, "radial default");
+    CheckHotkey(settings.screenshotHotkey, KeySymbol::F1, 0, "screenshot default");
+    CheckHotkey(settings.ocrHotkey, KeySymbol::F7, 0, "ocr default");
+    CheckHotkey(settings.recordHotkey, KeySymbol::F8, 0, "record default");
+    CheckHotkey(settings.pinHotkey, KeySymbol::F3, 0, "pin default");
 
     CheckTrue(settings.screenshotFormat == core::ScreenshotFormat::Png, "screenshot format default");
     CheckTrue(settings.menuSize == core::MenuSize::Medium, "menu size default");
@@ -327,7 +327,7 @@ void TestEmptyAndBrokenDocuments() {
     Parsed empty = Parse("");
     CheckText(empty.report.parseError, "empty", "empty file reports empty");
     CheckTrue(empty.report.UsedDefaults(), "empty file uses defaults");
-    CheckHotkey(empty.settings.radialHotkey, KeySymbol::D, core::kModControl | core::kModAlt,
+    CheckHotkey(empty.settings.radialHotkey, KeySymbol::F6, 0,
                 "empty file keeps the default hotkey");
 
     Parsed broken = Parse("{\"menuSize\":");
@@ -379,6 +379,33 @@ void TestLegacyDocument() {
     CheckEmpty(parsed.report.droppedKeys, "legacy document drops nothing");
 }
 
+void TestHotkeyDefaultsMigration() {
+    // 2.4.8 及更早的 2.0 把默认值换成了 Ctrl+Alt+字母（schemaVersion 2）。2.4.9 改回 1.x
+    // 的裸功能键：原样写着旧默认值的字段要跟着迁移，用户自己改过的一个都不能动。
+    Parsed old = Parse(R"({"schemaVersion":2,"hotkey":"Ctrl+Alt+D","screenshotHotkey":"Ctrl+Alt+A","ocrHotkey":"Ctrl+Alt+O","recordHotkey":"Ctrl+Alt+R","pinHotkey":"Ctrl+Alt+P"})");
+    CheckHotkey(old.settings.radialHotkey, KeySymbol::F6, 0, "old radial default migrates to F6");
+    CheckHotkey(old.settings.screenshotHotkey, KeySymbol::F1, 0, "old screenshot default migrates to F1");
+    CheckHotkey(old.settings.ocrHotkey, KeySymbol::F7, 0, "old ocr default migrates to F7");
+    CheckHotkey(old.settings.recordHotkey, KeySymbol::F8, 0, "old record default migrates to F8");
+    CheckHotkey(old.settings.pinHotkey, KeySymbol::F3, 0, "old pin default migrates to F3");
+    CheckList(old.report.migratedKeys,
+              { "hotkey", "screenshotHotkey", "ocrHotkey", "recordHotkey", "pinHotkey" },
+              "old hotkey defaults are reported as migrated");
+    CheckEmpty(old.report.repairedKeys, "migrating old defaults repairs nothing");
+
+    // 只迁移旧默认值：改过的键保持原样，也不报告迁移。
+    Parsed custom = Parse(R"({"schemaVersion":2,"hotkey":"Ctrl+Shift+X"})");
+    CheckHotkey(custom.settings.radialHotkey, KeySymbol::X, core::kModControl | core::kModShift,
+                "custom hotkey survives the default migration");
+    CheckEmpty(custom.report.migratedKeys, "custom hotkey is not reported as migrated");
+
+    // 新写出的文件（schemaVersion 3）不再迁移，也不报告。
+    Parsed fresh = Parse(R"({"schemaVersion":3,"hotkey":"Ctrl+Alt+D"})");
+    CheckHotkey(fresh.settings.radialHotkey, KeySymbol::D, core::kModControl | core::kModAlt,
+                "schema 3 document keeps an explicitly chosen hotkey");
+    CheckEmpty(fresh.report.migratedKeys, "schema 3 document migrates nothing");
+}
+
 void TestRoundTrip() {
     AppSettings custom;
     custom.radialHotkey = { KeySymbol::F13, 0 };
@@ -412,7 +439,7 @@ void TestRoundTrip() {
     CheckTrue(text.find("\"hotkey\": \"F13\"") != std::string::npos, "bare key is written as text");
     CheckTrue(text.find("\"screenshotHotkey\": \"Ctrl+Shift+K\"") != std::string::npos,
               "modifiers are written in canonical order");
-    CheckTrue(text.find("\"schemaVersion\": 2") != std::string::npos, "2.0 writes schemaVersion 2");
+    CheckTrue(text.find("\"schemaVersion\": 3") != std::string::npos, "2.0 writes schemaVersion 3");
     CheckTrue(text.find("\"menuSize\": \"Large\"") != std::string::npos, "enum is written by member name");
     CheckTrue(text.find("  \"hotkey\"") != std::string::npos, "two-space indentation");
 
@@ -601,8 +628,7 @@ void TestHotkeyParsing() {
     // 空格裸用会被系统独占日常输入，必须拒。
     Parsed unsafe = Parse(R"({"hotkey":"Space"})");
     CheckList(unsafe.report.repairedKeys, { "hotkey" }, "bare space is repaired");
-    CheckHotkey(unsafe.settings.radialHotkey, KeySymbol::D, core::kModControl | core::kModAlt,
-                "unsafe bare key keeps the default");
+    CheckHotkey(unsafe.settings.radialHotkey, KeySymbol::F6, 0, "unsafe bare key keeps the default");
 
     Parsed unknown = Parse(R"({"hotkey":"LeftCtrl+F6"})");
     CheckList(unknown.report.repairedKeys, { "hotkey" }, "modifier key as a symbol is repaired");
@@ -631,8 +657,7 @@ void TestHotkeyParsing() {
     // 小键盘数字与 CapsLock 在 2.0 的符号表里没有位置：认不出来就回默认，不硬编相近的键。
     Parsed numpad = Parse(R"({"hotkey":{"key":"NumPad0","modifiers":"None"}})");
     CheckList(numpad.report.repairedKeys, { "hotkey" }, "NumPad0 cannot migrate");
-    CheckHotkey(numpad.settings.radialHotkey, KeySymbol::D, core::kModControl | core::kModAlt,
-                "unmigratable key keeps the default");
+    CheckHotkey(numpad.settings.radialHotkey, KeySymbol::F6, 0, "unmigratable key keeps the default");
 
     Parsed badModifiers = Parse(R"({"hotkey":{"key":"F6","modifiers":99}})");
     CheckList(badModifiers.report.repairedKeys, { "hotkey" }, "out-of-range modifiers are repaired");
@@ -883,6 +908,7 @@ int main() {
     TestDefaults();
     TestEmptyAndBrokenDocuments();
     TestLegacyDocument();
+    TestHotkeyDefaultsMigration();
     TestRoundTrip();
     TestEnumNames();
     TestRepairs();

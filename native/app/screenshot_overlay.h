@@ -9,6 +9,7 @@
 #include "win32_input_host.h"
 #include "win32_surface_window.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -117,6 +118,12 @@ public:
     }
     const std::wstring& ToastForTest() const { return toast_; }
     bool AnnotatingForTest() const { return annotating_; }
+    // 有标注时 R 不许换选区（换掉选区，标注坐标就全作废了），自检用。
+    bool HasAnnotationsForTest() const { return !document_.Items().empty(); }
+    // 选区历史（R 的栈），自检用。
+    std::size_t RecentSelectionCountForTest() const;
+    // 等价于按一次 R，自检用。
+    void RestoreSelectionForTest() { RestorePreviousSelection(); }
     int UiScalePercentForTest() const { return static_cast<int>(uiScale_ * 100.0f + 0.5f); }
     // 当前悬停候选（窗口或整块屏，屏幕坐标）；空表示还没探测到。
     core::IntRect HoverRectForTest() const { return hoverRect_; }
@@ -330,6 +337,8 @@ private:
     bool colorAsRgb_ = false;
     void CopyColorUnderCursor(bool asRgb);
     void RenderToast(core::FramePlan& plan);
+    // 覆盖层里的一条短提示（R 没有历史、有标注不许回退……），自动消失。
+    void ShowToast(const wchar_t* text, std::uint64_t ms = 1600);
 
     // 工具栏入场：1.x 是 opacity 0→1 + 从下往上 6 px，这里只做位移那一段。
     float toolbarAnim_ = 1.0f;

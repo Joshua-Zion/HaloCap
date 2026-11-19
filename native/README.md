@@ -2,7 +2,7 @@
 
 本目录属于 `2.0` 分支。设计依据见 [../docs/2.0-native-plan.md](../docs/2.0-native-plan.md)，分支约定见其 §10，工具链与构建前提见计划文档的「S1 的工具链」。
 
-当前状态：**S1–S5 完成，S4 收尾项也已补齐**（热键捕获、结果窗口命中高亮/按行跳转、同进程 OCR 后内存回落）——十八套测试全绿；`HaloCap.exe` 有设置、日志、托盘、热键、覆盖层、录制、截图、OCR、六页设置与剪贴板贴图（托盘「录屏」/`Ctrl+Alt+R`、托盘「截图」/`Ctrl+Alt+A`、托盘「OCR」/`Ctrl+Alt+O`、托盘「贴图」/`Ctrl+Alt+P`、托盘「设置」；`--record-seconds` / `--screenshot-selftest` / `--ocr-selftest` / `--ocr-search-selftest` / `--settings-selftest` / `--hotkey-selftest` / `--hotkey-live-selftest` / `--ocr-search-selftest` / `--pin-selftest` 八个自检，另有 `--version` / `--check-update`）。交付：`package.ps1` 产出 win64 zip（目标 ≤ 20 MB）与 SHA-256 清单；空闲 2.9 MB、OCR 后回落 79.5 MB（按抓取面积给预算）、4K30 峰值 230.8 MB、截图选区 78.2 ms。
+当前状态：**S1–S5 完成，S4 收尾项也已补齐**（热键捕获、结果窗口命中高亮/按行跳转、同进程 OCR 后内存回落）——十八套测试全绿；`HaloCap.exe` 有设置、日志、托盘、热键、覆盖层、录制、截图、OCR、六页设置与剪贴板贴图（托盘「录屏」/`F8`、托盘「截图」/`F1`、托盘「OCR」/`F7`、托盘「贴图」/`F3`、托盘「设置」；`--record-seconds` / `--screenshot-selftest` / `--ocr-selftest` / `--ocr-search-selftest` / `--settings-selftest` / `--hotkey-selftest` / `--hotkey-live-selftest` / `--ocr-search-selftest` / `--pin-selftest` 八个自检，另有 `--version` / `--check-update`）。交付：`package.ps1` 产出 win64 zip（目标 ≤ 20 MB）与 SHA-256 清单；空闲 2.9 MB、OCR 后回落 79.5 MB（按抓取面积给预算）、4K30 峰值 230.8 MB、截图选区 78.2 ms。
 
 一处环境阻塞要写清：本机现在对**任何**程序都拒绝 `DuplicateOutput`（`E_ACCESSDENIED`；今天早些时候还能跑出吞吐数字的 spike 2 工具现在同样被拒），所以 `ICaptureSource` 的端到端脏矩形量级数字还没拿到。拷贝逻辑本身不依赖复制权，已经单独验过（`rect_copy_test`）。
 

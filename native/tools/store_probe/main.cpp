@@ -242,7 +242,7 @@ void TestRoundTrip(const std::wstring& root) {
     bool exists = false;
     Check(store.LoadSettings(raw, exists), "raw load succeeds");
     Check(exists, "raw load reports the file exists");
-    Check(raw.find("\"schemaVersion\": 2") != std::string::npos, "saved text carries schemaVersion 2");
+    Check(raw.find("\"schemaVersion\": 3") != std::string::npos, "saved text carries schemaVersion 3");
 
     core::SettingsLoadResult loaded = core::LoadSettingsFrom(store);
     Check(loaded.fileExists, "load reports fileExists=true");

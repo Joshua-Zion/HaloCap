@@ -137,11 +137,13 @@ struct RecordingSettings {
 
 struct AppSettings {
     // 圆盘呼出键。1.x 存的是 {modifiers, key}，2.0 存规范文本，读侧两种都认。
-    HotkeySpec radialHotkey{ KeySymbol::D, kModControl | kModAlt };
-    HotkeySpec screenshotHotkey{ KeySymbol::A, kModControl | kModAlt };
-    HotkeySpec ocrHotkey{ KeySymbol::O, kModControl | kModAlt };
-    HotkeySpec recordHotkey{ KeySymbol::R, kModControl | kModAlt };
-    HotkeySpec pinHotkey{ KeySymbol::P, kModControl | kModAlt };
+    // 默认值与 1.x 一致：光圈 F6、截图 F1、识别 F7、录屏 F8、贴图 F3。裸功能键不带修饰，
+    // 呼出覆盖层之后手上的键已经松开，不会出现「修饰键还压着、第一下 R 白按」的错觉。
+    HotkeySpec radialHotkey{ KeySymbol::F6, 0 };
+    HotkeySpec screenshotHotkey{ KeySymbol::F1, 0 };
+    HotkeySpec ocrHotkey{ KeySymbol::F7, 0 };
+    HotkeySpec recordHotkey{ KeySymbol::F8, 0 };
+    HotkeySpec pinHotkey{ KeySymbol::F3, 0 };
 
     ScreenshotFormat screenshotFormat = ScreenshotFormat::Png;
     MenuSize menuSize = MenuSize::Medium;
@@ -174,7 +176,9 @@ struct AppSettings {
 };
 
 // 2.0 写出的文件带的版本字段；读的时候只拿它做诊断，形状由值本身决定（见文件头注释）。
-constexpr std::int32_t kSettingsSchemaVersion = 2;
+// 3 = 2.4.9 起把动作快捷键的默认值改回 1.x 的裸功能键（见 settings_policy.cpp 的
+// MigrateDefaultHotkeys），2 及更早是 Ctrl+Alt+字母。
+constexpr std::int32_t kSettingsSchemaVersion = 3;
 
 // 文本 <-> 模型。ParseSettings 先把 settings 换成默认值再按文件修，所以传进来的
 // 旧值不会影响结果；整份文件读不进去时 settings 就停在默认值、report.parseError 非空

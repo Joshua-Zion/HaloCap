@@ -1875,6 +1875,21 @@ int Run(const Options& options) {
             const bool hoverProof =
                 screenshotOverlay->GrabDesktopToPng(options.screenshotSelftestPath + L".hover.png");
 
+            // 0.5) 进入选区、还没框一块时就按 R：这条路径必须能走通（此前要先用掉过一块才认）。
+            //      有历史就贴回来，没有历史就弹一条提示——两种都算「按键被处理了」。
+            const std::size_t historyBefore = screenshotOverlay->RecentSelectionCountForTest();
+            screenshotOverlay->RestoreSelectionForTest();
+            screenshotOverlay->Pump();
+            const bool restoreEntryOk =
+                historyBefore > 0 ? !screenshotOverlay->SelectionRectPx().IsEmpty()
+                                  : !screenshotOverlay->ToastForTest().empty();
+            if (!screenshotOverlay->SelectionRectPx().IsEmpty()) {
+                // 有历史时 R 会真的贴回一块选区，右键清掉再接着走后面的拖选。
+                SendMessageW(overlayWindow, WM_RBUTTONDOWN, MK_RBUTTON,
+                             MAKELPARAM(baseX + 400, baseY + 400));
+                pumpMessages();
+            }
+
             // 1) 拖选 600×400。
             sendMouse(WM_MOUSEMOVE, x0, y0);
             sendMouse(WM_LBUTTONDOWN, x0, y0);
@@ -1982,6 +1997,19 @@ int Run(const Options& options) {
             sendMouse(WM_LBUTTONUP, x0 + 320, y0 + 70);
             const bool annotated = !screenshotOverlay->Document().Items().empty();
             (void)drawingProof;
+
+            // 7.5) 选区里已经有标注时按 R：不许换选区（换掉就把刚画的标注作废了），
+            //      选区保持原样，只弹一条提示。
+            const core::IntRect beforeAnnotatedRestore = screenshotOverlay->SelectionRectPx();
+            screenshotOverlay->RestoreSelectionForTest();
+            screenshotOverlay->Pump();
+            const core::IntRect afterAnnotatedRestore = screenshotOverlay->SelectionRectPx();
+            const bool restoreAnnotatedOk =
+                annotated && afterAnnotatedRestore.left == beforeAnnotatedRestore.left &&
+                afterAnnotatedRestore.top == beforeAnnotatedRestore.top &&
+                afterAnnotatedRestore.right == beforeAnnotatedRestore.right &&
+                afterAnnotatedRestore.bottom == beforeAnnotatedRestore.bottom &&
+                screenshotOverlay->ToastForTest().find(L"有标注") != std::wstring::npos;
 
             core::AnnotationStyle style;
             style.color = core::annotation_defaults::PaletteColor(0);
@@ -2130,6 +2158,8 @@ int Run(const Options& options) {
             AddFlag(report, "APP_SCREENSHOT_OPTIONBAR_FITS", optionsFitOk);
             AddFlag(report, "APP_SCREENSHOT_WHEEL", wheelOk);
             AddFlag(report, "APP_SCREENSHOT_ANNOTATE", annotated);
+            AddFlag(report, "APP_SCREENSHOT_RESTORE_ENTRY", restoreEntryOk);
+            AddFlag(report, "APP_SCREENSHOT_RESTORE_ANNOTATED", restoreAnnotatedOk);
             AddFlag(report, "APP_SCREENSHOT_HOVER_DETECT", hoverDetectOk);
             AddFlag(report, "APP_SCREENSHOT_HOVER_UNDER_CURSOR", hoverUnderCursor);
             char hoverRectText[64] = {};
@@ -2160,7 +2190,8 @@ int Run(const Options& options) {
                                    annotated && toolbarOk && optionsOk && clickShapeOk &&
                                    optionsFitOk && wheelOk && mosaicComposeOk &&
                                    mosaicOverAnnotationOk && exportAnnotated && hoverDetectOk &&
-                                   hoverUnderCursor && outsideGuardOk && ocrButtonOk;
+                                   hoverUnderCursor && outsideGuardOk && ocrButtonOk &&
+                                   restoreEntryOk && restoreAnnotatedOk;
             log.Info(screenshotSelftestOk ? "screenshot selftest: ok"
                                           : "screenshot selftest: failed");
         }
@@ -3766,11 +3797,11 @@ int Run(const Options& options) {
         };
 
         core::TrayMenuState state;
-        state.radialHotkey = "Ctrl+Alt+D";
-        state.screenshotHotkey = "Ctrl+Alt+A";
-        state.ocrHotkey = "Ctrl+Alt+S";
-        state.recordHotkey = "Ctrl+Alt+R";
-        state.pinHotkey = "Ctrl+Alt+Q";
+        state.radialHotkey = "F6";
+        state.screenshotHotkey = "F1";
+        state.ocrHotkey = "F7";
+        state.recordHotkey = "F8";
+        state.pinHotkey = "F3";
         state.pinAvailable = true;
         state.autoStart = true;
         const std::vector<core::TrayMenuItem> expected = core::BuildTrayMenu(state);
@@ -3870,6 +3901,22 @@ int Run(const Options& options) {
             outsideMenu.Close();
         }
 
+        // 鼠标捕获：菜单一打开就 SetCapture，这正是 2.4.9 修的「托盘菜单开着时第一次框选
+        // 没反应」的成因（第一下点击被菜单当成「点菜单外面」）。动作快捷键分发前会先
+        // Close 掉菜单，所以这里验两件事：打开时确实握着捕获、Close 之后确实还回去了。
+        bool captureHeld = false;
+        bool captureReleased = false;
+        {
+            halocap::app::TrayMenuWindow captureMenu;
+            SetCursorPos(openPoint.x, openPoint.y);
+            if (captureMenu.Open(state, versionLabel, openPoint)) {
+                pumpFor(150);
+                captureHeld = GetCapture() == static_cast<HWND>(captureMenu.HandleForTest());
+                captureMenu.Close();
+                captureReleased = GetCapture() == nullptr;
+            }
+        }
+
         AddFlag(report, "APP_TRAY_MENU_WINDOW", opened);
         AddFlag(report, "APP_TRAY_MENU_MODEL", modelOk);
         AddFlag(report, "APP_TRAY_MENU_GEOMETRY", geometryOk);
@@ -3879,8 +3926,10 @@ int Run(const Options& options) {
         AddFlag(report, "APP_TRAY_MENU_KEYBOARD", keyboardOk);
         AddFlag(report, "APP_TRAY_MENU_ESC", escOk);
         AddFlag(report, "APP_TRAY_MENU_OUTSIDE", outsideOk);
+        AddFlag(report, "APP_TRAY_MENU_CAPTURE_HELD", captureHeld);
+        AddFlag(report, "APP_TRAY_MENU_CAPTURE_RELEASED", captureReleased);
         trayMenuSelftestOk = opened && modelOk && geometryOk && proof && clickOk && clickClosed &&
-                             keyboardOk && escOk && outsideOk;
+                             keyboardOk && escOk && outsideOk && captureHeld && captureReleased;
         log.Info(trayMenuSelftestOk ? "tray menu selftest: ok" : "tray menu selftest: failed");
         running = false;
     }
@@ -3902,6 +3951,13 @@ int Run(const Options& options) {
             if (radialMenu != nullptr && token != kTokenRadial) {
                 radialMenu->Close();
                 radialMenu.reset();
+            }
+            // 托盘菜单开着时同理：菜单窗口一打开就 SetCapture，鼠标点去覆盖层会被它当成
+            // 「点菜单外面」自己吃掉——表现是「托盘菜单开着时，第一次框选没反应」。
+            // 动作快捷键一律先把菜单收掉（Close 里会 ReleaseCapture），再开覆盖层。
+            if (trayMenu != nullptr) {
+                trayMenu->Close();
+                trayMenu.reset();
             }
             if (token == kTokenRecord) {
                 toggleRecording();

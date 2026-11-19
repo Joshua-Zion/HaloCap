@@ -2663,15 +2663,55 @@ void ScreenshotOverlay::RememberSelection() {
     g_recentCursor = -1;
 }
 
-void ScreenshotOverlay::RestorePreviousSelection() {
-    if (g_recentSelections.empty()) {
+std::size_t ScreenshotOverlay::RecentSelectionCountForTest() const {
+    return g_recentSelections.size();
+}
+
+void ScreenshotOverlay::ShowToast(const wchar_t* text, std::uint64_t ms) {
+    toast_ = text != nullptr ? text : L"";
+    toastUntilMs_ = GetTickCount64() + ms;
+    if (toast_.empty() || window_ == nullptr) {
+        dirty_ = true;
         return;
     }
+    SetTimer(static_cast<HWND>(window_->Handle()), 2, 60, nullptr);
+    dirty_ = true;
+}
+
+void ScreenshotOverlay::RestorePreviousSelection() {
+    // 有标注时不许换选区：标注的坐标是「选区局部像素」，换一块选区等于把整摞标注作废，
+    // 用户按 R 只想换回上次那块区域，不该顺手丢掉刚画的东西。要换先清空标注。
+    if (!document_.Items().empty()) {
+        ShowToast(L"有标注时不回退选区，先清空标注");
+        return;
+    }
+    if (g_recentSelections.empty()) {
+        ShowToast(L"还没有可回退的选区");
+        return;
+    }
+
+    // 进入选区就能直接按 R：此刻没有任何选区/拖拽状态，把最近一条原样贴回来。
+    // 拖到一半按 R 也一样——先把这一拖作废，否则松手时 OnLeftButtonUp 会拿拖拽结果
+    // 覆盖掉刚贴回来的历史。
+    const HWND window = window_ != nullptr ? static_cast<HWND>(window_->Handle()) : nullptr;
+    if (selecting_) {
+        selecting_ = false;
+        if (window != nullptr && GetCapture() == window) {
+            ReleaseCapture();
+        }
+    }
+    movingSelection_ = false;
+    resizing_ = false;
+    resizeHandle_ = core::SelectionHandle::None;
+    drawing_ = false;
+    mosaicPainting_ = false;
+
     if (g_recentCursor < 0) {
         g_recentCursor = static_cast<int>(g_recentSelections.size()) - 1;
     } else if (g_recentCursor > 0) {
         --g_recentCursor;
     } else {
+        ShowToast(L"已经是最早的选区了");
         return;   // 已经翻到最早一条，不再往回
     }
 
@@ -2691,10 +2731,14 @@ void ScreenshotOverlay::RestorePreviousSelection() {
     selection_.Update(Point{ static_cast<float>(rect.right), static_cast<float>(rect.bottom) },
                       false);
     selection_.Commit();
-    if (!selection_.Bounds().IsEmpty()) {
-        phase_ = Phase::Annotating;
-        annotating_ = false;
+    if (selection_.Bounds().IsEmpty()) {
+        // 那条选区落在这次覆盖层之外（例如换了一块屏），夹回工作区后不够最小尺寸。
+        ShowToast(L"这条选区在当前屏幕上放不下");
+        dirty_ = true;
+        return;
     }
+    phase_ = Phase::Annotating;
+    annotating_ = false;
     ClearHoverCandidate();
     dirty_ = true;
 }
@@ -3079,8 +3123,10 @@ LRESULT CALLBACK ScreenshotOverlay::KeyHook(int code, WPARAM wParam, LPARAM lPar
         wparam = static_cast<WPARAM>(key == VK_OEM_4 || key == '['
                                          ? static_cast<int>(Action::ThicknessDown)
                                          : static_cast<int>(Action::ThicknessUp));
-    } else if (bare && key == 'R') {
-        // R：回到上一次选过的区域（多次按往前翻，最多 10 条）。
+    } else if (key == 'R' && !control && !win) {
+        // R：回到上一次选过的区域（多次按往前翻，最多 10 条）。刚进入选区就能按，
+        // 不需要先框一块；Shift/Alt 不参与判定——用带修饰键的开图快捷键呼出覆盖层时，
+        // 手还没松开，修饰键残留会让「第一下 R」白按（表现就是要先选一次才能回退）。
         message = kMsgRestoreSelection;
     } else if (bare && (key == 'E' || key == 'A' || key == 'P' || key == 'T' ||
                         key == 'H' || key == 'M' || key == 'N' || key == 'X')) {

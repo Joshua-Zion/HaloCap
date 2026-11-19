@@ -35,10 +35,11 @@ $readme = @"
 HaloCap $Version (native, win64)
 
 Run HaloCap.exe. It lives in the notification area:
-  Screenshot  Ctrl+Alt+A
-  OCR         Ctrl+Alt+O
-  Record      Ctrl+Alt+R
-  Pin         Ctrl+Alt+P
+  Radial      F6
+  Screenshot  F1
+  OCR         F7
+  Record      F8
+  Pin         F3
   Settings    tray menu
 
 The OCR models are in models\ppocrv6-tiny-1. The app also looks in

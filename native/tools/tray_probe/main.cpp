@@ -111,11 +111,11 @@ bool TryStockIcon(HWND window) {
 
 core::TrayMenuState IdleState() {
     core::TrayMenuState state;
-    state.radialHotkey = "Ctrl+Alt+D";
-    state.screenshotHotkey = "Ctrl+Alt+A";
-    state.ocrHotkey = "Ctrl+Alt+O";
-    state.recordHotkey = "Ctrl+Alt+R";
-    state.pinHotkey = "Ctrl+Alt+P";
+    state.radialHotkey = "F6";
+    state.screenshotHotkey = "F1";
+    state.ocrHotkey = "F7";
+    state.recordHotkey = "F8";
+    state.pinHotkey = "F3";
     state.autoStart = true;
     state.pinAvailable = true;
     return state;

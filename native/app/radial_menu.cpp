@@ -814,20 +814,36 @@ LRESULT CALLBACK RadialMenu::MouseHook(int code, WPARAM wParam, LPARAM lParam) {
         }
         // 移动必须放行，否则系统光标会被钩子冻住。
         return CallNextHookEx(nullptr, code, wParam, lParam);
-    case WM_LBUTTONDOWN:
+    case WM_LBUTTONDOWN: {
+        // 全局钩子只有鼠标坐标，不知道这一下实际命中的是哪个窗口。贴图（pin）若恰好
+        // 盖在光圈上面，点击坐标会落在圆盘内，但真正命中的是贴图——此时绝不能把点击
+        // 当光圈的来处理。先用 WindowFromPoint 看最顶层的命中窗口是不是光圈自己：
+        // 不是（被贴图/别的窗口盖住）就 StartHide 收起并放行，让点击落到贴图。
+        const HWND hit = WindowFromPoint(mouse->pt);
+        if (hit != static_cast<HWND>(g_active->window_)) {
+            g_active->StartHide(-1);
+            return CallNextHookEx(nullptr, code, wParam, lParam);
+        }
         // 点击落在光圈圆盘之外：这不是光圈要处理的点击，不能吞掉——放行让鼠标落到
-        // 真正命中的窗口（比如贴图）。光圈自己照旧收起（点盘外 = 关闭），但不抢消息。
+        // 真正命中的窗口。光圈自己照旧收起（点盘外 = 关闭），但不抢消息。
         if (!g_active->IsPointOnDisk(mouse->pt)) {
             g_active->StartHide(-1);
             return CallNextHookEx(nullptr, code, wParam, lParam);
         }
         g_active->ClickAt(mouse->pt);
         return 1;
+    }
     case WM_LBUTTONUP:
         g_active->dragging_ = false;
         return 1;
     case WM_RBUTTONDOWN:
-    case WM_MBUTTONDOWN:
+    case WM_MBUTTONDOWN: {
+        // 右键/中键同理：被贴图盖住时放行，只收起光圈。
+        const HWND hit = WindowFromPoint(mouse->pt);
+        if (hit != static_cast<HWND>(g_active->window_)) {
+            g_active->StartHide(-1);
+            return CallNextHookEx(nullptr, code, wParam, lParam);
+        }
         // 右键/中键点盘外同样放行，只收起光圈。
         if (!g_active->IsPointOnDisk(mouse->pt)) {
             g_active->StartHide(-1);
@@ -835,6 +851,7 @@ LRESULT CALLBACK RadialMenu::MouseHook(int code, WPARAM wParam, LPARAM lParam) {
         }
         g_active->StartHide(-1);
         return 1;
+    }
     default:
         return 1;
     }

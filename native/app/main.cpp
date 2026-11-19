@@ -1514,7 +1514,7 @@ int Run(const Options& options) {
     // 钩子（低级钩子「后装先调」，压在覆盖层上面）。不收起来就等于第一次框选被菜单当成
     // 「点菜单外面」吃掉、Esc 被光圈吞掉。所以这里只「挂起」：菜单交出捕获、光圈摘掉
     // 钩子，窗口留在屏幕上，于是 BitBlt(CAPTUREBLT) 会把它们原样截进底图；覆盖层关掉后
-    // resumeFloatingMenus() 再把交互还回去。
+    // closeFloatingMenus() 再把它们关掉。
     const auto suspendFloatingMenus = [&]() {
         bool retired = false;
         if (trayMenu != nullptr) {
@@ -1554,13 +1554,18 @@ int Run(const Options& options) {
         }
     };
 
-    // 覆盖层关掉之后把托盘菜单 / 光圈的交互还回去（窗口一直没关，只是被挂起了）。
-    const auto resumeFloatingMenus = [&]() {
-        if (trayMenu != nullptr && trayMenu->Active()) {
-            trayMenu->Resume();
+    // 覆盖层关掉之后，把托盘菜单 / 光圈**关掉**。它们的使命（被框选进截图）在覆盖层
+    // 结束的那一刻就完成了，继续留在屏幕上只会：光圈重新挂全局鼠标钩子抢输入、菜单
+    // 重新抢焦点，结果就是「截图贴图后拖贴图会误触发光圈/菜单」。挂起（Suspend）只是
+    // 选区期间让它们留在画面上供框选，选区一结束就该 Close，而不是 Resume 恢复。
+    const auto closeFloatingMenus = [&]() {
+        if (trayMenu != nullptr) {
+            trayMenu->Close();
+            trayMenu.reset();
         }
-        if (radialMenu != nullptr && radialMenu->Active()) {
-            radialMenu->Resume();
+        if (radialMenu != nullptr) {
+            radialMenu->Close();
+            radialMenu.reset();
         }
     };
 
@@ -1600,7 +1605,7 @@ int Run(const Options& options) {
             log.Error(std::string("screenshot: overlay failed (") +
                       screenshotOverlay->LastErrorKind() + ")");
             screenshotOverlay.reset();
-            resumeFloatingMenus();
+            closeFloatingMenus();
             notify("截图失败：无法获取屏幕");
             return;
         }
@@ -1635,7 +1640,7 @@ int Run(const Options& options) {
             log.Error(std::string("ocr: overlay failed (") +
                       screenshotOverlay->LastErrorKind() + ")");
             screenshotOverlay.reset();
-            resumeFloatingMenus();
+            closeFloatingMenus();
             notify("OCR 无法获取屏幕");
             return;
         }
@@ -2312,7 +2317,7 @@ int Run(const Options& options) {
                         screenshotOverlay->Close();
                         screenshotOverlay.reset();
                     }
-                    resumeFloatingMenus();
+                    closeFloatingMenus();
                     return closed;
                 };
 
@@ -2357,10 +2362,10 @@ int Run(const Options& options) {
                     overlayUp && screenshotOverlay->GrabDesktopToPng(
                                      options.screenshotSelftestPath + L".keepmenu.png");
                 const bool escClosed = overlayUp && pressEscapeOnce();
-                // 覆盖层退掉之后菜单回到「刚打开」的交互态（不再握捕获，靠失焦收起）。
-                const bool menuResumed = trayMenu != nullptr && trayMenu->Active() &&
-                                         !trayMenu->Suspended();
-                keepMenusOk = menuKept && menuInFrame && escClosed && menuResumed;
+                // 覆盖层退掉之后菜单被关掉（使命完成，不再留在屏幕上挡贴图）。
+                const bool menuClosed =
+                    trayMenu == nullptr || !trayMenu->Active();
+                keepMenusOk = menuKept && menuInFrame && escClosed && menuClosed;
                 AddFlag(report, "APP_SCREENSHOT_KEEP_MENU_PROOF", menuProof);
                 AddFlag(report, "APP_SCREENSHOT_KEEP_MENU_IN_FRAME", menuInFrame);
                 if (trayMenu != nullptr) {
@@ -2368,7 +2373,7 @@ int Run(const Options& options) {
                     trayMenu.reset();
                 }
 
-                // 光圈同理：窗口留着，全局钩子摘掉；覆盖层退掉后钩子装回来。
+                // 光圈同理：窗口留着，全局钩子摘掉；覆盖层退掉后光圈被关掉。
                 radialMenu = std::make_unique<halocap::app::RadialMenu>();
                 const bool radialOpened =
                     radialMenu->Open([](core::AppAction) {}, settings.menuSize);
@@ -2378,9 +2383,9 @@ int Run(const Options& options) {
                                         screenshotOverlay->Active() && radialMenu->Active() &&
                                         radialMenu->Suspended();
                 const bool radialEscClosed = radialKept && pressEscapeOnce();
-                const bool radialResumed =
-                    radialMenu != nullptr && radialMenu->Active() && !radialMenu->Suspended();
-                keepRadialOk = radialKept && radialEscClosed && radialResumed;
+                const bool radialClosed =
+                    radialMenu == nullptr || !radialMenu->Active();
+                keepRadialOk = radialKept && radialEscClosed && radialClosed;
                 if (radialMenu != nullptr) {
                     radialMenu->Close();
                     radialMenu.reset();
@@ -4332,7 +4337,7 @@ int Run(const Options& options) {
             if (!screenshotOverlay->Active()) {
                 screenshotOverlay.reset();
                 // 覆盖层结束了：把被挂起的托盘菜单 / 光圈恢复成交互态（它们一直没关）。
-                resumeFloatingMenus();
+                closeFloatingMenus();
             }
         }
 

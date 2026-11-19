@@ -292,7 +292,7 @@
 
 - 18 组 C++ 单元测试全部通过。
 - 运行时自检（Release 构建、包目录内实跑）：`--selftest` 空闲私有内存 2.8 MB、覆盖层 61.0 MB（预算 80 MB），`APP_SELFTEST=OK`；`--record-seconds 2` 录出 44 帧、约 390 KB 的 MP4；`--ocr-selftest` 识别 9 行；`--tray-menu-selftest` 通过。
-- 截图、贴图、设置、热键、录制 UI 等自检在同一构建上通过（报告与证明图见 `docs/2.0-native-plan.md`）。
+- 截图、贴图、设置、热键、录制 UI 等自检在同一构建上通过。
 
 ## 1.7.1
 

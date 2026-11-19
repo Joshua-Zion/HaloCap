@@ -1,7 +1,7 @@
 # S5 delivery packaging: stage the release build, hash it, zip it, and write the
 # update manifest next to the zip. Signing is intentionally skipped here: the
-# 2.0 branch does not sign or publish (see docs/2.0-native-plan.md section 10);
-# the release line on main signs with signtool + the project certificate.
+# 2.0 branch does not sign or publish; the release line on main signs with
+# signtool + the project certificate.
 #
 # Package contents match the "发布打包" section of the root README:
 #   HaloCap.exe, onnxruntime.dll, the four VC++ runtime DLLs, models\ppocrv6-tiny-1,

@@ -21,6 +21,9 @@ struct PinWindowOptions {
     bool ocrEnabled = true;
     bool jpeg = false;
     std::string fontFamily = "Microsoft YaHei UI";
+    // 剪贴板贴图（长文本、大图）用：内容比显示器工作区大时按比例缩到放得下，
+    // 并把窗口挪回工作区内。截图贴图不走这条：它必须和屏幕上的原内容严丝合缝。
+    bool fitToWorkArea = false;
 };
 
 // 贴图窗口：无边框、置顶、分层窗口（UpdateLayeredWindow），内容是截图 + 描边/光晕。
@@ -62,6 +65,12 @@ public:
     bool MenuOpenForTest() const { return menuWindow_ != nullptr; }
     const core::AnnotationDocument& DocumentForTest() const { return document_; }
     core::IntRect ContentRectForTest() const;
+    // 贴图原始内容（未缩放）的尺寸：贴图窗口按它排版。
+    int ContentWidthForTest() const { return contentWidth_; }
+    int ContentHeightForTest() const { return contentHeight_; }
+    float ZoomForTest() const { return zoom_; }
+    // 内容在屏幕上的矩形（不含外描边/光晕）。
+    core::IntRect ContentScreenRectForTest() const;
     core::IntRect ToolbarBoundsForTest() const {
         return core::IntRect{ toolbarBounds_.left, toolbarBounds_.top, toolbarBounds_.right,
                               toolbarBounds_.bottom };
@@ -142,6 +151,11 @@ private:
     void RenderMenu();
     void RenderLayered(const std::vector<std::uint8_t>& pixels, int width, int height);
 
+    // 「内容过多」时贴图不能被屏幕裁掉：必要时缩小内容，再把窗口挪回工作区。
+    void EnsureContentVisible(bool shrink);
+    RECT ContentWorkArea() const;
+    float MinZoom() const;
+
     void LayoutToolbar(int originX, int originY);
     void LayoutOptionBar(int originX, int originY);
     void DrawChrome(Gdiplus::Graphics& graphics) const;
@@ -221,6 +235,10 @@ private:
     float uiScale_ = 1.0f;
     float zoom_ = 1.0f;
     float opacity_ = 1.0f;
+    // 进标注模式时为「图片 + 工具栏都放得下」临时缩小/挪动过的话，退出标注要还原回去。
+    float annotateRestoreZoom_ = 0.0f;
+    int annotateRestoreX_ = 0;
+    int annotateRestoreY_ = 0;
 
     int glow_ = 12;
     int border_ = 1;

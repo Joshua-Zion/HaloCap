@@ -1700,9 +1700,13 @@ int Run(const Options& options) {
             if (item.image.width <= 0 || item.image.height <= 0) {
                 continue;
             }
+            // 剪贴板贴图带 fitToWorkArea：长文本卡片 / 大图可能比屏幕还高，先缩到放得下，
+            // 不然只露出上半截。截图贴图仍然按选区原位贴合，不走这条。
+            halocap::app::PinWindowOptions itemOptions = pinOptions();
+            itemOptions.fitToWorkArea = true;
             auto pin = std::make_unique<halocap::app::PinWindow>();
             if (pin->Create(item.image.bgra.data(), item.image.width, item.image.height,
-                            180 + offset, 160 + offset, pinOptions())) {
+                            180 + offset, 160 + offset, itemOptions)) {
                 wirePin(*pin);
                 pins.push_back(std::move(pin));
                 ++created;
@@ -3370,6 +3374,38 @@ int Run(const Options& options) {
             pins.back()->SetOutline(true);
         }
 
+        // 长文本贴图：一个不带换行的长段落会被折成很多行，卡片必须按折行后的行数排；
+        // 内容比工作区大时要缩到放得下，窗口不能跑到屏幕外（否则下半截被裁掉）。
+        bool pinLongTextOk = false;
+        bool pinFitOk = false;
+        {
+            std::string paragraph;
+            for (int line = 0; line < 200; ++line) {
+                paragraph += "贴图内容过多时应当完整贴出，而不是只露一行。";
+            }
+            if (halocap::platform::win32::WriteUnicodeTextToClipboard(paragraph)) {
+                const std::size_t beforeLongText = pins.size();
+                pinClipboard();
+                if (pins.size() > beforeLongText) {
+                    halocap::app::PinWindow& last = *pins.back();
+                    pinLongTextOk = last.ContentHeightForTest() > 400;
+                    const core::IntRect rect = last.ContentScreenRectForTest();
+                    MONITORINFO info{};
+                    info.cbSize = sizeof(info);
+                    if (last.Handle() != nullptr &&
+                        GetMonitorInfoW(
+                            MonitorFromWindow(last.Handle(), MONITOR_DEFAULTTONEAREST), &info)) {
+                        pinFitOk = rect.left >= static_cast<int>(info.rcWork.left) &&
+                                   rect.top >= static_cast<int>(info.rcWork.top) &&
+                                   rect.right <= static_cast<int>(info.rcWork.right) &&
+                                   rect.bottom <= static_cast<int>(info.rcWork.bottom);
+                    }
+                }
+            }
+        }
+        AddFlag(report, "APP_PIN_LONG_TEXT", pinLongTextOk);
+        AddFlag(report, "APP_PIN_FIT", pinFitOk);
+
         AddFlag(report, "APP_PIN_CLIPBOARD", wrote);
         AddFlag(report, "APP_PIN_WINDOW", pinned);
         AddFlag(report, "APP_PIN_ANNOTATE", pinAnnotateOk);
@@ -3381,8 +3417,8 @@ int Run(const Options& options) {
         AddInt(report, "APP_PIN_COUNT", static_cast<long long>(pins.size() - before));
 
         pinSelftestOk = wrote && pinned && proof && pinAnnotateOk && pinMenuOk && pinPlainOk &&
-                        pinAlphaOk && pinOpaqueOk && pinColorAlphaOk && pinOptionSlack >= 0 &&
-                        pinOptionSlack <= 20;
+                        pinAlphaOk && pinOpaqueOk && pinColorAlphaOk && pinLongTextOk &&
+                        pinFitOk && pinOptionSlack >= 0 && pinOptionSlack <= 20;
         log.Info(pinSelftestOk ? "pin selftest: ok" : "pin selftest: failed");
         running = false;
     }

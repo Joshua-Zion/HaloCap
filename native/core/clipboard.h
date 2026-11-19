@@ -98,6 +98,14 @@ private:
     bool hasPastedSequence_ = false;
 };
 
+// 卡片排版常数：估算（TextCardBounds）与平台绘制（win32_clipboard.cpp）必须共用同一套，
+// 否则卡片按「没折行」的高度开画布，多出来的行会被画布裁掉。
+constexpr int kTextCardPadding = 16;
+constexpr int kTextCardLineHeight = 24;
+// 高度上限：一篇几万字的长文本仍要完整贴出，但不能为它开一张无限高的位图。
+constexpr int kTextCardMaxHeight = 4096;
+constexpr double kTextCardFontSize = 17.0;
+
 // 渲染卡片的尺寸规则（与 1.x 的 RenderText 同口径，平台按这个开画布）。
 struct TextCardMetrics {
     int width = 160;

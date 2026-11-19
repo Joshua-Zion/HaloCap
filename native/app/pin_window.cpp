@@ -434,6 +434,11 @@ bool PinWindow::Create(const std::uint8_t* bgra, int width, int height, int scre
     }
 
     UpdateLayout();
+    // 剪贴板贴图：长文本卡片、大图都可能比屏幕还高，先缩到放得下再显示。
+    // 截图贴图不缩也不挪：它必须和屏幕上的原内容严丝合缝。
+    if (options_.fitToWorkArea) {
+        EnsureContentVisible(true);
+    }
     Render();
     ShowWindow(static_cast<HWND>(window_), SW_SHOW);
     SetForegroundWindow(static_cast<HWND>(window_));
@@ -538,6 +543,87 @@ void PinWindow::UpdateLayout() {
     }
 }
 
+core::IntRect PinWindow::ContentScreenRectForTest() const {
+    return core::IntRect{ contentScreenX_, contentScreenY_, contentScreenX_ + displayWidth_,
+                          contentScreenY_ + displayHeight_ };
+}
+
+// 贴图所在显示器的工作区（含多屏偏移与任务栏）。
+RECT PinWindow::ContentWorkArea() const {
+    MONITORINFO info{};
+    info.cbSize = sizeof(info);
+    const POINT center{ contentScreenX_ + std::max(1, displayWidth_) / 2,
+                        contentScreenY_ + std::max(1, displayHeight_) / 2 };
+    if (GetMonitorInfoW(MonitorFromPoint(center, MONITOR_DEFAULTTONEAREST), &info)) {
+        return info.rcWork;
+    }
+    return RECT{ 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN) };
+}
+
+// 缩放下限：贴图内容至少留 40 px，且不低于 5%（再小就只是一条线了）。
+float PinWindow::MinZoom() const {
+    const float width = static_cast<float>(std::max(1, contentWidth_));
+    const float height = static_cast<float>(std::max(1, contentHeight_));
+    return std::max(0.05f, std::max(40.0f / width, 40.0f / height));
+}
+
+// 内容比显示器工作区还大时：先把内容缩到「整个窗口放得下」，再把窗口挪回工作区。
+// 不做这一步的话，窗口下半截（以及标注工具栏）会落到屏幕外，贴图看起来就是被裁掉了一半。
+void PinWindow::EnsureContentVisible(bool shrink) {
+    if (window_ == nullptr || contentWidth_ <= 0 || contentHeight_ <= 0) {
+        return;
+    }
+    UpdateLayout();
+
+    const RECT work = ContentWorkArea();
+    const int workWidth = static_cast<int>(work.right - work.left);
+    const int workHeight = static_cast<int>(work.bottom - work.top);
+    if (workWidth <= 0 || workHeight <= 0) {
+        return;
+    }
+
+    if (shrink) {
+        const int outer = 2 * (glow_ + border_);
+        const int chrome = annotating_ ? chromeHeight_ : 0;
+        const int availableWidth = std::max(1, workWidth - outer);
+        const int availableHeight = std::max(1, workHeight - outer - chrome);
+        const float displayWidth = static_cast<float>(contentWidth_) * zoom_;
+        const float displayHeight = static_cast<float>(contentHeight_) * zoom_;
+        float fit = 1.0f;
+        if (displayWidth > static_cast<float>(availableWidth)) {
+            fit = std::min(fit, static_cast<float>(availableWidth) / displayWidth);
+        }
+        if (displayHeight > static_cast<float>(availableHeight)) {
+            fit = std::min(fit, static_cast<float>(availableHeight) / displayHeight);
+        }
+        if (fit < 1.0f) {
+            zoom_ = std::clamp(zoom_ * fit, MinZoom(), 8.0f);
+            UpdateLayout();
+        }
+    }
+
+    // 按「内容本身」而不是整个窗口来夹：外描边/光晕允许压到屏幕外，
+    // 截图贴图才能和屏幕上的原内容严丝合缝。内容真放不下（缩放到下限了）就左上对齐，
+    // 至少让用户看到开头，剩下的靠拖动/滚轮去看。
+    const int contentX = contentScreenX_;
+    const int contentY = contentScreenY_;
+    const int clampedX =
+        displayWidth_ <= workWidth
+            ? std::clamp(contentX, static_cast<int>(work.left),
+                         static_cast<int>(work.right) - displayWidth_)
+            : static_cast<int>(work.left);
+    const int clampedY =
+        displayHeight_ <= workHeight
+            ? std::clamp(contentY, static_cast<int>(work.top),
+                         static_cast<int>(work.bottom) - displayHeight_)
+            : static_cast<int>(work.top);
+    if (clampedX != contentX || clampedY != contentY) {
+        contentScreenX_ = clampedX;
+        contentScreenY_ = clampedY;
+        UpdateLayout();
+    }
+}
+
 void PinWindow::SetOutline(bool enabled) {
     if (options_.outline == enabled) {
         return;
@@ -574,6 +660,21 @@ void PinWindow::SetAnnotationMode(bool enabled) {
         SetFocus(static_cast<HWND>(window_));
     }
     UpdateLayout();
+    if (enabled) {
+        // 工具栏挂在图片的下方（放不下时翻到上方）。图片本身就占满屏幕时，两种放法都会
+        // 把工具栏推到屏幕外——先把「图片 + 工具栏」缩到都放得下，退出标注再还原。
+        annotateRestoreZoom_ = zoom_;
+        annotateRestoreX_ = contentScreenX_;
+        annotateRestoreY_ = contentScreenY_;
+        EnsureContentVisible(true);
+    } else if (annotateRestoreZoom_ > 0.0f) {
+        // 标注是为「放得下工具栏」临时缩/挪过的，退出时原样还回去。
+        zoom_ = annotateRestoreZoom_;
+        contentScreenX_ = annotateRestoreX_;
+        contentScreenY_ = annotateRestoreY_;
+        annotateRestoreZoom_ = 0.0f;
+        UpdateLayout();
+    }
     Render();
     if (enabled) {
         ShowHud(L"标注模式 · 滚轮调参数 · 空格退出");
@@ -1653,10 +1754,7 @@ void PinWindow::OnMouseWheel(int delta) {
     }
 
     const float factor = delta > 0 ? 1.12f : 1.0f / 1.12f;
-    const float minZoom =
-        std::max(0.12f, std::max(40.0f / static_cast<float>(contentWidth_),
-                                 40.0f / static_cast<float>(contentHeight_)));
-    const float target = std::clamp(zoom_ * factor, minZoom, 8.0f);
+    const float target = std::clamp(zoom_ * factor, MinZoom(), 8.0f);
     if (std::fabs(target - zoom_) < 0.0005f) {
         return;
     }
@@ -1697,6 +1795,8 @@ void PinWindow::ResetSizeAndOpacity() {
     const int centerY = contentScreenY_ + displayHeight_ / 2;
     contentScreenX_ = centerX - width / 2;
     contentScreenY_ = centerY - height / 2;
+    // 恢复实际大小后内容可能又比屏幕高了：至少把内容挪回工作区内（不能整块飘到屏幕外）。
+    EnsureContentVisible(false);
     ShowHud(L"已恢复实际大小");
 }
 

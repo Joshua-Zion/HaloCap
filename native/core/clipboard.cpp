@@ -595,28 +595,95 @@ bool PinPlanner::FileImagePasteConsumed(std::uint32_t sequence) const {
     return hasPastedSequence_ && pastedSequence_ == sequence;
 }
 
+namespace {
+
+// 正文的字宽估算（像素，17 px 微软雅黑）：半角约 9 px，全角与中文约 17 px。
+double CharacterAdvance(unsigned int codePoint) {
+    return codePoint < 0x2E80 ? 9.0 : kTextCardFontSize;
+}
+
+// 排版只关心字符边界：UTF-8 按首字节的长度解码，非法序列按单字节半角处理。
+unsigned int NextCodePoint(std::string_view text, std::size_t* index) {
+    const unsigned char lead = static_cast<unsigned char>(text[*index]);
+    ++(*index);
+    if (lead < 0x80) {
+        return lead;
+    }
+    int extra = 0;
+    unsigned int code = lead;
+    if ((lead & 0xE0) == 0xC0) {
+        extra = 1;
+        code = lead & 0x1Fu;
+    } else if ((lead & 0xF0) == 0xE0) {
+        extra = 2;
+        code = lead & 0x0Fu;
+    } else if ((lead & 0xF8) == 0xF0) {
+        extra = 3;
+        code = lead & 0x07u;
+    } else {
+        return lead;
+    }
+    for (int i = 0; i < extra && *index < text.size(); ++i) {
+        const unsigned char next = static_cast<unsigned char>(text[*index]);
+        if ((next & 0xC0) != 0x80) {
+            break;
+        }
+        code = (code << 6) | (next & 0x3Fu);
+        ++(*index);
+    }
+    return code;
+}
+
+}  // namespace
+
 TextCardMetrics TextCardBounds(std::string_view text, double scale) {
     TextCardMetrics metrics;
     if (scale <= 0.0) {
         scale = 1.0;
     }
 
-    int lines = 1;
-    int lineLength = 0;
-    int longestLine = 0;
-    for (const char character : text) {
-        if (character == '\n') {
-            longestLine = std::max(longestLine, lineLength);
-            lineLength = 0;
-            ++lines;
-        } else {
-            ++lineLength;
+    // 宽度：最宽那行的字宽之和，再夹到 [160, 672]。
+    double longestLine = 0.0;
+    double lineAdvance = 0.0;
+    std::size_t index = 0;
+    while (index < text.size()) {
+        const unsigned int code = NextCodePoint(text, &index);
+        if (code == '\n') {
+            longestLine = std::max(longestLine, lineAdvance);
+            lineAdvance = 0.0;
+            continue;
         }
+        lineAdvance += CharacterAdvance(code);
     }
-    longestLine = std::max(longestLine, lineLength);
+    longestLine = std::max(longestLine, lineAdvance);
 
-    const int width = std::clamp(32 + longestLine * 9, 160, 672);
-    const int height = std::clamp(32 + lines * 24, 56, 2832);
+    const int width =
+        std::clamp(static_cast<int>(std::lround(2.0 * kTextCardPadding + longestLine)), 160, 672);
+
+    // 高度按「折行后的行数」算：只数 '\n' 时，不带换行的长段落会算成一行，
+    // 卡片就矮得只显示第一行，剩下的内容被画布裁掉（长文本贴图贴不全的来源）。
+    const double textWidth =
+        std::max(1.0, static_cast<double>(width - 2 * kTextCardPadding));
+    int lines = 1;
+    double used = 0.0;
+    index = 0;
+    while (index < text.size()) {
+        const unsigned int code = NextCodePoint(text, &index);
+        if (code == '\n') {
+            ++lines;
+            used = 0.0;
+            continue;
+        }
+        const double advance = CharacterAdvance(code);
+        if (used > 0.0 && used + advance > textWidth) {
+            ++lines;
+            used = 0.0;
+        }
+        used += advance;
+    }
+
+    const int height =
+        std::clamp(2 * kTextCardPadding + lines * kTextCardLineHeight, 56, kTextCardMaxHeight);
     metrics.width = static_cast<int>(std::lround(width * scale));
     metrics.height = static_cast<int>(std::lround(height * scale));
     return metrics;

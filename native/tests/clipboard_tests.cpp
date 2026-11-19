@@ -345,9 +345,18 @@ void TestCardBounds() {
     CheckEqual(small.width, 160, "small text card width");
     CheckEqual(small.height, 56, "small text card height");
 
+    // 不带换行的长段落会折成很多行：高度必须按折行后的行数算，否则卡片只剩一行，
+    // 后面的内容在画布外被裁掉（长文本贴图「没贴全」的来源）。
+    const clip::TextCardMetrics wrapped = clip::TextCardBounds(std::string(600, 'A'), 1.0);
+    CheckTrue(wrapped.height > 56 * 2, "wrapped paragraph is taller than one line");
+    const clip::TextCardMetrics paragraph =
+        clip::TextCardBounds(std::string(600, 'A') + "\n" + std::string(600, 'A'), 1.0);
+    CheckTrue(paragraph.height > wrapped.height, "explicit newline adds a line on top of wrapping");
+
     const clip::TextCardMetrics large = clip::TextCardBounds(std::string(40000, 'A'), 2.0);
     CheckTrue(large.width <= 672 * 2, "card width is bounded");
-    CheckTrue(large.height <= 2832 * 2, "card height is bounded");
+    CheckTrue(large.height <= clip::kTextCardMaxHeight * 2, "card height is bounded");
+    CheckTrue(large.height > 56 * 2, "long text card grows with its wrapped lines");
 }
 
 }

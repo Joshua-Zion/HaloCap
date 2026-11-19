@@ -328,11 +328,42 @@ bool CreateDib(int width, int height, ClipboardImage* image) {
     return true;
 }
 
+// 卡片正文统一用这一个字体：测量和绘制必须是同一套度量，否则算出来的高度对不上。
+HFONT CreateCardFont(double scale, int fontSize) {
+    return CreateFontW(-static_cast<int>(fontSize * scale), 0, 0, 0, FW_NORMAL, FALSE, FALSE,
+                       FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+                       CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei UI");
+}
+
+// 按给定正文宽度量一次折行后的高度（DT_CALCRECT 只算不画）。
+int MeasureCardTextHeight(const std::wstring& text, double scale, int textWidth) {
+    if (text.empty() || textWidth <= 0) {
+        return 0;
+    }
+    HDC screen = GetDC(nullptr);
+    if (screen == nullptr) {
+        return 0;
+    }
+    HDC memory = CreateCompatibleDC(screen);
+    int height = 0;
+    if (memory != nullptr) {
+        HFONT font = CreateCardFont(scale, static_cast<int>(core::clipboard::kTextCardFontSize));
+        HGDIOBJ oldFont = SelectObject(memory, font);
+        RECT rect{ 0, 0, textWidth, 0 };
+        DrawTextW(memory, text.c_str(), static_cast<int>(text.size()), &rect,
+                  DT_LEFT | DT_TOP | DT_WORDBREAK | DT_NOPREFIX | DT_CALCRECT);
+        height = static_cast<int>(rect.bottom - rect.top);
+        SelectObject(memory, oldFont);
+        DeleteObject(font);
+        DeleteDC(memory);
+    }
+    ReleaseDC(nullptr, screen);
+    return height;
+}
+
 void DrawTextOnDib(HDC dc, int width, int height, const std::wstring& text, double scale,
                    const RECT& bounds, COLORREF color, int fontSize) {
-    HFONT font = CreateFontW(-static_cast<int>(fontSize * scale), 0, 0, 0, FW_NORMAL, FALSE, FALSE,
-                             FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                             CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei UI");
+    HFONT font = CreateCardFont(scale, fontSize);
     HGDIOBJ oldFont = SelectObject(dc, font);
     SetBkMode(dc, TRANSPARENT);
     SetTextColor(dc, color);
@@ -392,27 +423,40 @@ bool RenderTextCard(const std::string& utf8Text, double scale, ClipboardImage* i
     if (utf8Text.empty() || image == nullptr) {
         return false;
     }
+    if (scale <= 0.0) {
+        scale = 1.0;
+    }
     std::string visible = utf8Text;
     if (visible.size() > 32768) {
         visible.resize(32768);
         visible += "…";
     }
+    const std::wstring wide = Utf8ToWide(visible);
 
     const core::clipboard::TextCardMetrics metrics =
         core::clipboard::TextCardBounds(visible, scale);
+    const int padding = static_cast<int>(core::clipboard::kTextCardPadding * scale);
+    const int textWidth = std::max(32, metrics.width - 2 * padding);
+
+    // 卡片高度按真实折行量一次：core 只按 '\n' 估算，长段落自动折行后会多出很多行，
+    // 照估算开画布就会把后面的行裁掉（长文本贴图「只贴出一行」的来源）。
+    const int measured = MeasureCardTextHeight(wide, scale, textWidth);
+    const int maxHeight = static_cast<int>(core::clipboard::kTextCardMaxHeight * scale);
+    const int minHeight = std::max(56, static_cast<int>(56 * scale));
+    const int height = std::clamp(std::max(metrics.height, measured + 2 * padding), minHeight,
+                                  std::max(minHeight, maxHeight));
+
     const bool rendered =
-        RenderWithGdi(metrics.width, metrics.height,
+        RenderWithGdi(metrics.width, height,
                       [&](HDC, HDC memory) {
-                          RECT full{ 0, 0, metrics.width, metrics.height };
+                          RECT full{ 0, 0, metrics.width, height };
                           FillRect(memory, &full,
                                    static_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
-                          const RECT bounds{ static_cast<int>(16 * scale),
-                                             static_cast<int>(16 * scale),
-                                             metrics.width - static_cast<int>(16 * scale),
-                                             metrics.height - static_cast<int>(16 * scale) };
-                          DrawTextOnDib(memory, metrics.width, metrics.height,
-                                        Utf8ToWide(visible), scale, bounds, RGB(35, 41, 51),
-                                        17);
+                          const RECT bounds{ padding, padding, metrics.width - padding,
+                                             height - padding };
+                          DrawTextOnDib(memory, metrics.width, height, wide, scale, bounds,
+                                        RGB(35, 41, 51),
+                                        static_cast<int>(core::clipboard::kTextCardFontSize));
                       },
                       image);
     if (rendered) {

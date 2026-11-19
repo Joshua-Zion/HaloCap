@@ -279,6 +279,8 @@ private:
     int pressedOptionIndex_ = -1;
 
     bool menuOpen_ = false;
+    // 菜单抢走焦点时置 true：贴图窗口随后收到的 WM_KILLFOCUS 不该把菜单关掉。
+    bool menuFocused_ = false;
     std::vector<MenuItem> menuItems_;
     int hoveredMenuIndex_ = -1;
     // 右键菜单按下时记下的项 id：松手仍在同一项才执行。

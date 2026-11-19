@@ -2274,7 +2274,7 @@ void PinWindow::ShowMenu(POINT screen) {
     menuHeight_ = y + pad;
 
     menuWindow_ = CreateWindowExW(
-        WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, kMenuClass,
+        WS_EX_LAYERED | WS_EX_TOPMOST | WS_EX_TOOLWINDOW, kMenuClass,
         L"HaloCap pin menu", WS_POPUP, screen.x, screen.y, menuWidth_, menuHeight_, nullptr,
         nullptr, GetModuleHandleW(nullptr), this);
     if (menuWindow_ == nullptr) {
@@ -2303,24 +2303,39 @@ void PinWindow::ShowMenu(POINT screen) {
     SetWindowPos(static_cast<HWND>(menuWindow_), HWND_TOPMOST, x, top, menuWidth_, menuHeight_,
                  SWP_NOACTIVATE);
 
-    SetCapture(static_cast<HWND>(menuWindow_));
+    // 与托盘菜单一致：不长期 SetCapture——捕获会把全屏鼠标都路由到菜单，点菜单外（含
+    // 拖贴图/点别的窗口）都被菜单当成「点外面」吞掉，第一次点击菜单项也常因捕获/焦点
+    // 竞争而落空。改成菜单自己拿前台+焦点，靠 WM_KILLFOCUS 收起；点菜单外时贴图窗口
+    // 抢回焦点，菜单随之关闭。menuFocused_ 挡住贴图随后的 WM_KILLFOCUS 误关菜单。
+    menuFocused_ = true;
+    SetForegroundWindow(static_cast<HWND>(menuWindow_));
+    SetFocus(static_cast<HWND>(menuWindow_));
     ShowWindow(static_cast<HWND>(menuWindow_), SW_SHOWNOACTIVATE);
     RenderMenu();
 }
 
 void PinWindow::HideMenu() {
-    if (menuWindow_ != nullptr) {
-        if (GetCapture() == static_cast<HWND>(menuWindow_)) {
+    // 先摘句柄再收尾：DestroyWindow 会同步发 WM_KILLFOCUS/WM_DESTROY，重入的 HideMenu
+    // （或 MenuProc 收到 WM_KILLFOCUS 再调 HideMenu）必须空转，不能二次销毁句柄。
+    HWND handle = static_cast<HWND>(menuWindow_);
+    menuWindow_ = nullptr;
+    if (handle != nullptr) {
+        if (GetCapture() == handle) {
             ReleaseCapture();
         }
-        DestroyWindow(static_cast<HWND>(menuWindow_));
-        menuWindow_ = nullptr;
+        DestroyWindow(handle);
     }
     if (g_menuOwner == this) {
         g_menuOwner = nullptr;
     }
     menuOpen_ = false;
+    menuFocused_ = false;
     hoveredMenuIndex_ = -1;
+    // 菜单收起后把焦点还给贴图，标注模式等键盘交互才能立即生效。
+    if (window_ != nullptr) {
+        SetForegroundWindow(static_cast<HWND>(window_));
+        SetFocus(static_cast<HWND>(window_));
+    }
 }
 
 void PinWindow::RenderMenu() {
@@ -2515,6 +2530,13 @@ LRESULT PinWindow::HandleMenu(HWND window, UINT message, WPARAM wParam, LPARAM l
         return 0;
     case WM_MOUSEWHEEL:
         return 0;
+    case WM_KILLFOCUS:
+        // 点菜单外的任意窗口（含贴图本身）都会让菜单失焦，据此收起。
+        HideMenu();
+        return 0;
+    case WM_SETCURSOR:
+        SetCursor(LoadCursorW(nullptr, IDC_ARROW));
+        return TRUE;
     default:
         break;
     }
@@ -2642,7 +2664,8 @@ LRESULT PinWindow::Handle(HWND window, UINT message, WPARAM wParam, LPARAM lPara
         if (startingEditor_) {
             return 0;
         }
-        if (menuOpen_) {
+        // 焦点被自己的右键菜单抢走时（menuFocused_）不关菜单，等菜单自己收尾。
+        if (menuOpen_ && !menuFocused_) {
             HideMenu();
         }
         if (editorWindow_ != nullptr) {

@@ -1901,6 +1901,53 @@ int Run(const Options& options) {
             log.Error("radial: open failed");
         }
     };
+
+    // 单个热键动作的分发。主循环和自检共用，保证「托盘菜单/光圈开着时按截图/识别
+    // 快捷键」这条真实路径在自检里也被覆盖到（否则自检直接调 openScreenshot 会绕过
+    // 这里的「收不收起」决策）。
+    const auto dispatchHotkey = [&](int token) {
+        // 截图 / 识别这两个「选区」动作走 suspendFloatingMenus：托盘菜单和光圈**不收
+        // 起来**，只挂起（菜单交出捕获、光圈摘钩子），窗口留在画面上供用户框选。其余
+        // 动作（贴图、录制、呼出光圈）仍按旧逻辑先收起浮动窗口，免得它们抢输入。
+        const bool keepsFloating = token == kTokenScreenshot || token == kTokenOcr;
+        if (!keepsFloating) {
+            // 圆盘开着时按动作快捷键：先收起圆盘再执行。圆盘打开期间装了全局鼠标钩子
+            // （点击一律吞掉），不收掉的话新开的覆盖层（录制选区）第一次拖选会被圆盘
+            // 吃掉。呼出光圈的 token 交给 openRadial 自己关旧再开新，这里跳过。
+            if (radialMenu != nullptr && token != kTokenRadial) {
+                radialMenu->Close();
+                radialMenu.reset();
+            }
+            // 托盘菜单开着时同理：菜单窗口一打开就 SetCapture，鼠标点去覆盖层会被它
+            // 当成「点菜单外面」自己吃掉。非选区动作一律先把菜单收掉（Close 里会
+            // ReleaseCapture），再执行。
+            if (trayMenu != nullptr) {
+                trayMenu->Close();
+                trayMenu.reset();
+            }
+        }
+        switch (token) {
+        case kTokenRecord:
+            toggleRecording();
+            break;
+        case kTokenScreenshot:
+            openScreenshot();
+            break;
+        case kTokenOcr:
+            openOcr();
+            break;
+        case kTokenPin:
+            pinClipboard();
+            break;
+        case kTokenRadial:
+            openRadial();
+            break;
+        default:
+            log.Info("action: hotkey token=" + std::to_string(token));
+            break;
+        }
+    };
+
     bool screenshotSelftestOk = true;
     bool keepMenusOk = false;
     bool keepRadialOk = false;
@@ -2270,7 +2317,9 @@ int Run(const Options& options) {
                     trayState,
                     std::wstring(L"v") + Utf8ToWide(halocap::app::kHaloCapVersion), cursor);
                 const HWND menuHandle = static_cast<HWND>(trayMenu->HandleForTest());
-                openScreenshot();
+                // 走真实热键分发路径（dispatchHotkey），而不是直接 openScreenshot——否则
+                // 会绕过「菜单开着时截图要不要收起来」的决策，正是一直漏掉的回归点。
+                dispatchHotkey(kTokenScreenshot);
                 const bool overlayUp =
                     screenshotOverlay != nullptr && screenshotOverlay->Active();
                 // 菜单原样留在屏幕上：句柄没换、还可见、还挂着——但捕获交出去了。
@@ -2317,7 +2366,7 @@ int Run(const Options& options) {
                 radialMenu = std::make_unique<halocap::app::RadialMenu>();
                 const bool radialOpened =
                     radialMenu->Open([](core::AppAction) {}, settings.menuSize);
-                openScreenshot();
+                dispatchHotkey(kTokenScreenshot);
                 const bool radialKept = radialOpened &&
                                         screenshotOverlay != nullptr &&
                                         screenshotOverlay->Active() && radialMenu->Active() &&
@@ -4160,42 +4209,7 @@ int Run(const Options& options) {
         int token = 0;
         while (input.PollHotkey(token)) {
             ++actions;
-            // 圆盘开着时按动作快捷键：先收起圆盘再执行。圆盘打开期间装了全局鼠标钩子
-            // （点击一律吞掉），不收掉的话新开的覆盖层（截图/识别/录制选区）第一次拖选
-            // 会被圆盘吃掉，表现为「第一次选不生效」。呼出光圈的 token 交给 openRadial
-            // 自己关旧再开新，这里跳过。
-            if (radialMenu != nullptr && token != kTokenRadial) {
-                radialMenu->Close();
-                radialMenu.reset();
-            }
-            // 托盘菜单开着时同理：菜单窗口一打开就 SetCapture，鼠标点去覆盖层会被它当成
-            // 「点菜单外面」自己吃掉——表现是「托盘菜单开着时，第一次框选没反应」。
-            // 动作快捷键一律先把菜单收掉（Close 里会 ReleaseCapture），再开覆盖层。
-            if (trayMenu != nullptr) {
-                trayMenu->Close();
-                trayMenu.reset();
-            }
-            if (token == kTokenRecord) {
-                toggleRecording();
-                continue;
-            }
-            if (token == kTokenScreenshot) {
-                openScreenshot();
-                continue;
-            }
-            if (token == kTokenOcr) {
-                openOcr();
-                continue;
-            }
-            if (token == kTokenPin) {
-                pinClipboard();
-                continue;
-            }
-            if (token == kTokenRadial) {
-                openRadial();
-                continue;
-            }
-            log.Info("action: hotkey token=" + std::to_string(token));
+            dispatchHotkey(token);
         }
 
         switch (tray.PollClick()) {

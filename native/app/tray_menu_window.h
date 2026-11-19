@@ -2,6 +2,8 @@
 
 #include "tray_menu.h"
 
+#include "../platform/win32/desktop_grab.h"
+
 #include <windows.h>
 
 #include <string>
@@ -24,6 +26,10 @@ public:
     void Suspend();
     void Resume();
     bool Suspended() const { return suspended_; }
+
+    // 把菜单当前渲染好的位图连同屏幕位置交出来，供截图抓屏时叠进底图——菜单是
+    // WS_EX_LAYERED 分层窗口，BitBlt 抓不到它，只能这样补。窗口不活跃时返回空。
+    platform::win32::LayeredOverlay GrabOverlay() const;
 
     // 读取并清空选中的命令（None = 没有选择，只是收起）。
     core::TrayCommand PollCommand();

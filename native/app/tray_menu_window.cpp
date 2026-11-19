@@ -525,6 +525,25 @@ core::TrayCommand TrayMenuWindow::PollCommand() {    const core::TrayCommand com
     return command;
 }
 
+platform::win32::LayeredOverlay TrayMenuWindow::GrabOverlay() const {
+    platform::win32::LayeredOverlay overlay;
+    if (window_ == nullptr || bits_ == nullptr || width_ <= 0 || height_ <= 0) {
+        return overlay;
+    }
+    RECT rect{};
+    if (!GetWindowRect(window_, &rect)) {
+        return overlay;
+    }
+    overlay.screenX = rect.left;
+    overlay.screenY = rect.top;
+    overlay.width = width_;
+    overlay.height = height_;
+    const std::size_t size = static_cast<std::size_t>(width_) * height_ * 4;
+    overlay.premultipliedBgra.assign(static_cast<const std::uint8_t*>(bits_),
+                                     static_cast<const std::uint8_t*>(bits_) + size);
+    return overlay;
+}
+
 RECT TrayMenuWindow::ItemRectForTest(int index) const {
     if (index < 0 || index >= static_cast<int>(itemRects_.size())) {
         return RECT{};

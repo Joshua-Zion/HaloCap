@@ -9,6 +9,8 @@
 #include "win32_input_host.h"
 #include "win32_surface_window.h"
 
+#include "../platform/win32/desktop_grab.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <functional>
@@ -48,6 +50,10 @@ struct ScreenshotOverlayOptions {
 
     // 区域录制：拖完选区交回屏幕坐标，由 app 起录制。
     std::function<void(core::IntRect rect)> onRegion;
+
+    // 开覆盖层时要叠进底图的分层窗口（托盘菜单、光圈）：它们 WS_EX_LAYERED、BitBlt
+    // 抓不到，调用方在 suspend 之后把渲染好的位图塞进来，抓屏时 AlphaBlend 叠上去。
+    std::vector<platform::win32::LayeredOverlay> overlays;
 };
 
 // S3 的交互层：全屏覆盖层 + 选区 + 工具栏 + 标注编辑 + 文字输入 + 导出/贴图。
@@ -130,6 +136,11 @@ public:
     // 马赛克取样缓存（底图 + 下方标注）合成成功没有；以及缓存里某个选区局部坐标的像素（BGRA）。
     bool MosaicComposeValidForTest() const { return mosaicBaseValid_; }
     bool MosaicBasePixelForTest(float localX, float localY, std::uint8_t bgra[4]) const;
+    // 覆盖层底图（含抓屏 + 叠上去的分层窗口）里某个窗口局部坐标的像素（BGRA），自检用。
+    bool BasePixelForTest(float localX, float localY, std::uint8_t bgra[4]) const;
+    // 覆盖层窗口在虚拟桌面里的原点（多屏时左上角可能是负的）。
+    int WindowXForTest() const { return windowX_; }
+    int WindowYForTest() const { return windowY_; }
 
     const char* LastErrorKind() const { return errorKind_; }
     core::IntRect SelectionRectPx() const;

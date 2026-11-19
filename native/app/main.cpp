@@ -1570,6 +1570,14 @@ int Run(const Options& options) {
         halocap::app::ScreenshotOverlayOptions overlayOptions;
         overlayOptions.jpeg = settings.screenshotFormat == core::ScreenshotFormat::Jpeg;
         overlayOptions.pinHotkey = liveSettings.pinHotkey;
+        // 托盘菜单、光圈是 WS_EX_LAYERED 分层窗口，BitBlt 抓不到，挂起后把它们的
+        // 渲染位图塞进 overlays，抓屏时叠进底图——这样框选才能真把它们截进去。
+        if (trayMenu != nullptr && trayMenu->Active()) {
+            overlayOptions.overlays.push_back(trayMenu->GrabOverlay());
+        }
+        if (radialMenu != nullptr && radialMenu->Active() && !radialMenu->Closing()) {
+            overlayOptions.overlays.push_back(radialMenu->GrabOverlay());
+        }
         overlayOptions.onPin = [&](const std::uint8_t* bgra, int width, int height, int x, int y) {
             auto pin = std::make_unique<halocap::app::PinWindow>();
             if (pin->Create(bgra, width, height, x, y, pinOptions())) {
@@ -1605,6 +1613,13 @@ int Run(const Options& options) {
         halocap::app::ScreenshotOverlayOptions overlayOptions;
         overlayOptions.mode = halocap::app::OverlayMode::Ocr;
         overlayOptions.autoStart = settings.ocr.autoStart;
+        // 同 openScreenshot：把挂起中的托盘菜单/光圈位图塞进 overlays，抓屏时叠进底图。
+        if (trayMenu != nullptr && trayMenu->Active()) {
+            overlayOptions.overlays.push_back(trayMenu->GrabOverlay());
+        }
+        if (radialMenu != nullptr && radialMenu->Active() && !radialMenu->Closing()) {
+            overlayOptions.overlays.push_back(radialMenu->GrabOverlay());
+        }
         overlayOptions.onOcr = [&openOcrResult](const std::uint8_t* image, int imageWidth,
                                                int imageHeight, int x, int y) {
             openOcrResult(image, imageWidth, imageHeight, x, y, false);
@@ -2264,6 +2279,24 @@ int Run(const Options& options) {
                     trayMenu->HandleForTest() == menuHandle &&
                     IsWindowVisible(menuHandle) != FALSE && trayMenu->Suspended() &&
                     GetCapture() != menuHandle;
+                // 关键证明：菜单是 WS_EX_LAYERED，BitBlt 抓不到它，只有把它渲染好的位图
+                // 叠进底图才「截得到」。这里取菜单窗口中心点在覆盖层底图里的像素，应是
+                // 菜单面板的近白色（0xFC 白），而不是它身后的桌面背景。
+                bool menuInFrame = false;
+                if (overlayUp && trayMenu != nullptr && trayMenu->Active()) {
+                    RECT menuRect{};
+                    if (GetWindowRect(menuHandle, &menuRect)) {
+                        const float centerX = (menuRect.left + menuRect.right) / 2.0f -
+                                              screenshotOverlay->WindowXForTest();
+                        const float centerY = (menuRect.top + menuRect.bottom) / 2.0f -
+                                              screenshotOverlay->WindowYForTest();
+                        std::uint8_t bgra[4] = {};
+                        if (screenshotOverlay->BasePixelForTest(centerX, centerY, bgra)) {
+                            // 白色面板：B/G/R 都接近 255，且明显不是纯黑/透明。
+                            menuInFrame = bgra[0] > 200 && bgra[1] > 200 && bgra[2] > 200;
+                        }
+                    }
+                }
                 // 证明图：覆盖层开着时抓一张桌面——菜单应该被截进那层冻结的底图里。
                 const bool menuProof =
                     overlayUp && screenshotOverlay->GrabDesktopToPng(
@@ -2272,8 +2305,9 @@ int Run(const Options& options) {
                 // 覆盖层退掉之后菜单回到「刚打开」的交互态。
                 const bool menuResumed = trayMenu != nullptr && trayMenu->Active() &&
                                          !trayMenu->Suspended() && GetCapture() == menuHandle;
-                keepMenusOk = menuKept && escClosed && menuResumed;
+                keepMenusOk = menuKept && menuInFrame && escClosed && menuResumed;
                 AddFlag(report, "APP_SCREENSHOT_KEEP_MENU_PROOF", menuProof);
+                AddFlag(report, "APP_SCREENSHOT_KEEP_MENU_IN_FRAME", menuInFrame);
                 if (trayMenu != nullptr) {
                     trayMenu->Close();
                     trayMenu.reset();

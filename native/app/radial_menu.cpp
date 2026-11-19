@@ -349,6 +349,25 @@ void RadialMenu::Suspend() {
     dragging_ = false;
 }
 
+platform::win32::LayeredOverlay RadialMenu::GrabOverlay() const {
+    platform::win32::LayeredOverlay overlay;
+    if (window_ == nullptr || bits_ == nullptr || widthPx_ <= 0 || heightPx_ <= 0) {
+        return overlay;
+    }
+    RECT rect{};
+    if (!GetWindowRect(static_cast<HWND>(window_), &rect)) {
+        return overlay;
+    }
+    overlay.screenX = rect.left;
+    overlay.screenY = rect.top;
+    overlay.width = widthPx_;
+    overlay.height = heightPx_;
+    const std::size_t size = static_cast<std::size_t>(widthPx_) * heightPx_ * 4;
+    overlay.premultipliedBgra.assign(static_cast<const std::uint8_t*>(bits_),
+                                     static_cast<const std::uint8_t*>(bits_) + size);
+    return overlay;
+}
+
 void RadialMenu::Resume() {
     if (window_ == nullptr || !suspended_) {
         return;

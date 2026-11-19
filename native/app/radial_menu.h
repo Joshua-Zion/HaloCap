@@ -3,6 +3,8 @@
 #include "settings.h"
 #include "tray_menu.h"
 
+#include "../platform/win32/desktop_grab.h"
+
 #include <functional>
 #include <memory>
 #include <windows.h>
@@ -40,6 +42,10 @@ public:
     void Suspend();
     void Resume();
     bool Suspended() const { return suspended_; }
+
+    // 把光圈当前渲染好的位图连同屏幕位置交出来，供截图抓屏时叠进底图（分层窗口
+    // BitBlt 抓不到）。窗口不活跃时返回空。
+    platform::win32::LayeredOverlay GrabOverlay() const;
 
     // 自检用：窗口句柄（发 WM_MOUSEMOVE 触发悬停）。
     void* HandleForTest() const { return window_; }

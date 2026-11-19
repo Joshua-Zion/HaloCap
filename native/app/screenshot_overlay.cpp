@@ -291,7 +291,7 @@ bool ScreenshotOverlay::Open(const ScreenshotOverlayOptions& options) {
     // 这样还有一个好处：录制占用复制权时截图照样能开。
     // 抓的是整块虚拟桌面：1.x 的选区容器就是所有显示器的并集，拖动可以跨屏。
     platform::win32::DesktopImage desktop;
-    if (!platform::win32::GrabVirtualDesktop(desktop)) {
+    if (!platform::win32::GrabVirtualDesktop(desktop, &options_.overlays)) {
         errorKind_ = "grab";
         Close();
         return false;
@@ -3240,6 +3240,23 @@ bool ScreenshotOverlay::MosaicBasePixelForTest(float localX, float localY,
         (static_cast<std::size_t>(y) * static_cast<std::size_t>(mosaicBaseWidth_) +
          static_cast<std::size_t>(x)) * 4;
     std::memcpy(bgra, mosaicBase_.data() + offset, 4);
+    return true;
+}
+
+bool ScreenshotOverlay::BasePixelForTest(float localX, float localY,
+                                         std::uint8_t bgra[4]) const {
+    if (screenWidth_ <= 0 || screenHeight_ <= 0 || baseBgra_.empty()) {
+        return false;
+    }
+    const int x = static_cast<int>(localX);
+    const int y = static_cast<int>(localY);
+    if (x < 0 || y < 0 || x >= screenWidth_ || y >= screenHeight_) {
+        return false;
+    }
+    const std::size_t offset =
+        (static_cast<std::size_t>(y) * static_cast<std::size_t>(screenWidth_) +
+         static_cast<std::size_t>(x)) * 4;
+    std::memcpy(bgra, baseBgra_.data() + offset, 4);
     return true;
 }
 

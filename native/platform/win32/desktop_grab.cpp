@@ -2,11 +2,14 @@
 
 #include <windows.h>
 
+#include <cstring>
+
 namespace halocap::platform::win32 {
 
 namespace {
 
-bool Grab(int left, int top, int width, int height, DesktopImage& image) {
+bool Grab(int left, int top, int width, int height, DesktopImage& image,
+          const std::vector<LayeredOverlay>* overlays) {
     if (width <= 0 || height <= 0) {
         return false;
     }
@@ -46,6 +49,47 @@ bool Grab(int left, int top, int width, int height, DesktopImage& image) {
     const BOOL copied =
         BitBlt(memory, 0, 0, width, height, screen, left, top, SRCCOPY | CAPTUREBLT);
 
+    if (copied && overlays != nullptr) {
+        // 分层窗口（托盘菜单、光圈）不进 BitBlt 的屏幕 DC，这里把调用方已经渲染好
+        // 的预乘 alpha 位图用 AlphaBlend 补叠到抓屏结果上。left/top 是虚拟桌面原点，
+        // overlay 的 screenX/screenY 也是虚拟桌面坐标，所以落点要减掉 left/top。
+        for (const LayeredOverlay& overlay : *overlays) {
+            if (overlay.width <= 0 || overlay.height <= 0 ||
+                overlay.premultipliedBgra.size() <
+                    static_cast<std::size_t>(overlay.width) * overlay.height * 4) {
+                continue;
+            }
+            HDC overlayDc = CreateCompatibleDC(screen);
+            if (overlayDc == nullptr) {
+                continue;
+            }
+            BITMAPINFO overlayInfo{};
+            overlayInfo.bmiHeader.biSize = sizeof(overlayInfo.bmiHeader);
+            overlayInfo.bmiHeader.biWidth = overlay.width;
+            overlayInfo.bmiHeader.biHeight = -overlay.height;
+            overlayInfo.bmiHeader.biPlanes = 1;
+            overlayInfo.bmiHeader.biBitCount = 32;
+            overlayInfo.bmiHeader.biCompression = BI_RGB;
+            void* overlayBits = nullptr;
+            HBITMAP overlayBitmap =
+                CreateDIBSection(overlayDc, &overlayInfo, DIB_RGB_COLORS, &overlayBits, nullptr, 0);
+            if (overlayBitmap != nullptr && overlayBits != nullptr) {
+                std::memcpy(overlayBits, overlay.premultipliedBgra.data(),
+                            overlay.premultipliedBgra.size());
+                HGDIOBJ oldOverlay = SelectObject(overlayDc, overlayBitmap);
+                BLENDFUNCTION blend{};
+                blend.BlendOp = AC_SRC_OVER;
+                blend.SourceConstantAlpha = 255;
+                blend.AlphaFormat = AC_SRC_ALPHA;
+                AlphaBlend(memory, overlay.screenX - left, overlay.screenY - top, overlay.width,
+                           overlay.height, overlayDc, 0, 0, overlay.width, overlay.height, blend);
+                SelectObject(overlayDc, oldOverlay);
+                DeleteObject(overlayBitmap);
+            }
+            DeleteDC(overlayDc);
+        }
+    }
+
     if (copied) {
         image.width = width;
         image.height = height;
@@ -83,12 +127,13 @@ DesktopBounds VirtualDesktopBounds() {
 }
 
 bool GrabPrimaryDesktop(DesktopImage& image) {
-    return Grab(0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN), image);
+    return Grab(0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN), image,
+                nullptr);
 }
 
-bool GrabVirtualDesktop(DesktopImage& image) {
+bool GrabVirtualDesktop(DesktopImage& image, const std::vector<LayeredOverlay>* overlays) {
     const DesktopBounds bounds = VirtualDesktopBounds();
-    return Grab(bounds.left, bounds.top, bounds.width, bounds.height, image);
+    return Grab(bounds.left, bounds.top, bounds.width, bounds.height, image, overlays);
 }
 
 }

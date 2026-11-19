@@ -32,4 +32,5 @@ target_link_libraries(halocap_platform_win32 PUBLIC "${HALOCAP_ORT_DIR}/lib/onnx
 target_link_libraries(halocap_platform_win32 PUBLIC
     halocap_core
     d3d11 dxgi d2d1 dwrite dcomp user32 shell32 psapi
-    mfplat mf mfreadwrite mfuuid ole32 imm32 windowsapp runtimeobject windowscodecs)
+    mfplat mf mfreadwrite mfuuid ole32 imm32 windowsapp runtimeobject windowscodecs
+    msimg32)

@@ -57,11 +57,6 @@ public:
     void SetOutline(bool enabled);
     void SetOcrEnabled(bool enabled);
 
-    // 把贴图窗口重新置顶（HWND_TOPMOST）。覆盖层（截图/识别选区）也是 TOPMOST 窗口，
-    // 后创建会排在贴图之上、把贴图盖住；覆盖层打开后对每个贴图调一次，让贴图回到
-    // 选区蒙层之上，用户才能继续看到、操作贴图而不误触发选区。
-    void RaiseToTop();
-
     void Close();
     bool Valid() const { return window_ != nullptr; }
     HWND Handle() const { return static_cast<HWND>(window_); }

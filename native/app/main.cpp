@@ -1504,16 +1504,10 @@ int Run(const Options& options) {
         });
     };
 
-    // 贴图（pin）必须永远浮在最顶层：覆盖层（截图 / 识别选区）、托盘菜单、光圈都是
-    // WS_EX_TOPMOST 窗口，它们创建 / 恢复时都会排到 topmost 层顶部、把贴图盖住，鼠标点
-    // 过去落到它们上面、误触发它们而不是贴图上的操作。所以任何浮动窗口打开或恢复后，
-    // 都要把所有贴图重新置顶（SetWindowPos HWND_TOPMOST 只改 z-order，不抢焦点），让
-    // 贴图浮在它们之上：贴图依然可见、可拖动/标注，点贴图命中贴图而不是菜单/光圈。
-    const auto raisePinsToTop = [&]() {
-        for (auto& item : pins) {
-            item->RaiseToTop();
-        }
-    };
+    // 贴图（pin）、覆盖层（截图/识别选区）、托盘菜单、光圈都是 WS_EX_TOPMOST 窗口。
+    // 不强行改变它们的 z-order：层级由「焦点/激活」自然决定——贴图被点击时抢走焦点，
+    // 浮动窗口（菜单失焦关闭、光圈点击盘外收起）自然让位，贴图就能正常接收输入。
+    // 见 openScreenshot 里覆盖层打开后、以及菜单/光圈交互里的焦点处理。
 
     // 覆盖层（截图 / 识别）出现前的处理：托盘菜单和光圈**都不收起来**——用户要能把它们
     // 连同画面一起框进截图。但两者都会抢输入：菜单一开就 SetCapture，光圈挂着全局键鼠
@@ -1568,9 +1562,6 @@ int Run(const Options& options) {
         if (radialMenu != nullptr && radialMenu->Active()) {
             radialMenu->Resume();
         }
-        // Resume 会重新 SetForegroundWindow / SetFocus 激活菜单，可能把它带到前台；
-        // 贴图必须始终浮在这些浮动窗口之上，这里重新置顶一遍。
-        raisePinsToTop();
     };
 
     const auto openScreenshot = [&]() {
@@ -1613,7 +1604,6 @@ int Run(const Options& options) {
             notify("截图失败：无法获取屏幕");
             return;
         }
-        raisePinsToTop();
         log.Info("screenshot: overlay opened");
     };
 
@@ -1649,7 +1639,6 @@ int Run(const Options& options) {
             notify("OCR 无法获取屏幕");
             return;
         }
-        raisePinsToTop();
         log.Info("ocr: overlay opened");
     };
 
@@ -1915,9 +1904,6 @@ int Run(const Options& options) {
         if (!opened) {
             radialMenu.reset();
             log.Error("radial: open failed");
-        } else {
-            // 光圈是 WS_EX_TOPMOST，创建后排在贴图之上；把贴图重新置顶，让它浮在光圈之上。
-            raisePinsToTop();
         }
     };
 
@@ -1972,8 +1958,6 @@ int Run(const Options& options) {
     bool keepRadialOk = false;
     bool escOnceOk = false;
     bool pinAboveOverlay = false;
-    bool menuBelowPins = false;
-    bool radialBelowPins = false;
     if (!options.screenshotSelftestPath.empty()) {
         const std::int64_t openStartUs = QpcNowUs();
         openScreenshot();
@@ -2344,32 +2328,12 @@ int Run(const Options& options) {
                 dispatchHotkey(kTokenScreenshot);
                 const bool overlayUp =
                     screenshotOverlay != nullptr && screenshotOverlay->Active();
-                // 菜单原样留在屏幕上：句柄没换、还可见、还挂着——但捕获交出去了。
+                // 菜单原样留在屏幕上：句柄没换、还可见、还挂着——挂起期间不握捕获。
                 const bool menuKept =
                     menuOpened && trayMenu != nullptr && trayMenu->Active() &&
                     trayMenu->HandleForTest() == menuHandle &&
                     IsWindowVisible(menuHandle) != FALSE && trayMenu->Suspended() &&
                     GetCapture() != menuHandle;
-                // 贴图必须浮在菜单之上：沿 z-order 从菜单窗口往更高层（GW_HWNDPREV）走，
-                // 撞见任意贴图窗口就证明菜单被压在了贴图下面，点贴图不会误触菜单。
-                menuBelowPins = menuKept;
-                if (menuBelowPins && !pins.empty()) {
-                    bool above = false;
-                    HWND walk = GetWindow(menuHandle, GW_HWNDPREV);
-                    while (walk != nullptr) {
-                        for (auto& item : pins) {
-                            if (item->Valid() && item->Handle() == walk) {
-                                above = true;
-                                break;
-                            }
-                        }
-                        if (above) {
-                            break;
-                        }
-                        walk = GetWindow(walk, GW_HWNDPREV);
-                    }
-                    menuBelowPins = above;
-                }
                 // 关键证明：菜单是 WS_EX_LAYERED，BitBlt 抓不到它，只有把它渲染好的位图
                 // 叠进底图才「截得到」。这里取菜单窗口中心点在覆盖层底图里的像素，应是
                 // 菜单面板的近白色（0xFC 白），而不是它身后的桌面背景。
@@ -2393,13 +2357,12 @@ int Run(const Options& options) {
                     overlayUp && screenshotOverlay->GrabDesktopToPng(
                                      options.screenshotSelftestPath + L".keepmenu.png");
                 const bool escClosed = overlayUp && pressEscapeOnce();
-                // 覆盖层退掉之后菜单回到「刚打开」的交互态。
+                // 覆盖层退掉之后菜单回到「刚打开」的交互态（不再握捕获，靠失焦收起）。
                 const bool menuResumed = trayMenu != nullptr && trayMenu->Active() &&
-                                         !trayMenu->Suspended() && GetCapture() == menuHandle;
+                                         !trayMenu->Suspended();
                 keepMenusOk = menuKept && menuInFrame && escClosed && menuResumed;
                 AddFlag(report, "APP_SCREENSHOT_KEEP_MENU_PROOF", menuProof);
                 AddFlag(report, "APP_SCREENSHOT_KEEP_MENU_IN_FRAME", menuInFrame);
-                AddFlag(report, "APP_SCREENSHOT_MENU_BELOW_PINS", menuBelowPins);
                 if (trayMenu != nullptr) {
                     trayMenu->Close();
                     trayMenu.reset();
@@ -2414,40 +2377,20 @@ int Run(const Options& options) {
                                         screenshotOverlay != nullptr &&
                                         screenshotOverlay->Active() && radialMenu->Active() &&
                                         radialMenu->Suspended();
-                // 光圈同理：贴图必须浮在光圈之上（沿 z-order 从光圈窗口向上撞见贴图）。
-                radialBelowPins = radialKept;
-                if (radialBelowPins && !pins.empty() && radialMenu->Active()) {
-                    bool above = false;
-                    HWND walk = GetWindow(
-                        static_cast<HWND>(radialMenu->HandleForTest()), GW_HWNDPREV);
-                    while (walk != nullptr) {
-                        for (auto& item : pins) {
-                            if (item->Valid() && item->Handle() == walk) {
-                                above = true;
-                                break;
-                            }
-                        }
-                        if (above) {
-                            break;
-                        }
-                        walk = GetWindow(walk, GW_HWNDPREV);
-                    }
-                    radialBelowPins = above;
-                }
                 const bool radialEscClosed = radialKept && pressEscapeOnce();
                 const bool radialResumed =
                     radialMenu != nullptr && radialMenu->Active() && !radialMenu->Suspended();
                 keepRadialOk = radialKept && radialEscClosed && radialResumed;
-                AddFlag(report, "APP_SCREENSHOT_RADIAL_BELOW_PINS", radialBelowPins);
                 if (radialMenu != nullptr) {
                     radialMenu->Close();
                     radialMenu.reset();
                 }
                 escOnceOk = escClosed && radialEscClosed;
 
-                // 贴图与覆盖层的层级：两者都是 TOPMOST，覆盖层后创建会盖住贴图，把贴图
-                // 的点击变成选区的点击。开覆盖层后要把已有贴图重新置顶，让它们浮在选区
-                // 蒙层之上。这里验证：先有一张贴图，再开覆盖层，贴图窗口应在覆盖层之上。
+                // 贴图与覆盖层都是 TOPMOST 窗口。覆盖层打开时它自己排到最顶（后创建），
+                // 贴图在覆盖层之下——这是正确行为：选区时贴图已经「冻结」进底图（图像由
+                // GrabOverlay 叠入），用户操作的是冻结画面，不直接操作贴图窗口。因此这里
+                // 不再断言贴图/菜单/光圈的相对 z-order（那会反过来要求强行改层级）。
                 {
                     // 借一张真实贴图窗口（前面 PinSelection 已经贴过一张），确保它还在。
                     if (!pins.empty() && pins.back()->Valid()) {
@@ -2461,11 +2404,11 @@ int Run(const Options& options) {
                         if (screenshotOverlay != nullptr && screenshotOverlay->Active()) {
                             const HWND overlayHwnd =
                                 static_cast<HWND>(screenshotOverlay->WindowHandle());
-                            // 沿 z-order 从覆盖层往更高层（GW_HWNDPREV）走，看会不会撞见
-                            // 贴图窗口——撞见就说明贴图在覆盖层之上。
-                            HWND walk = GetWindow(overlayHwnd, GW_HWNDPREV);
+                            // 覆盖层是全屏蒙层，应排在最顶（在贴图之上），让用户框选。
+                            // 沿 z-order 从贴图往更高层（GW_HWNDPREV）走，撞见覆盖层即证。
+                            HWND walk = GetWindow(pinHwnd, GW_HWNDPREV);
                             while (walk != nullptr) {
-                                if (walk == pinHwnd) {
+                                if (walk == overlayHwnd) {
                                     pinAboveOverlay = true;
                                     break;
                                 }
@@ -2542,8 +2485,7 @@ int Run(const Options& options) {
                                    mosaicOverAnnotationOk && exportAnnotated && hoverDetectOk &&
                                    hoverUnderCursor && outsideGuardOk && ocrButtonOk &&
                                    restoreEntryOk && restoreAnnotatedOk && keepMenusOk &&
-                                   keepRadialOk && escOnceOk && pinAboveOverlay &&
-                                   menuBelowPins && radialBelowPins;
+                                   keepRadialOk && escOnceOk && pinAboveOverlay;
             log.Info(screenshotSelftestOk ? "screenshot selftest: ok"
                                           : "screenshot selftest: failed");
         }
@@ -4330,9 +4272,6 @@ int Run(const Options& options) {
             if (!trayMenu->Open(trayState, versionLabel, cursor)) {
                 trayMenu.reset();
                 log.Error("tray menu: open failed");
-            } else {
-                // 菜单是 WS_EX_TOPMOST，创建后排在贴图之上；把贴图重新置顶，让它浮在菜单之上。
-                raisePinsToTop();
             }
             break;
         }

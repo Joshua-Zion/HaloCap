@@ -744,6 +744,14 @@ void RadialMenu::StartHide(int pendingAction) {
     SetTimer(static_cast<HWND>(window_), 1, 16, nullptr);
 }
 
+bool RadialMenu::IsPointOnDisk(POINT screenPoint) const {
+    const float dx = static_cast<float>(screenPoint.x - centerScreen_.x);
+    const float dy = static_cast<float>(screenPoint.y - centerScreen_.y);
+    const float distance = std::sqrt(dx * dx + dy * dy);
+    const float designToPx = contentScale_ * pixelScale_;
+    return distance <= kDiskRadius * designToPx;
+}
+
 void RadialMenu::ClickAt(POINT screenPoint) {
     if (closing_) {
         return;
@@ -807,6 +815,12 @@ LRESULT CALLBACK RadialMenu::MouseHook(int code, WPARAM wParam, LPARAM lParam) {
         // 移动必须放行，否则系统光标会被钩子冻住。
         return CallNextHookEx(nullptr, code, wParam, lParam);
     case WM_LBUTTONDOWN:
+        // 点击落在光圈圆盘之外：这不是光圈要处理的点击，不能吞掉——放行让鼠标落到
+        // 真正命中的窗口（比如贴图）。光圈自己照旧收起（点盘外 = 关闭），但不抢消息。
+        if (!g_active->IsPointOnDisk(mouse->pt)) {
+            g_active->StartHide(-1);
+            return CallNextHookEx(nullptr, code, wParam, lParam);
+        }
         g_active->ClickAt(mouse->pt);
         return 1;
     case WM_LBUTTONUP:
@@ -814,6 +828,11 @@ LRESULT CALLBACK RadialMenu::MouseHook(int code, WPARAM wParam, LPARAM lParam) {
         return 1;
     case WM_RBUTTONDOWN:
     case WM_MBUTTONDOWN:
+        // 右键/中键点盘外同样放行，只收起光圈。
+        if (!g_active->IsPointOnDisk(mouse->pt)) {
+            g_active->StartHide(-1);
+            return CallNextHookEx(nullptr, code, wParam, lParam);
+        }
         g_active->StartHide(-1);
         return 1;
     default:

@@ -444,7 +444,10 @@ bool TrayMenuWindow::Open(const core::TrayMenuState& state, const std::wstring& 
     previousForeground_ = GetForegroundWindow();
     SetForegroundWindow(window_);
     SetFocus(window_);
-    SetCapture(window_);
+    // 不长期 SetCapture：捕获会把全屏鼠标都路由到菜单，点贴图/其他窗口都会被菜单当成
+    // 「点菜单外面」吃掉，贴图根本抢不到焦点。改成靠 WM_KILLFOCUS 收起——点菜单外的
+    // 任意窗口都会让菜单失焦从而关闭，点菜单项则正常命中。这样「焦点所在的窗口在上」
+    // 的语义才成立：贴图被点时抢走焦点，菜单自然让位。
 
     const ULONGLONG start = GetTickCount64();
     for (;;) {
@@ -514,10 +517,9 @@ void TrayMenuWindow::Resume() {
         Render();
         Present();
     }
-    // 恢复成「刚打开」的交互态：前台 + 捕获，点条目生效、点外面收起的语义不变。
+    // 恢复成「刚打开」的交互态：前台 + 焦点，点条目生效、点外面（失焦）收起。
     SetForegroundWindow(window_);
     SetFocus(window_);
-    SetCapture(window_);
 }
 
 core::TrayCommand TrayMenuWindow::PollCommand() {    const core::TrayCommand command = pending_;

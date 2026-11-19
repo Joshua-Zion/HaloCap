@@ -65,6 +65,8 @@ private:
     void ClickAt(POINT screenPoint);
     void StartDrag(POINT screenPoint);
     void DragTo(POINT screenPoint);
+    // 判断屏幕坐标是否落在光圈圆盘（含死区）内。盘外的点击要放行给其他窗口。
+    bool IsPointOnDisk(POINT screenPoint) const;
 
     void* window_ = nullptr;
     HBITMAP bitmap_ = nullptr;

@@ -347,6 +347,11 @@ void RadialMenu::Suspend() {
         g_active = nullptr;
     }
     dragging_ = false;
+    // 光圈窗口是 WS_EX_TOPMOST 分层窗口：即便摘了钩子，窗口仍留在 topmost 层、可能
+    // 挡在贴图上面，点下去会「透穿」到光圈而不是贴图。挂起期间把它降出 topmost 层，
+    // 窗口留在屏幕上（可见、可被 GrabOverlay 叠进截图底图），但不遮挡贴图。
+    SetWindowPos(static_cast<HWND>(window_), HWND_NOTOPMOST, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 }
 
 platform::win32::LayeredOverlay RadialMenu::GrabOverlay() const {
@@ -377,6 +382,9 @@ void RadialMenu::Resume() {
     if (closing_) {
         return;
     }
+    // 挂起时降出了 topmost 层，这里抬回去。
+    SetWindowPos(static_cast<HWND>(window_), HWND_TOPMOST, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     g_active = this;
     if (mouseHook_ == nullptr) {
         mouseHook_ = SetWindowsHookExW(WH_MOUSE_LL, &RadialMenu::MouseHook,

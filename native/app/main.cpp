@@ -1964,6 +1964,8 @@ int Run(const Options& options) {
     bool keepRadialOk = false;
     bool escOnceOk = false;
     bool pinAboveOverlay = false;
+    bool menuBelowPins = false;
+    bool radialBelowPins = false;
     if (!options.screenshotSelftestPath.empty()) {
         const std::int64_t openStartUs = QpcNowUs();
         openScreenshot();
@@ -2340,6 +2342,11 @@ int Run(const Options& options) {
                     trayMenu->HandleForTest() == menuHandle &&
                     IsWindowVisible(menuHandle) != FALSE && trayMenu->Suspended() &&
                     GetCapture() != menuHandle;
+                // 挂起期间菜单降出 topmost 层：不再挡在贴图上面，鼠标能落到贴图而非菜单。
+                // 这里验证 exStyle 里 WS_EX_TOPMOST 已被清掉。
+                menuBelowPins =
+                    menuKept &&
+                    (GetWindowLongW(menuHandle, GWL_EXSTYLE) & WS_EX_TOPMOST) == 0;
                 // 关键证明：菜单是 WS_EX_LAYERED，BitBlt 抓不到它，只有把它渲染好的位图
                 // 叠进底图才「截得到」。这里取菜单窗口中心点在覆盖层底图里的像素，应是
                 // 菜单面板的近白色（0xFC 白），而不是它身后的桌面背景。
@@ -2369,6 +2376,7 @@ int Run(const Options& options) {
                 keepMenusOk = menuKept && menuInFrame && escClosed && menuResumed;
                 AddFlag(report, "APP_SCREENSHOT_KEEP_MENU_PROOF", menuProof);
                 AddFlag(report, "APP_SCREENSHOT_KEEP_MENU_IN_FRAME", menuInFrame);
+                AddFlag(report, "APP_SCREENSHOT_MENU_BELOW_PINS", menuBelowPins);
                 if (trayMenu != nullptr) {
                     trayMenu->Close();
                     trayMenu.reset();
@@ -2383,10 +2391,17 @@ int Run(const Options& options) {
                                         screenshotOverlay != nullptr &&
                                         screenshotOverlay->Active() && radialMenu->Active() &&
                                         radialMenu->Suspended();
+                // 光圈挂起期间同样降出 topmost 层，别挡在贴图上面。
+                radialBelowPins =
+                    radialKept && radialMenu->Active() &&
+                    (GetWindowLongW(static_cast<HWND>(radialMenu->HandleForTest()),
+                                    GWL_EXSTYLE) &
+                     WS_EX_TOPMOST) == 0;
                 const bool radialEscClosed = radialKept && pressEscapeOnce();
                 const bool radialResumed =
                     radialMenu != nullptr && radialMenu->Active() && !radialMenu->Suspended();
                 keepRadialOk = radialKept && radialEscClosed && radialResumed;
+                AddFlag(report, "APP_SCREENSHOT_RADIAL_BELOW_PINS", radialBelowPins);
                 if (radialMenu != nullptr) {
                     radialMenu->Close();
                     radialMenu.reset();
@@ -2490,7 +2505,8 @@ int Run(const Options& options) {
                                    mosaicOverAnnotationOk && exportAnnotated && hoverDetectOk &&
                                    hoverUnderCursor && outsideGuardOk && ocrButtonOk &&
                                    restoreEntryOk && restoreAnnotatedOk && keepMenusOk &&
-                                   keepRadialOk && escOnceOk && pinAboveOverlay;
+                                   keepRadialOk && escOnceOk && pinAboveOverlay &&
+                                   menuBelowPins && radialBelowPins;
             log.Info(screenshotSelftestOk ? "screenshot selftest: ok"
                                           : "screenshot selftest: failed");
         }

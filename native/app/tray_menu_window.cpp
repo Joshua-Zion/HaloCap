@@ -501,12 +501,6 @@ void TrayMenuWindow::Suspend() {
     if (GetCapture() == window_) {
         ReleaseCapture();
     }
-    // 菜单是 WS_EX_TOPMOST 分层窗口，挂在贴图/覆盖层上面会物理挡住下面的贴图——鼠标
-    // 点下去命中的是菜单而不是贴图，产生「点贴图误触菜单」的错觉。挂起期间把它降出
-    // topmost 层：窗口仍在屏幕上（可见、可被 GrabOverlay 叠进截图底图），但不再遮挡
-    // 贴图；Resume() 时再抬回 topmost。
-    SetWindowPos(window_, HWND_NOTOPMOST, 0, 0, 0, 0,
-                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
 }
 
 void TrayMenuWindow::Resume() {
@@ -521,9 +515,6 @@ void TrayMenuWindow::Resume() {
         Present();
     }
     // 恢复成「刚打开」的交互态：前台 + 捕获，点条目生效、点外面收起的语义不变。
-    // 同时从 NOTOPMOST 抬回 TOPMOST（挂起时降下去给贴图让路）。
-    SetWindowPos(window_, HWND_TOPMOST, 0, 0, 0, 0,
-                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
     SetForegroundWindow(window_);
     SetFocus(window_);
     SetCapture(window_);

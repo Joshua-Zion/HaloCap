@@ -459,6 +459,15 @@ void PinWindow::Close() {
     }
 }
 
+void PinWindow::RaiseToTop() {
+    if (window_ == nullptr) {
+        return;
+    }
+    // 只改 z-order，不动位置尺寸，也不抢焦点——贴图浮起来但仍不打断选区的键盘钩子。
+    SetWindowPos(static_cast<HWND>(window_), HWND_TOPMOST, 0, 0, 0, 0,
+                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+}
+
 core::IntRect PinWindow::ContentRectForTest() const {
     return core::IntRect{ contentLeft_, contentTop_, contentLeft_ + displayWidth_,
                           contentTop_ + displayHeight_ };

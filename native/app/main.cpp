@@ -1504,6 +1504,15 @@ int Run(const Options& options) {
         });
     };
 
+    // 覆盖层（截图 / 识别选区）和贴图都是 WS_EX_TOPMOST 窗口：覆盖层后创建会排在贴图
+    // 之上，把贴图盖住，鼠标点过去会落到覆盖层、误触发选区而不是贴图上的操作。所以
+    // 覆盖层打开后，把所有贴图重新置顶，让它们浮在选区蒙层之上（仍可看、可拖动/标注）。
+    const auto raisePinsAboveOverlay = [&]() {
+        for (auto& item : pins) {
+            item->RaiseToTop();
+        }
+    };
+
     // 覆盖层（截图 / 识别）出现前的处理：托盘菜单和光圈**都不收起来**——用户要能把它们
     // 连同画面一起框进截图。但两者都会抢输入：菜单一开就 SetCapture，光圈挂着全局键鼠
     // 钩子（低级钩子「后装先调」，压在覆盖层上面）。不收起来就等于第一次框选被菜单当成
@@ -1599,6 +1608,7 @@ int Run(const Options& options) {
             notify("截图失败：无法获取屏幕");
             return;
         }
+        raisePinsAboveOverlay();
         log.Info("screenshot: overlay opened");
     };
 
@@ -1634,6 +1644,7 @@ int Run(const Options& options) {
             notify("OCR 无法获取屏幕");
             return;
         }
+        raisePinsAboveOverlay();
         log.Info("ocr: overlay opened");
     };
 
@@ -1952,6 +1963,7 @@ int Run(const Options& options) {
     bool keepMenusOk = false;
     bool keepRadialOk = false;
     bool escOnceOk = false;
+    bool pinAboveOverlay = false;
     if (!options.screenshotSelftestPath.empty()) {
         const std::int64_t openStartUs = QpcNowUs();
         openScreenshot();
@@ -2380,6 +2392,40 @@ int Run(const Options& options) {
                     radialMenu.reset();
                 }
                 escOnceOk = escClosed && radialEscClosed;
+
+                // 贴图与覆盖层的层级：两者都是 TOPMOST，覆盖层后创建会盖住贴图，把贴图
+                // 的点击变成选区的点击。开覆盖层后要把已有贴图重新置顶，让它们浮在选区
+                // 蒙层之上。这里验证：先有一张贴图，再开覆盖层，贴图窗口应在覆盖层之上。
+                {
+                    // 借一张真实贴图窗口（前面 PinSelection 已经贴过一张），确保它还在。
+                    if (!pins.empty() && pins.back()->Valid()) {
+                        HWND pinHwnd = pins.back()->Handle();
+                        const bool overlayOpened =
+                            screenshotOverlay != nullptr && screenshotOverlay->Active();
+                        // 若覆盖层已经被 Esc 关掉，重开一次（走真实分发路径）。
+                        if (!overlayOpened) {
+                            dispatchHotkey(kTokenScreenshot);
+                        }
+                        if (screenshotOverlay != nullptr && screenshotOverlay->Active()) {
+                            const HWND overlayHwnd =
+                                static_cast<HWND>(screenshotOverlay->WindowHandle());
+                            // 沿 z-order 从覆盖层往更高层（GW_HWNDPREV）走，看会不会撞见
+                            // 贴图窗口——撞见就说明贴图在覆盖层之上。
+                            HWND walk = GetWindow(overlayHwnd, GW_HWNDPREV);
+                            while (walk != nullptr) {
+                                if (walk == pinHwnd) {
+                                    pinAboveOverlay = true;
+                                    break;
+                                }
+                                walk = GetWindow(walk, GW_HWNDPREV);
+                            }
+                            // 关掉这层覆盖层，别影响后续采样。
+                            screenshotOverlay->Close();
+                            screenshotOverlay.reset();
+                        }
+                    }
+                }
+                AddFlag(report, "APP_SCREENSHOT_PIN_ABOVE_OVERLAY", pinAboveOverlay);
             }
 
             AddFlag(report, "APP_SCREENSHOT_OVERLAY", true);
@@ -2444,7 +2490,7 @@ int Run(const Options& options) {
                                    mosaicOverAnnotationOk && exportAnnotated && hoverDetectOk &&
                                    hoverUnderCursor && outsideGuardOk && ocrButtonOk &&
                                    restoreEntryOk && restoreAnnotatedOk && keepMenusOk &&
-                                   keepRadialOk && escOnceOk;
+                                   keepRadialOk && escOnceOk && pinAboveOverlay;
             log.Info(screenshotSelftestOk ? "screenshot selftest: ok"
                                           : "screenshot selftest: failed");
         }

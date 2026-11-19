@@ -6,8 +6,6 @@
 
 [下载最新版](https://github.com/Joshua-Zion/HaloCap/releases/latest) · [更新日志](CHANGELOG.md) · [第三方声明](THIRD-PARTY-NOTICES.md) · [Wiki](https://github.com/Joshua-Zion/HaloCap/wiki)
 
-![光圈菜单示意图](assets/radial-menu.svg)
-
 > [!NOTE]
 > 🔒 **本机处理,不联网。** 无云服务、无遥测、无上传,不依赖 FFmpeg;除「检查更新」和主动下载高精度模型外,程序不发起网络请求。
 
